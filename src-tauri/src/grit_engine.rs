@@ -1033,6 +1033,8 @@ mod tests {
         );
         assert_eq!(fs::read(archived_a).unwrap(), b"png-a");
         assert!(Path::new(archived_a)
+            .canonicalize()
+            .unwrap()
             .starts_with(archive.join("grit-work").join(DAY).canonicalize().unwrap()));
         assert_eq!(fs::read(data.join("shots/a.png")).unwrap(), b"png-a");
         assert_eq!(
