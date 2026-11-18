@@ -312,6 +312,11 @@ fn run(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // Background CLI, no console window.
+    }
     let mut child = cmd.spawn().map_err(|_| {
         "CLI-verktyget kunde inte startas. Installera det och logga in först.".to_string()
     })?;
