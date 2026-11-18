@@ -912,7 +912,13 @@ fn copy_durable(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn sync_file(path: &Path) -> Result<(), String> {
-    let file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    // FlushFileBuffers on Windows requires a write-capable handle. Never ignore
+    // flush errors: an archive must be durable before any local evidence is removed.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(cfg!(windows))
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
     file.sync_all()
         .map_err(|e| format!("sync {}: {e}", path.display()))?;
     Ok(())

@@ -446,7 +446,9 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("归档校验失败"));
-        let _ = std::fs::remove_dir_all(root);
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -500,7 +502,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("31"));
-        let _ = std::fs::remove_dir_all(root);
+        drop(connection);
+        drop(database);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -631,7 +635,9 @@ mod tests {
             .unwrap()
             .iter()
             .all(|path| path.as_str().unwrap() != "shots/missing.png"));
-        let _ = std::fs::remove_dir_all(root);
+        drop(connection);
+        drop(file_db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

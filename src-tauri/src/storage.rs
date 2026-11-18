@@ -335,6 +335,7 @@ mod tests {
         let result = StorageManager::new(&dir, config).cleanup(&db).unwrap();
         assert_eq!(result.screenshots_deleted, 0);
         assert_eq!(std::fs::read(image).unwrap(), b"important evidence");
+        drop(db); // Windows cannot delete an open SQLite file.
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
