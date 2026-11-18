@@ -1529,6 +1529,21 @@ pub async fn grit_reconcile(
 }
 /// Recover durable jobs without ever assuming an interrupted POST failed.
 pub fn recover(dir: &Path) -> Result<(), String> {
+    // Only called after single-instance admission. Job folders contain disposable
+    // copies; original local evidence/verified archives remain authoritative.
+    let jobs = dir.join("jobs");
+    if let Ok(meta) = std::fs::symlink_metadata(&jobs) {
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            for entry in std::fs::read_dir(&jobs).map_err(error)? {
+                let entry = entry.map_err(error)?;
+                if Uuid::parse_str(&entry.file_name().to_string_lossy()).is_ok()
+                    && entry.file_type().map_err(error)?.is_dir()
+                {
+                    std::fs::remove_dir_all(entry.path()).map_err(error)?;
+                }
+            }
+        }
+    }
     let db = db(dir)?;
     let mut q = db.prepare("SELECT body FROM reports").map_err(error)?;
     let rows = q
@@ -1864,6 +1879,22 @@ mod tests {
         let (r, mut c, e) = fixture();
         c.projects[0].active = false;
         assert!(validate_report(&r, &c, &e, true).is_err());
+    }
+    #[test]
+    fn recovery_removes_only_owned_job_copies() {
+        let dir = std::env::temp_dir().join(format!("grit-scratch-{}", Uuid::new_v4()));
+        let job = dir.join("jobs").join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(job.join("image.jpg"), b"copy").unwrap();
+        let unrelated = dir.join("jobs").join("notes");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        let original = dir.join("original.jpg");
+        std::fs::write(&original, b"original evidence").unwrap();
+        recover(&dir).unwrap();
+        assert!(!job.exists());
+        assert!(unrelated.exists());
+        assert_eq!(std::fs::read(original).unwrap(), b"original evidence");
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn interrupted_upload_is_never_retryable_draft() {

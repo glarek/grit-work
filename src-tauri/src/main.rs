@@ -4212,9 +4212,6 @@ async fn main() {
     }
     #[allow(unused_mut)]
     let mut config = load_result.config;
-    if let Err(e) = grit::recover(&data_dir) {
-        log::error!("Grit recovery: {e}");
-    }
 
     // 清理历史遗留的钥匙串占位符（该机制已移除）
     clear_legacy_keychain_placeholders(&mut config);
@@ -4449,6 +4446,17 @@ async fn main() {
             let launch_args = std::env::args().collect::<Vec<_>>();
             // 获取 Arc<Mutex<AppState>> 并克隆以便在异步任务中使用
             let state = app.state::<Arc<Mutex<AppState>>>();
+            // Single-instance plugin has admitted this process before setup.
+            // A second launch must never recover another instance's active jobs.
+            let grit_data_dir = state
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .data_dir
+                .clone();
+            if let Err(e) = grit::recover(&grit_data_dir) {
+                log::error!("Grit recovery: {e}");
+            }
             let should_hide_main_window = {
                 let state_guard = state.inner().lock().unwrap_or_else(|e| e.into_inner());
                 if state_guard.config.auto_start {
