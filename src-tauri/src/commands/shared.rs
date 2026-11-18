@@ -136,9 +136,12 @@ pub(crate) fn validate_relative_path(path: &str) -> Result<(), AppError> {
             "非法路径：不允许使用绝对路径".to_string(),
         ));
     }
-    if p.components()
-        .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
-    {
+    if p.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    }) {
         return Err(AppError::Unknown(
             "非法路径：不允许包含 .. 等越界路径".to_string(),
         ));
@@ -458,6 +461,18 @@ mod tests {
     use super::*;
     use work_review_core::database::{BrowserUsage, DailyStats, DomainUsage, UrlDetail, UrlUsage};
     use work_review_core::privacy::apply_excluded_domains_to_stats;
+
+    #[test]
+    fn relative_capture_paths_reject_roots_and_traversal() {
+        assert!(validate_relative_path("screenshots/day/frame.png").is_ok());
+        assert!(validate_relative_path("/etc/passwd").is_err());
+        assert!(validate_relative_path("../outside.png").is_err());
+        #[cfg(windows)]
+        {
+            assert!(validate_relative_path(r"\Windows\win.ini").is_err());
+            assert!(validate_relative_path(r"C:Windows\win.ini").is_err());
+        }
+    }
 
     #[test]
     fn 概览统计应过滤排除域名并重算浏览器时长() {

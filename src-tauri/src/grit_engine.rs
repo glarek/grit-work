@@ -1027,9 +1027,13 @@ mod tests {
         assert_eq!(loaded[0]["app"], "ed");
         assert_eq!(loaded[1]["ocr_text"], "beta");
         let archived_a = loaded[0]["screenshot_path"].as_str().unwrap();
-        assert!(archived_a.ends_with("/shots/shots/a.png") || archived_a.ends_with("/shots/a.png"));
+        assert!(
+            Path::new(archived_a).ends_with("shots/shots/a.png")
+                || Path::new(archived_a).ends_with("shots/a.png")
+        );
         assert_eq!(fs::read(archived_a).unwrap(), b"png-a");
-        assert!(Path::new(archived_a).starts_with(archive.join("grit-work").join(DAY)));
+        assert!(Path::new(archived_a)
+            .starts_with(archive.join("grit-work").join(DAY).canonicalize().unwrap()));
         assert_eq!(fs::read(data.join("shots/a.png")).unwrap(), b"png-a");
         assert_eq!(
             fs::read(data.join("shots/a.png.ocr.log")).unwrap(),
