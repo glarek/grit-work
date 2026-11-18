@@ -52,9 +52,8 @@ test('RC releases use prerelease metadata and cannot replace the stable latest r
   assert.ok(source.includes("prerelease: ${{ contains(github.ref_name, '-rc.') }}"));
   assert.ok(source.includes("makeLatest: ${{ contains(github.ref_name, '-rc.') && 'false' || 'legacy' }}"));
   const config = JSON.parse(readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-  for (const endpoint of config.plugins.updater.endpoints) {
-    assert.ok(endpoint.includes('/releases/latest/download/'));
-  }
+  assert.equal(config.plugins.updater, undefined, 'Fork must not trust upstream update signing keys');
+  assert.equal(config.bundle.createUpdaterArtifacts, false);
 });
 
 test('官方 Actions 应使用 Node 24 运行时版本', () => {

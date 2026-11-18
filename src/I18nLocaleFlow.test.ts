@@ -20,7 +20,7 @@ test('前端应向日报生成与工作助手透传当前 locale，并让日期�
     readFile(new URL('./routes/timeline/HourlySummaryDrawer.svelte', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(appSource, /invoke\('generate_report', \{ date: today, force: false, locale: currentLocale \}\)/);
+  assert.doesNotMatch(appSource, /invoke\('generate_report'/, 'Grit requires user approval before report generation');
   assert.match(reportSource, /invoke\('generate_report', \{ date: targetDate, force, locale: targetLocale \}\)/);
   assert.match(reportSource, /invoke<DailyReport \| null>\('get_saved_report', \{ date: targetDate, locale: targetLocale \}\)/);
   assert.match(

@@ -83,9 +83,9 @@ export interface GritCredentialsInput {
 }
 
 export const PROVIDER_DEFAULT_MODELS: Record<GritProvider, string> = {
-  codex: 'gpt-6.2',
-  grok: 'grok-4.7',
-  agy: 'gemini-4-argon-high',
+  codex: 'gpt-6.2-sol',
+  grok: 'grok-4.7-build-fast',
+  agy: 'gemini-4-hydrogen-medium',
 };
 
 export const PROVIDER_LABELS: Record<

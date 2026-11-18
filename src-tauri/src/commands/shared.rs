@@ -282,6 +282,7 @@ pub(crate) fn persist_app_config(
     state: &Arc<Mutex<AppState>>,
 ) -> Result<(), AppError> {
     config.normalize();
+    config.screenshot_interval = 300;
     let new_embedding_config_fingerprint =
         super::semantic_memory::embedding_config_fingerprint(&config);
     let new_privacy_fingerprint = super::semantic_memory::privacy_fingerprint(&config.privacy);

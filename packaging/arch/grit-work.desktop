@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Grit Work
+Comment=Review activity and submit approved time reports to Spiris
+Comment[sv]=Granska arbetsunderlag och skicka godkända tidrapporter till Spiris
+Exec=grit-work
+Icon=grit-work
+Terminal=false
+Categories=Office;ProjectManagement;
+StartupWMClass=grit-work

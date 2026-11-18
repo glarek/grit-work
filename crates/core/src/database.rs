@@ -2777,6 +2777,30 @@ impl Database {
 
     /// 获取日期范围内的原始活动记录
     /// 返回按时间升序排列的明细，用于 session 聚合、意图识别和待办提取
+    /// Completed-day inventory for Grit's verified archive workflow.
+    pub fn grit_activity_dates(&self) -> Result<Vec<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Config(e.to_string()))?;
+        let mut q = conn.prepare(
+            "SELECT DISTINCT date(timestamp, 'unixepoch', 'localtime') FROM activities ORDER BY 1",
+        )?;
+        let rows = q
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn grit_screenshot_shared(&self, path: &str, date: &str) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Config(e.to_string()))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM activities WHERE screenshot_path=?1 AND date(timestamp, 'unixepoch', 'localtime') != ?2", params![path,date], |r| r.get(0))?;
+        Ok(count > 0)
+    }
+
     pub fn get_activities_in_range(
         &self,
         date_from: Option<&str>,
@@ -2817,8 +2841,7 @@ impl Database {
                     screenshot_url: row.get(12)?,
                 })
             })?
-            .filter_map(|row| row.ok())
-            .collect();
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(activities)
     }
@@ -7474,6 +7497,22 @@ mod tests {
 
         let _ = std::fs::remove_file(source_path);
         let _ = std::fs::remove_file(backup_path);
+    }
+
+    #[test]
+    fn grit_archive_export_rejects_corrupt_rows_instead_of_dropping_them() {
+        let path = temp_db_path("grit-corrupt-export");
+        let db = Database::new(&path).unwrap();
+        db.insert_activity(&sample_activity(1_700_000_000, "Editor"))
+            .unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE activities SET duration='invalid-duration'", [])
+            .unwrap();
+        assert!(db.get_activities_in_range(None, None, 10000).is_err());
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     fn sample_activity(timestamp: i64, app_name: &str) -> Activity {

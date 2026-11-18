@@ -11,7 +11,7 @@ fn default_true() -> bool {
 }
 
 fn default_locale() -> String {
-    "zh-CN".to_string()
+    "en".to_string()
 }
 
 /// AI 提供商类型
@@ -1312,7 +1312,7 @@ fn normalize_positive_token(value: Option<u32>) -> Option<u32> {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            screenshot_interval: 30,
+            screenshot_interval: 300,
             locale: default_locale(),
             idle_threshold_minutes: default_idle_threshold_minutes(),
             ai_mode: AiMode::Local,

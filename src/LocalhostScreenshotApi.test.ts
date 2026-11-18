@@ -8,7 +8,7 @@ const [apiSource, examplesSource, readmeEn, readmeZh, readmeTw] = await Promise.
     new URL('./routes/settings/components/nodeGateway/ApiExamplesPanel.svelte', import.meta.url),
     'utf8',
   ),
-  readFile(new URL('../README.md', import.meta.url), 'utf8'),
+  readFile(new URL('../docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8'),
   readFile(new URL('../README.zh.md', import.meta.url), 'utf8'),
   readFile(new URL('../README.tw.md', import.meta.url), 'utf8'),
 ]);

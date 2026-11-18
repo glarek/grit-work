@@ -56,6 +56,7 @@
   let laterDismissedDates = new Set<string>();
   let confirmSubmitOpen = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let dayTimer: ReturnType<typeof setInterval> | null = null;
 
   // Credentials state (memory only, never persisted to localStorage)
   let authMode: AuthMode = 'oauth';
@@ -178,7 +179,8 @@
         dirtyDraft = false;
       }
       await refreshStatusOnly();
-      noticeMessage = `Tidrapport för ${targetDate} genererad.`;
+      if (report?.status === 'draft') noticeMessage = `Tidrapport för ${targetDate} genererad.`;
+      else errorMessage = report?.error ?? 'Rapporten kunde inte genereras.';
     } catch (err) {
       errorMessage = formatError(err);
     } finally {
@@ -255,11 +257,12 @@
       }
       confirmSubmitOpen = false;
       await refreshStatusOnly();
-      noticeMessage = `Tidrapport för ${currentReport.date} skickades till Spiris.`;
+      if (report?.status === 'uploaded') noticeMessage = `Tidrapport för ${currentReport.date} skickades till Spiris.`;
+      else errorMessage = report?.error ?? 'Överföringen är inte verifierad. Kontrollera status innan fortsatt arbete.';
     } catch (err) {
-      errorMessage = formatError(err);
       confirmSubmitOpen = false;
       await selectDate(selectedDate);
+      errorMessage = formatError(err);
     } finally {
       submitting = false;
       syncPollingState();
@@ -454,9 +457,14 @@
 
   onMount(() => {
     void loadStatusAndReport();
+    dayTimer = setInterval(async () => {
+      try { status = normalizeGritStatus(await invoke('grit_status')); }
+      catch { /* Keep the last known state while the backend is temporarily busy. */ }
+    }, 60000);
   });
 
   onDestroy(() => {
+    if (dayTimer !== null) clearInterval(dayTimer);
     stopPolling();
   });
 
@@ -481,7 +489,7 @@
 
 <div class="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
   <!-- Header -->
-  <header class="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-[#30363d] dark:bg-[#161b22]/90">
+  <header class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-[#30363d] dark:bg-[#161b22]/90">
     <div>
       <div class="flex items-center gap-2.5">
         <h1 class="text-xl font-semibold tracking-tight text-slate-900 dark:text-[#e6edf3]">
@@ -493,7 +501,7 @@
               ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
               : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'}"
           >
-            {status.credential_saved ? 'Spiris ansluten' : 'Spiris ej konfigurerad'}
+            {status.credential_saved ? 'API-uppgifter sparade' : 'Spiris ej konfigurerad'}
           </span>
         {/if}
       </div>
@@ -559,13 +567,13 @@
   {/if}
 
   {#if initialLoading}
-    <div class="rounded-2xl border border-slate-200/80 bg-white/90 p-10 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
+    <div class="rounded-xl border border-slate-200/80 bg-white/90 p-10 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
       Laddar Grit Work...
     </div>
   {:else if activeTab === 'report'}
     <!-- Yesterday prompt -->
     {#if showYesterdayPrompt}
-      <section class="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-indigo-200 bg-indigo-50/90 p-4 dark:border-indigo-800/60 dark:bg-indigo-950/30">
+      <section class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-indigo-200 bg-indigo-50/90 p-4 dark:border-indigo-800/60 dark:bg-indigo-950/30">
         <div>
           <h2 class="text-sm font-semibold text-indigo-950 dark:text-indigo-200">
             Gårdagens tidrapport ({yesterdayDate}) saknas
@@ -602,7 +610,7 @@
     {/if}
 
     <!-- Date selector & pending dates -->
-    <section class="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
+    <section class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
       <div class="flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -670,11 +678,11 @@
 
     <!-- Report body -->
     {#if reportLoading}
-      <div class="rounded-2xl border border-slate-200/80 bg-white/90 p-10 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
+      <div class="rounded-xl border border-slate-200/80 bg-white/90 p-10 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
         Hämtar tidrapport för {selectedDate}...
       </div>
     {:else if !report}
-      <div class="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-10 text-center dark:border-[#30363d] dark:bg-[#161b22]/60">
+      <div class="rounded-xl border border-dashed border-slate-300 bg-white/70 p-10 text-center dark:border-[#30363d] dark:bg-[#161b22]/60">
         <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
           Ingen tidrapport för {selectedDate}
         </h2>
@@ -684,7 +692,7 @@
       </div>
     {:else}
       <!-- Report status & totals card -->
-      <section class="space-y-4 rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
+      <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
         <div class="flex flex-wrap items-start justify-between gap-4">
           <div class="space-y-1">
             <div class="flex flex-wrap items-center gap-2.5">
@@ -1018,7 +1026,7 @@
     <!-- Settings tab -->
     <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
       <!-- AI & Spiris defaults -->
-      <section class="space-y-4 rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
+      <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
         <div>
           <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
             Generering & Spiris-standarder
@@ -1196,7 +1204,7 @@
       </section>
 
       <!-- Spiris Credentials -->
-      <section class="space-y-4 rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
+      <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
         <div>
           <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
             Spiris-autentisering
@@ -1292,7 +1300,7 @@
     aria-modal="true"
     aria-labelledby="grit-confirm-title"
   >
-    <div class="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-[#30363d] dark:bg-[#161b22]">
+    <div class="w-full max-w-md space-y-4 rounded-xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-[#30363d] dark:bg-[#161b22]">
       <div>
         <h3 id="grit-confirm-title" class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
           Bekräfta överföring till Spiris

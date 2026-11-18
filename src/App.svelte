@@ -691,67 +691,8 @@
       }, 2000);
       pendingCleanup.push(() => clearTimeout(autoUpdateTimer));
 
-      // 日报自动生成检测：每分钟检查一次
-      let lastAutoGenDate: string | null = null;  // 防止同一天重复触发
-      let autoGenRunning = false;  // 防止并发生成
-      let memorySynthRunning = false;  // 防止洞察合成并发
-      const autoReportTimer = setInterval(async () => {
-        if (autoGenRunning) return;  // 上一轮还没完成，跳过
-        const now = new Date();
-        const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
-        const today = getLocalDate();
-
-        // 检查是否达到或已过工作结束时间
-        const { hour: workEndHour, minute: workEndMinute } =
-          resolveAutoReportWorkEnd(runtimeConfig);
-        const workEndTotalMinutes = workEndHour * 60 + workEndMinute;
-
-        // 条件：当前时间 >= 工作结束时间，且今天未自动生成过
-        if (currentTotalMinutes >= workEndTotalMinutes && lastAutoGenDate !== today) {
-          try {
-            // 检查今日是否已有日报
-            const existingReport = await invoke<unknown>('get_saved_report', { date: today, locale: currentLocale });
-            if (!existingReport) {
-              devLog('工作结束时间到达，自动生成日报...');
-              autoGenRunning = true;
-              try {
-                await invoke('generate_report', { date: today, force: false, locale: currentLocale });
-                cache.invalidate('report', `${today}:${currentLocale}`);
-                lastAutoGenDate = today;
-                devLog('日报自动生成完成');
-              } finally {
-                autoGenRunning = false;
-              }
-            } else {
-              lastAutoGenDate = today;  // 已有日报，标记今天不再触发
-            }
-          } catch (e) {
-            console.warn('日报自动生成失败:', e);
-          }
-        }
-
-        // AI 工作记忆：每天工作结束后自动合成洞察
-        if (currentTotalMinutes >= workEndTotalMinutes && !memorySynthRunning) {
-          try {
-            const config = await getRuntimeConfig();
-            if (config.memory_enabled && config.memory_last_synthesis_date !== today) {
-              memorySynthRunning = true;
-              try {
-                await invoke('synthesize_insights', {});
-                // 合成可能耗时较长，重新拉取最新配置再写入，避免覆盖期间用户改动的其他设置
-                const freshConfig = await getRuntimeConfig();
-                await invoke('save_config', { config: { ...freshConfig, memory_last_synthesis_date: today } });
-                devLog('工作记忆合成完成');
-              } finally {
-                memorySynthRunning = false;
-              }
-            }
-          } catch (e) {
-            console.warn('工作记忆合成失败:', e);
-          }
-        }
-      }, 60000);  // 每分钟检查一次
-      pendingCleanup.push(() => clearInterval(autoReportTimer));
+      // Grit starts report agents only after the user accepts the daily prompt.
+      // The upstream automatic report/insight timer must not send evidence independently.
 
       const unlisten = await safeListen(
         'screenshot-taken',

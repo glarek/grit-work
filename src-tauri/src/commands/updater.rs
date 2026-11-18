@@ -13,19 +13,23 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_updater::UpdaterExt;
 use work_review_core::error::AppError;
 
-const GITHUB_LATEST_RELEASE_API: &str =
-    "https://api.github.com/repos/wm94i/Work-Review/releases/latest";
+fn grit_signed_updates_enabled() -> bool {
+    false
+}
 
-const GITHUB_LATEST_RELEASE_PAGE: &str = "https://github.com/wm94i/Work-Review/releases/latest";
+const GITHUB_LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/glarek/grit-work/releases/latest";
+
+const GITHUB_LATEST_RELEASE_PAGE: &str = "https://github.com/glarek/grit-work/releases/latest";
 const GITHUB_RELEASES_API: &str =
-    "https://api.github.com/repos/wm94i/Work-Review/releases?per_page=100";
+    "https://api.github.com/repos/glarek/grit-work/releases?per_page=100";
 
 const UPDATE_STATUS_EVENT: &str = "update-status";
 
 const UPDATER_JSON_ENDPOINTS: &[&str] = &[
-    "https://github.com/wm94i/Work-Review/releases/latest/download/updater.json",
-    "https://gh-proxy.cn/https://github.com/wm94i/Work-Review/releases/latest/download/updater-ghproxy.json",
-    "https://gh-proxy.com/https://github.com/wm94i/Work-Review/releases/latest/download/updater-ghp.json",
+    "https://github.com/glarek/grit-work/releases/latest/download/updater.json",
+    "https://gh-proxy.cn/https://github.com/glarek/grit-work/releases/latest/download/updater-ghproxy.json",
+    "https://gh-proxy.com/https://github.com/glarek/grit-work/releases/latest/download/updater-ghp.json",
 ];
 
 const DEFAULT_UPDATE_CHECK_INTERVAL_HOURS: u64 = 24;
@@ -280,7 +284,7 @@ async fn check_installable_update(
                         prerelease: parse_release_version(&update.version)
                             .is_some_and(|version| !version.pre.is_empty()),
                         release_url: format!(
-                            "https://github.com/wm94i/Work-Review/releases/tag/v{}",
+                            "https://github.com/glarek/grit-work/releases/tag/v{}",
                             update.version
                         ),
                         latest_version: update.version,
@@ -327,7 +331,7 @@ async fn check_installable_update(
 impl Default for UpdateSettings {
     fn default() -> Self {
         Self {
-            auto_check: true,
+            auto_check: false,
             include_prerelease: false,
             last_check_time: 0,
             check_interval_hours: DEFAULT_UPDATE_CHECK_INTERVAL_HOURS,
@@ -466,7 +470,7 @@ pub async fn should_check_updates(
     };
     let settings = load_update_settings_from_dir(&data_dir)?;
 
-    Ok(should_check_for_updates(&settings))
+    Ok(grit_signed_updates_enabled() && should_check_for_updates(&settings))
 }
 
 /// 更新时间检查时间戳
@@ -508,6 +512,11 @@ pub async fn check_github_update(
     app: AppHandle,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<GithubUpdateInfo, AppError> {
+    if !grit_signed_updates_enabled() {
+        return Err(AppError::Unknown(
+            "Signerade Grit-uppdateringar är ännu inte aktiverade.".into(),
+        ));
+    }
     let data_dir = state
         .lock()
         .map_err(|e| AppError::Unknown(e.to_string()))?
@@ -587,6 +596,12 @@ pub async fn download_and_install_github_update(
     state: State<'_, Arc<Mutex<AppState>>>,
     expected_version: Option<String>,
 ) -> Result<GithubUpdateInstallResult, AppError> {
+    // Grit releases do not yet have their own signing key. Never install upstream binaries.
+    if !grit_signed_updates_enabled() {
+        return Err(AppError::Unknown(
+            "Signerade Grit-uppdateringar är ännu inte aktiverade.".into(),
+        ));
+    }
     ensure_installer_update_allowed(crate::data_dir::is_portable_mode()?)?;
     let data_dir = state
         .lock()
@@ -610,7 +625,7 @@ pub async fn download_and_install_github_update(
     // 镜像提供的有效旧签名不能证明目标版本；摘要只信任 GitHub 官方 HTTPS API。
     let trusted_release = update_http_client()?
         .get(format!(
-            "https://api.github.com/repos/wm94i/Work-Review/releases/tags/v{}",
+            "https://api.github.com/repos/glarek/grit-work/releases/tags/v{}",
             normalize_version(expected)
         ))
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
@@ -871,14 +886,14 @@ mod tests {
     #[test]
     fn 确认版本后更新清单必须固定到对应tag而非latest() {
         let candidates = build_updater_manifest_candidates(
-            "https://github.com/wm94i/Work-Review/releases/latest/download/updater.json",
+            "https://github.com/glarek/grit-work/releases/latest/download/updater.json",
             Some("1.0.24"),
         );
 
         assert_eq!(
             candidates,
             vec![
-                "https://github.com/wm94i/Work-Review/releases/download/v1.0.24/updater.json"
+                "https://github.com/glarek/grit-work/releases/download/v1.0.24/updater.json"
                     .to_string(),
             ]
         );
@@ -887,14 +902,14 @@ mod tests {
     #[test]
     fn 更新清单候选应保留代理前缀并规范化版本号() {
         let candidates = build_updater_manifest_candidates(
-            "https://gh-proxy.cn/https://github.com/wm94i/Work-Review/releases/latest/download/updater-ghproxy.json",
+            "https://gh-proxy.cn/https://github.com/glarek/grit-work/releases/latest/download/updater-ghproxy.json",
             Some("v1.0.24"),
         );
 
         assert_eq!(
             candidates,
             vec![
-                "https://gh-proxy.cn/https://github.com/wm94i/Work-Review/releases/download/v1.0.24/updater-ghproxy.json"
+                "https://gh-proxy.cn/https://github.com/glarek/grit-work/releases/download/v1.0.24/updater-ghproxy.json"
                     .to_string(),
             ]
         );
@@ -965,7 +980,7 @@ mod tests {
         let endpoint = UPDATER_JSON_ENDPOINTS[0];
         assert_eq!(
             build_updater_manifest_candidates(endpoint, Some("1.1.4-rc.3")),
-            vec!["https://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.3/updater.json"]
+            vec!["https://github.com/glarek/grit-work/releases/download/v1.1.4-rc.3/updater.json"]
         );
         assert!(build_updater_manifest_candidates(endpoint, Some("../bad")).is_empty());
         assert_eq!(
@@ -1024,13 +1039,34 @@ mod tests {
     fn 清单版本正确但包地址指向旧rc或其他来源时也必须拒绝() {
         let manifest = UPDATER_JSON_ENDPOINTS[0];
         for (url, allowed) in [
-            ("https://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.10/setup.exe", true),
-            ("https://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.3/setup.exe", false),
-            ("https://github.com/other/repo/releases/download/v1.1.4-rc.10/setup.exe", false),
-            ("http://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.10/setup.exe", false),
-            ("https://example.com/wm94i/Work-Review/releases/download/v1.1.4-rc.10/setup.exe", false),
-            ("https://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.10/sub/setup.exe", false),
-            ("https://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.10/bad%2fname.exe", false),
+            (
+                "https://github.com/glarek/grit-work/releases/download/v1.1.4-rc.10/setup.exe",
+                true,
+            ),
+            (
+                "https://github.com/glarek/grit-work/releases/download/v1.1.4-rc.3/setup.exe",
+                false,
+            ),
+            (
+                "https://github.com/other/repo/releases/download/v1.1.4-rc.10/setup.exe",
+                false,
+            ),
+            (
+                "http://github.com/glarek/grit-work/releases/download/v1.1.4-rc.10/setup.exe",
+                false,
+            ),
+            (
+                "https://example.com/glarek/grit-work/releases/download/v1.1.4-rc.10/setup.exe",
+                false,
+            ),
+            (
+                "https://github.com/glarek/grit-work/releases/download/v1.1.4-rc.10/sub/setup.exe",
+                false,
+            ),
+            (
+                "https://github.com/glarek/grit-work/releases/download/v1.1.4-rc.10/bad%2fname.exe",
+                false,
+            ),
         ] {
             assert_eq!(
                 update_asset_matches_manifest(&Url::parse(url).unwrap(), manifest, "1.1.4-rc.10"),
@@ -1041,7 +1077,7 @@ mod tests {
         let pinned =
             build_updater_manifest_candidates(UPDATER_JSON_ENDPOINTS[1], Some("1.1.4-rc.10"));
         assert!(update_asset_matches_manifest(
-            &Url::parse("https://gh-proxy.cn/https://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.10/setup.exe").unwrap(),
+            &Url::parse("https://gh-proxy.cn/https://github.com/glarek/grit-work/releases/download/v1.1.4-rc.10/setup.exe").unwrap(),
             &pinned[0],
             "1.1.4-rc.10",
         ));
@@ -1054,7 +1090,7 @@ mod tests {
         let mut trusted = release("v1.1.4-rc.1", true, false);
         trusted.assets.push(GithubReleaseAsset {
             browser_download_url:
-                "https://github.com/wm94i/Work-Review/releases/download/v1.1.4-rc.1/setup.exe"
+                "https://github.com/glarek/grit-work/releases/download/v1.1.4-rc.1/setup.exe"
                     .to_string(),
             digest: Some(format!("sha256:{digest}")),
         });
@@ -1067,7 +1103,7 @@ mod tests {
             assert_eq!(trusted_asset_digest(&trusted, &url), Some(digest.as_str()));
         }
         let other =
-            Url::parse("https://github.com/wm94i/Work-Review/releases/download/v1.1.3/setup.exe")
+            Url::parse("https://github.com/glarek/grit-work/releases/download/v1.1.3/setup.exe")
                 .unwrap();
         assert!(trusted_asset_digest(&trusted, &other).is_none());
     }
@@ -1075,7 +1111,7 @@ mod tests {
     #[test]
     fn 缺失或伪造格式的官方摘要不能跳过校验() {
         let url =
-            Url::parse("https://github.com/wm94i/Work-Review/releases/download/v1.1.4/setup.exe")
+            Url::parse("https://github.com/glarek/grit-work/releases/download/v1.1.4/setup.exe")
                 .unwrap();
         for digest in [
             None,
@@ -1107,7 +1143,7 @@ mod tests {
     fn 更新源应优先官方_github() {
         assert_eq!(
             UPDATER_JSON_ENDPOINTS.first().copied(),
-            Some("https://github.com/wm94i/Work-Review/releases/latest/download/updater.json")
+            Some("https://github.com/glarek/grit-work/releases/latest/download/updater.json")
         );
     }
 }

@@ -1849,6 +1849,24 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use work_review_core::config::{ScreenshotDisplayMode, ScreenshotWidthMode, StorageConfig};
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated Xvfb display and ImageMagick"]
+    fn grit_virtual_desktop_capture_saves_readable_image() {
+        assert_eq!(
+            std::env::var("GRIT_VIRTUAL_DISPLAY_TEST").as_deref(),
+            Ok("1")
+        );
+        let root = std::env::temp_dir().join(format!("grit-capture-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = ScreenshotService::new(&root, &StorageConfig::default());
+        let result = service.capture().expect("capture virtual display");
+        assert!(result.path.starts_with(&root));
+        let image = image::open(&result.path).expect("saved capture must be decodable");
+        assert!(image.width() > 0 && image.height() > 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn 应按窗口中心点选择目标屏幕() {
         let active_window = ActiveWindow {

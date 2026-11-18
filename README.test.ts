@@ -84,7 +84,7 @@ function getGifMetadata(buffer: Buffer) {
 
 test('README 语言切换应突出当前语言且只链接其他语言', async () => {
   const [enSource, zhSource, twSource] = await Promise.all([
-    readFile(new URL('./README.md', import.meta.url), 'utf8'),
+    readFile(new URL('./docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8'),
     readFile(new URL('./README.zh.md', import.meta.url), 'utf8'),
     readFile(new URL('./README.tw.md', import.meta.url), 'utf8'),
   ]);
@@ -117,7 +117,7 @@ test('README 语言切换应突出当前语言且只链接其他语言', async (
 test('多语言 README 底部都应展示 Star History，并在 License 后加入分隔线', async () => {
   const [zhSource, enSource, twSource] = await Promise.all([
     readFile(new URL('./README.zh.md', import.meta.url), 'utf8'),
-    readFile(new URL('./README.md', import.meta.url), 'utf8'),
+    readFile(new URL('./docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8'),
     readFile(new URL('./README.tw.md', import.meta.url), 'utf8'),
   ]);
 
@@ -134,7 +134,7 @@ test('多语言 README 底部都应展示 Star History，并在 License 后加�
 
 test('README 不应把默认关闭的 Localhost API 描述为启动后自动开放', async () => {
   const sources = await Promise.all([
-    readFile(new URL('./README.md', import.meta.url), 'utf8'),
+    readFile(new URL('./docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8'),
     readFile(new URL('./README.zh.md', import.meta.url), 'utf8'),
     readFile(new URL('./README.tw.md', import.meta.url), 'utf8'),
   ]);
@@ -149,7 +149,7 @@ test('README 不应把默认关闭的 Localhost API 描述为启动后自动开�
 test('多语言 README 应覆盖当前版本关键能力和安装资产', async () => {
   const readmes = [
     {
-      file: './README.md',
+      file: './docs/grit/UPSTREAM-README.md',
       patterns: [
         /Windows \| `\.exe` \/ portable `\.zip` \|/,
         /hourly activity across Today, Week, Date, and Range views/,
@@ -186,7 +186,7 @@ test('多语言 README 应覆盖当前版本关键能力和安装资产', async 
 });
 
 test('英文 README 应说明 Linux 安装包与 GLIBC 兼容性边界', async () => {
-  const source = await readFile(new URL('./README.md', import.meta.url), 'utf8');
+  const source = await readFile(new URL('./docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8');
 
   assert.match(
     source,
@@ -254,7 +254,7 @@ test('繁体中文 README 应说明 Linux 安装包与 GLIBC 兼容性边界', a
 test('多语言 README 应展示完整界面预览截图且图片文件存在', async () => {
   const readmes = [
     {
-      file: './README.md',
+      file: './docs/grit/UPSTREAM-README.md',
       dir: 'Introduction_en',
     },
     {
@@ -320,7 +320,7 @@ test('开发文档与自动化流程应统一要求 Node.js 22+', async () => {
   const [packageSource, englishReadme, simplifiedReadme, traditionalReadme, ci, release] =
     await Promise.all([
       readFile(new URL('./package.json', import.meta.url), 'utf8'),
-      readFile(new URL('./README.md', import.meta.url), 'utf8'),
+      readFile(new URL('./docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8'),
       readFile(new URL('./README.zh.md', import.meta.url), 'utf8'),
       readFile(new URL('./README.tw.md', import.meta.url), 'utf8'),
       readFile(new URL('./.github/workflows/ci.yml', import.meta.url), 'utf8'),
@@ -341,7 +341,7 @@ test('开发文档与自动化流程应统一要求 Node.js 22+', async () => {
 
 test('多语言 README 的社区图片应使用统一规格展示资产', async () => {
   const sources = await Promise.all([
-    readFile(new URL('./README.md', import.meta.url), 'utf8'),
+    readFile(new URL('./docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8'),
     readFile(new URL('./README.zh.md', import.meta.url), 'utf8'),
     readFile(new URL('./README.tw.md', import.meta.url), 'utf8'),
   ]);

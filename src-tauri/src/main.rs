@@ -22,6 +22,9 @@ mod config_sync;
 mod data_dir;
 mod dingtalk_bot;
 mod feishu_bot;
+mod grit;
+mod grit_cli;
+mod grit_engine;
 mod idle_detector;
 mod linux_session;
 mod localhost_api;
@@ -2147,6 +2150,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
     let _power_monitor = activity_clock::PowerMonitor::new();
     let mut activity_clock = activity_clock::ActivityClock::new();
     let mut last_capture_time = std::time::Instant::now();
+    let mut last_grit_screenshot = std::time::Instant::now() - Duration::from_secs(300);
     let mut overlay_sessions = std::collections::HashMap::new();
 
     // ===== 空闲检测器 =====
@@ -2523,7 +2527,9 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
         // ===== 判断是否截图 =====
         // 1. 定时触发：到达配置的间隔时间
         // 2. 应用切换触发：满足最小间隔
-        let should_take_screenshot = if elapsed_secs >= screenshot_interval {
+        let should_take_screenshot = if elapsed_secs >= screenshot_interval
+            || last_grit_screenshot.elapsed() >= Duration::from_secs(300)
+        {
             log::debug!("定时截图触发");
             true
         } else if app_changed && elapsed_since_capture.as_millis() >= capture_min_interval_ms {
@@ -2757,9 +2763,13 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                             &active_window.window_title,
                             active_window.browser_url.as_deref(),
                         ),
-                        state_guard.config.storage.screenshots_enabled,
+                        state_guard.config.storage.screenshots_enabled
+                            && last_grit_screenshot.elapsed() >= Duration::from_secs(300),
                     )
                 };
+                if screenshots_enabled {
+                    last_grit_screenshot = std::time::Instant::now();
+                }
                 let category = classification.base_category.clone();
 
                 // 先检查是否有可合并的记录（在截屏之前判断，避免不必要的截图保存）
@@ -2797,29 +2807,30 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
 
                 // 只合并当前连续会话。切回此前使用过的应用/页面必须新建记录，
                 // 否则累计 duration 配合新 timestamp 会把中间会话覆盖成重叠区间。
-                let is_merge = if let Some(ref latest) = latest_activity {
-                    let mut merge = should_merge_contiguous_activity(
-                        app_changed,
-                        &active_window.app_name,
-                        current_timestamp,
-                        latest.timestamp,
-                    );
+                let is_merge = !screenshots_enabled
+                    && if let Some(ref latest) = latest_activity {
+                        let mut merge = should_merge_contiguous_activity(
+                            app_changed,
+                            &active_window.app_name,
+                            current_timestamp,
+                            latest.timestamp,
+                        );
 
-                    // 如果由于某种原因 browser_url 获取失败，但它确实是一个浏览器
-                    // 我们必须更严格地判断合并条件，否则不同标签页的切换会被错误合并。
-                    if merge
-                        && active_window.browser_url.is_none()
-                        && work_review_core::categorize::is_browser_app(&active_window.app_name)
-                        && (latest.window_title != active_window.window_title
-                            || latest.browser_url.is_some())
-                    {
-                        merge = false;
-                    }
+                        // 如果由于某种原因 browser_url 获取失败，但它确实是一个浏览器
+                        // 我们必须更严格地判断合并条件，否则不同标签页的切换会被错误合并。
+                        if merge
+                            && active_window.browser_url.is_none()
+                            && work_review_core::categorize::is_browser_app(&active_window.app_name)
+                            && (latest.window_title != active_window.window_title
+                                || latest.browser_url.is_some())
+                        {
+                            merge = false;
+                        }
 
-                    merge
-                } else {
-                    false
-                };
+                        merge
+                    } else {
+                        false
+                    };
 
                 // 新建与合并共用 OCR 冷却，窗口切换仍保留截图。
                 // ponytail: 冷却期内的短活动可能没有 OCR；需要逐条索引时再加有界后台队列。
@@ -3327,6 +3338,11 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                             }
                             Err(e) => {
                                 log::error!("截屏失败: {e}");
+                                if let Ok(mut guard) = state.lock() {
+                                    guard.is_paused = true;
+                                    grit::capture_failed(&guard.data_dir, &e.to_string());
+                                }
+                                emit_recording_state_changed(&app);
                                 None
                             }
                         }
@@ -4134,39 +4150,6 @@ async fn entity_classify_task(state: Arc<Mutex<AppState>>) {
     }
 }
 
-/// 存储清理周期任务：保留天数与容量上限此前只在启动时执行一次,
-/// 应用常驻数周就完全不生效——这里每 6 小时补跑一次。
-/// 配置损坏(fail-safe)时与启动路径一致,跳过清理以保护历史数据。
-async fn storage_cleanup_task(state: Arc<Mutex<AppState>>) {
-    const SWEEP_INTERVAL_SECS: u64 = 6 * 60 * 60;
-
-    loop {
-        // 启动清理已在 main 里执行过,首轮直接等一个周期
-        tokio::time::sleep(tokio::time::Duration::from_secs(SWEEP_INTERVAL_SECS)).await;
-
-        let (data_dir, database, storage_config, allowed) = {
-            let guard = state.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                guard.data_dir.clone(),
-                guard.database.clone(),
-                guard.config.storage.clone(),
-                should_run_startup_cleanup(guard.config_load_status),
-            )
-        };
-        if !allowed {
-            continue;
-        }
-
-        // 用独立实例在阻塞线程执行,避免清理期间占用 AppState 锁阻塞采集循环
-        let manager = StorageManager::new(&data_dir, storage_config);
-        match tokio::task::spawn_blocking(move || manager.cleanup(&database)).await {
-            Ok(Ok(_)) => log::debug!("周期存储清理完成"),
-            Ok(Err(e)) => log::warn!("周期存储清理失败: {e}"),
-            Err(e) => log::warn!("周期存储清理任务异常: {e}"),
-        }
-    }
-}
-
 /// Linux: 注入 WebKit/Wayland 兼容性环境变量，规避 webkit2gtk 在 Wayland（尤其
 /// KDE Plasma / NVIDIA）下启动即崩的问题（"Error 71 (Protocol error) dispatching
 /// to Wayland display"，上游 Tauri #10702 / GTK WebKitGTK）。必须在 GTK/WebKit
@@ -4241,6 +4224,10 @@ async fn main() {
     }
     #[allow(unused_mut)]
     let mut config = load_result.config;
+    config.screenshot_interval = 300;
+    if let Err(e) = grit::recover(&data_dir) {
+        log::error!("Grit recovery: {e}");
+    }
 
     // 清理历史遗留的钥匙串占位符（该机制已移除）
     clear_legacy_keychain_placeholders(&mut config);
@@ -4410,7 +4397,6 @@ async fn main() {
 
     // 构建 Tauri 应用
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -4747,9 +4733,9 @@ async fn main() {
                 remote_upload_backfill_task(state_clone4).await;
             });
 
-            // 启动存储清理周期任务（每 6 小时，保留策略不再只在启动时生效一次）
+            // Archive completed days hourly; delete only after verification.
             tauri::async_runtime::spawn(async move {
-                storage_cleanup_task(state_clone5).await;
+                grit::archive_task(state_clone5).await;
             });
 
             // 启动实体分类学习任务（每 30 分钟，自动归类未知应用/域名并回溯修正）
@@ -4766,6 +4752,18 @@ async fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            grit::grit_status,
+            grit::grit_save_settings,
+            grit::grit_save_credentials,
+            grit::grit_sync_spiris,
+            grit::grit_archive,
+            grit::grit_generate,
+            grit::grit_get_report,
+            grit::grit_save_draft,
+            grit::grit_submit,
+            grit::grit_reconcile,
+            grit::grit_cancel,
+            grit::grit_dismiss,
             autostart::enable_autostart,
             autostart::disable_autostart,
             autostart::is_autostart_enabled,

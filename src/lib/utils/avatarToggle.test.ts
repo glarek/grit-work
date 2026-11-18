@@ -1,3 +1,5 @@
+import { setLocale } from '../i18n/index.ts';
+setLocale('zh-CN');
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
