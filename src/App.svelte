@@ -337,7 +337,8 @@
   }
 
   const routes = {
-    '/': wrap({ asyncComponent: () => import('./routes/Overview.svelte') }),
+    '/': wrap({ asyncComponent: () => import('./routes/grit/GritWork.svelte') }),
+    '/overview': wrap({ asyncComponent: () => import('./routes/Overview.svelte') }),
     '/timeline': wrap({ asyncComponent: () => import('./routes/timeline/Timeline.svelte') }),
     '/timeline/summary/:date': wrap({ asyncComponent: () => import('./routes/timeline/Summary.svelte') }),
     '/timeline/summary': wrap({ asyncComponent: () => import('./routes/timeline/Summary.svelte') }),
