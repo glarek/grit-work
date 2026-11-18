@@ -2,7 +2,7 @@
 
 ![Grit Works rapportvy med syntetiskt testunderlag](docs/grit/report.png)
 
-Grit Work är en fork av [Work Review](https://github.com/wm94i/Work-Review) för granskbara tidrapporter i **Spiris Tid**. Appen behåller originalets aktivitetsinsamling och lägger till lokal femminutersinsamling, verifierat dygnsarkiv och rapportutkast via inloggade AI-CLI:er.
+Grit Work är en fork av [Work Review](https://github.com/wm94i/Work-Review) för granskbara tidrapporter i **Spiris Tid**. Appen behåller originalets aktivitetsinsamling och lägger till lokal skärmbildsinsamling med valbart intervall, verifierat dygnsarkiv och rapportutkast via inloggade AI-CLI:er.
 
 ## Kom igång
 
@@ -13,7 +13,9 @@ Grit Work är en fork av [Work Review](https://github.com/wm94i/Work-Review) fö
 5. Installera och logga in i vald CLI separat. Förvalda, bildtestade modeller är Codex `gpt-6.2-sol`, Grok `grok-4.7-build-fast` och agy `gemini-4-hydrogen-medium`. Modellnamnet kan ändras. CLI-abonnemangets tillgänglighet och kvot gäller; Grit behöver ingen AI-API-nyckel.
 6. Nästa dag visar Grit frågan om gårdagens rapport. Starta genereringen, granska varje rad och välj rätt projekt. Spara utkastet och bekräfta sedan överföringen till Spiris.
 
-**Inspelning måste vara på och datorn vaken.** Paus, låst/ledig dator, integritetsfilter och saknade skärmbehörigheter kan ge luckor. En skärmbild sparas högst en gång per fem minuter medan insamlingen är aktiv; aktivitetsloggar registrerar även programbyten. Fel i skärminsamlingen pausar inspelningen och visas i appen.
+**Inspelning måste vara på och datorn vaken.** Paus, låst/ledig dator, integritetsfilter och saknade skärmbehörigheter kan ge luckor. Under **Skärmbilder & lagring** väljer du intervall från 30 sekunder till 60 minuter (standard fem minuter), aktiv skärm eller alla skärmar, JPEG-kvalitet och bildbredd. En skärmbild sparas högst en gång per valt intervall medan insamlingen är aktiv; aktivitetsloggar registrerar även programbyten. Fel i skärminsamlingen pausar inspelningen och visas i appen.
+
+Lagringsuppskattningen visar ett grovt JPEG-spann per dag och 30 dagar utifrån skärmar, intervall, kvalitet och bildstorlek. Loggar tillkommer. Antalet timmar påverkar bara kalkylen. Alla skärmar sparas tillsammans i en bild; större maxbredd kan behövas för läsbar text. På Hyprland hanteras negativa skärmpositioner, blandad skalning och roterade skärmar. Om aktiv skärm inte kan identifieras på Wayland avbryts fångsten i stället för att samla in hela skrivbordet.
 
 ## Underlag och arkiv
 
@@ -26,7 +28,7 @@ Arkivplatsen låses efter första arkiverade dygnet; flytt av befintligt arkiv s
 ## Rapporternas skydd
 
 - Agenten får bilder, aktivitetsloggar och projektregister, aldrig Spiris-hemligheten. Underlaget kan innehålla känslig skärminformation och skickas till vald AI-leverantör när användaren startar rapportjobbet.
-- Jobben körs med tidsgräns, avbrytning och begränsad svarsstorlek. Dygnet delas i tvåtimmarsintervall; mer än 64 bilder i ett intervall ger ett tydligt fel i stället för tyst trunkering.
+- Jobben körs med tidsgräns, avbrytning och begränsad svarsstorlek. Dygnet delas i tvåtimmarsintervall och vid behov mindre delar med högst 48 olika bilder, utan att tappa loggar eller bilder. Tätare insamling kan kräva längre tidsgräns för rapportjobbet.
 - CLI-inställningar begränsar verktygen. Codex får bilder direkt, Grok måste anropa bildläsaren, agy läser arbetskatalogens bilder. Detta är inte en generell säkerhetsisolering från en komprometterad CLI.
 - Backend validerar schemastruktur, verkliga underlagsreferenser, tidsgränser, överlapp och att minuterna ryms inom registrerad tid. Alla AI-rader kräver granskning.
 - Före överföring hämtas projektregistret på nytt och projektets status och användarens medlemskap kontrolleras. Ändrade projektnamn eller nummer kräver ny granskning.
@@ -50,6 +52,8 @@ npm run tauri:build -- --bundles deb
 På Arch/Omarchy kan den färdigbyggda binären paketeras med `cd packaging/arch && makepkg`; installera paketet med `sudo pacman -U grit-work-*.pkg.tar.zst`. Det ger appen en post i programstartaren. Debian-paketet hamnar under `target/release/bundle/deb/`.
 
 Kör `npm run dev -- --host 127.0.0.1 --port 5182`, sedan `node scripts/test-grit-ui.mjs` för webbläsartestet med syntetiskt underlag. `CHROMIUM_PATH` och `GRIT_TEST_URL` kan sättas. Testet kontrollerar att Spiris-anropet inte sker före bekräftelsen och tar bilder i systemets temporärkatalog.
+
+Typsnitten Figtree och JetBrains Mono följer med appen och fungerar utan nätanslutning. Med utvecklingsservern igång skapar `node scripts/export-grit-review.mjs` en sexsidig gransknings-PDF och separata gränssnittsurklipp i `all-artifacts/interface-review/`, enbart med syntetisk testdata.
 
 CLI-bildtestet körs med `cargo run -p work-review --example grit-agent-check -- PROVIDER MODEL IMAGE`, där den syntetiska bilden ska innehålla `SAPPHIRE-729`. Använd Herdr-panel för agentkörningar. `spiris-check` är ett separat läsdiagnostikverktyg som använder nyckellagret; det skickar aldrig tid.
 

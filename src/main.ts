@@ -1,3 +1,5 @@
+import '@fontsource-variable/figtree/wght.css';
+import '@fontsource-variable/jetbrains-mono/wght.css';
 import './app.css';
 import App from './App.svelte';
 

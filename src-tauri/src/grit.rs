@@ -117,8 +117,66 @@ struct Credentials {
     secret: String,
     static_token: String,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureSettings {
+    interval_seconds: u64,
+    display_mode: work_review_core::config::ScreenshotDisplayMode,
+    jpeg_quality: u8,
+    max_image_width: u32,
+    width_mode: work_review_core::config::ScreenshotWidthMode,
+}
+impl CaptureSettings {
+    fn from_config(c: &work_review_core::config::AppConfig) -> Self {
+        Self {
+            interval_seconds: c.screenshot_interval,
+            display_mode: c.storage.screenshot_display_mode,
+            jpeg_quality: c.storage.jpeg_quality,
+            max_image_width: c.storage.max_image_width,
+            width_mode: c.storage.screenshot_width_mode,
+        }
+    }
+    fn validate(&self) -> Result<(), String> {
+        if !(30..=3600).contains(&self.interval_seconds) {
+            return Err("Välj ett intervall mellan 30 och 3 600 sekunder.".into());
+        }
+        if !(30..=95).contains(&self.jpeg_quality) || !(800..=16384).contains(&self.max_image_width)
+        {
+            return Err("Bildkvalitet måste vara 30–95 och maxbredd 800–16 384 pixlar.".into());
+        }
+        Ok(())
+    }
+}
+#[derive(Serialize)]
+struct CaptureMonitor {
+    name: String,
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    scale_factor: f64,
+}
+#[tauri::command]
+pub async fn grit_save_capture_settings(
+    settings: CaptureSettings,
+    app: tauri::AppHandle,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let _op = Operation::start()?;
+    settings.validate()?;
+    let mut config = state.lock().map_err(error)?.config.clone();
+    config.screenshot_interval = settings.interval_seconds;
+    config.storage.screenshot_display_mode = settings.display_mode;
+    config.storage.jpeg_quality = settings.jpeg_quality;
+    config.storage.max_image_width = settings.max_image_width;
+    config.storage.screenshot_width_mode = settings.width_mode;
+    crate::commands::persist_app_config(config, app, state.inner()).map_err(error)
+}
+
 #[derive(Serialize)]
 pub struct Status {
+    capture: CaptureSettings,
+    monitors: Vec<CaptureMonitor>,
     settings: Settings,
     local_dir: String,
     yesterday: String,
@@ -419,7 +477,24 @@ fn status(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<Status, String> {
             pending_dates.push(date);
         }
     }
+    let capture = CaptureSettings::from_config(&state.lock().map_err(error)?.config);
+    let monitors = crate::APP_HANDLE
+        .get()
+        .and_then(|app| app.available_monitors().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| CaptureMonitor {
+            name: m.name().cloned().unwrap_or_else(|| "Skärm".into()),
+            width: m.size().width,
+            height: m.size().height,
+            x: m.position().x,
+            y: m.position().y,
+            scale_factor: m.scale_factor(),
+        })
+        .collect();
     Ok(Status {
+        capture,
+        monitors,
         settings,
         local_dir: dir.display().to_string(),
         report: report(&db, &yesterday)?,
@@ -1154,6 +1229,22 @@ pub fn capture_resumed(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_settings_validate_and_survive_config_normalization() {
+        let mut config = work_review_core::config::AppConfig::default();
+        for interval in [30, 60, 300, 1800, 3600] {
+            config.screenshot_interval = interval;
+            config.normalize();
+            let settings = CaptureSettings::from_config(&config);
+            assert_eq!(settings.interval_seconds, interval);
+            assert!(settings.validate().is_ok());
+        }
+        for interval in [0, 29, 3601, u64::MAX] {
+            let mut settings = CaptureSettings::from_config(&config);
+            settings.interval_seconds = interval;
+            assert!(settings.validate().is_err());
+        }
+    }
     fn fixture() -> (Report, Catalog, Value) {
         let date = "2026-01-12";
         let start = Local

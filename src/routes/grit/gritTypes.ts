@@ -1,3 +1,4 @@
+import { normalizeCapture, normalizeMonitors, type CaptureSettings, type CaptureMonitor } from './captureSettings.ts';
 export type GritProvider = 'codex' | 'grok' | 'agy';
 
 export type GritReportStatus =
@@ -57,6 +58,8 @@ export interface GritReport {
 }
 
 export interface GritStatus {
+  capture: CaptureSettings;
+  monitors: CaptureMonitor[];
   settings: GritSettings;
   local_dir: string;
   yesterday: string;
@@ -275,6 +278,8 @@ export function normalizeGritReport(raw: unknown): GritReport | null {
 export function normalizeGritStatus(raw: unknown): GritStatus {
   if (!isRecord(raw)) {
     return {
+      capture: normalizeCapture(null),
+      monitors: [],
       settings: createDefaultSettings(),
       local_dir: '',
       yesterday: getYesterdayIsoDate(),
@@ -291,6 +296,8 @@ export function normalizeGritStatus(raw: unknown): GritStatus {
   }
 
   return {
+    capture: normalizeCapture(raw.capture),
+    monitors: normalizeMonitors(raw.monitors),
     settings: normalizeGritSettings(raw.settings),
     local_dir: toStringOr(raw.local_dir, ''),
     yesterday: toStringOr(raw.yesterday, getYesterdayIsoDate()),

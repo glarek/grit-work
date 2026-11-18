@@ -200,6 +200,8 @@ fn run(
         }
     }
 }
+const MAX_BATCH_IMAGES: usize = 48;
+
 fn image_paths(activities: &[Value]) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     activities
@@ -209,26 +211,41 @@ fn image_paths(activities: &[Value]) -> Vec<PathBuf> {
         .map(PathBuf::from)
         .collect()
 }
-pub fn run_agent(
-    provider: &str,
-    model: &str,
-    workspace: &Path,
-    activities: &Value,
-    projects: &Value,
-    timeout_seconds: u64,
-    cancel: Arc<AtomicBool>,
-) -> Result<Value, String> {
-    if !["codex", "grok", "agy"].contains(&provider) {
-        return Err("Okänd agent.".into());
+
+fn split_bucket_by_images(logs: Vec<Value>, max_images: usize) -> Vec<Vec<Value>> {
+    let mut sub_batches = Vec::new();
+    let mut current_logs = Vec::new();
+    let mut current_images = HashSet::new();
+
+    for log in logs {
+        let img = log["screenshot_path"]
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
+
+        if let Some(path) = img {
+            if !current_images.contains(&path) {
+                if current_images.len() >= max_images && !current_logs.is_empty() {
+                    sub_batches.push(std::mem::take(&mut current_logs));
+                    current_images.clear();
+                }
+                current_images.insert(path);
+            }
+        }
+
+        current_logs.push(log);
     }
-    let all = activities.as_array().ok_or("Ogiltigt aktivitetsunderlag")?;
-    let every_image = image_paths(all);
-    if every_image.is_empty() {
-        return Err("Dygnet saknar bilder. Ingen bildbaserad rapport kan skapas.".into());
+
+    if !current_logs.is_empty() {
+        sub_batches.push(current_logs);
     }
-    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+
+    sub_batches
+}
+
+fn build_batches(all: &[Value]) -> Result<Vec<Vec<Value>>, String> {
     // Split long days into two-hour windows, preserving all logs and pictures.
-    let mut batches: BTreeMap<i64, Vec<Value>> = BTreeMap::new();
+    let mut buckets: BTreeMap<i64, Vec<Value>> = BTreeMap::new();
     for a in all {
         let end = a["timestamp"].as_i64().ok_or("Logg saknar tidsstämpel")?;
         let duration = a["duration"]
@@ -248,12 +265,39 @@ pub fn run_agent(
             }
             clipped["timestamp"] = json!(hi);
             clipped["duration"] = json!(hi - lo);
-            batches.entry(bucket).or_default().push(clipped);
+            buckets.entry(bucket).or_default().push(clipped);
         }
     }
+
+    let mut sub_batches = Vec::new();
+    for (_bucket, logs) in buckets {
+        sub_batches.extend(split_bucket_by_images(logs, MAX_BATCH_IMAGES));
+    }
+    Ok(sub_batches)
+}
+
+pub fn run_agent(
+    provider: &str,
+    model: &str,
+    workspace: &Path,
+    activities: &Value,
+    projects: &Value,
+    timeout_seconds: u64,
+    cancel: Arc<AtomicBool>,
+) -> Result<Value, String> {
+    if !["codex", "grok", "agy"].contains(&provider) {
+        return Err("Okänd agent.".into());
+    }
+    let all = activities.as_array().ok_or("Ogiltigt aktivitetsunderlag")?;
+    let every_image = image_paths(all);
+    if every_image.is_empty() {
+        return Err("Dygnet saknar bilder. Ingen bildbaserad rapport kan skapas.".into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    let batches = build_batches(all)?;
     let mut rows = vec![];
     let mut summaries = vec![];
-    for (index, (_bucket, logs)) in batches.into_iter().enumerate() {
+    for (index, logs) in batches.into_iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
             return Err("Rapportjobbet avbröts.".into());
         }
@@ -263,10 +307,9 @@ pub fn run_agent(
         if paths.is_empty() {
             paths.push(every_image[0].clone());
         }
-        if paths.len() > 64 {
+        if paths.len() > MAX_BATCH_IMAGES {
             return Err(
-                "Fler än 64 bilder i ett tvåtimmarsintervall. Underlaget har inte trunkerats."
-                    .into(),
+                "Fler än 48 bilder i ett underintervall. Underlaget har inte trunkerats.".into(),
             );
         }
         let mut attached = vec![];
@@ -415,5 +458,108 @@ mod tests {
         assert!(parse_output(r#"{"summary":"ok","rows":[]}"#).is_ok());
         assert!(parse_output(r#"{"result":"{\"summary\":\"ok\",\"rows\":[]}"}"#).is_ok());
         assert!(parse_output(r#"{"result":"ran successfully"}"#).is_err());
+    }
+    #[test]
+    fn sub_batches_preserve_all_logs_and_images_under_48_limit() {
+        let mut activities = Vec::new();
+        // 130 30-second intervals inside the first 2-hour bucket [0, 7200),
+        // plus some logs without screenshots.
+        for i in 0..130_i64 {
+            let ts = (i + 1) * 30;
+            activities.push(json!({
+                "id": i + 1,
+                "timestamp": ts,
+                "duration": 30,
+                "screenshot_path": format!("/shots/shot-{i}.png")
+            }));
+            if i % 20 == 0 {
+                activities.push(json!({
+                    "id": 1000 + i,
+                    "timestamp": ts,
+                    "duration": 10,
+                    "screenshot_path": ""
+                }));
+            }
+        }
+        // Activity spanning the 7200 boundary: [7150, 7260] -> clipped to [7150, 7200] (50s) and [7200, 7260] (60s).
+        activities.push(json!({
+            "id": 9999,
+            "timestamp": 7260,
+            "duration": 110,
+            "screenshot_path": "/shots/boundary.png"
+        }));
+
+        let expected_duration: i64 = activities
+            .iter()
+            .map(|a| a["duration"].as_i64().unwrap())
+            .sum();
+        let expected_images: HashSet<PathBuf> = image_paths(&activities).into_iter().collect();
+
+        let batches = build_batches(&activities).expect("batching should succeed");
+        assert_eq!(batches.len(), 4);
+
+        let mut actual_duration = 0_i64;
+        let mut actual_images = HashSet::new();
+        let mut total_logs = 0_usize;
+        for batch in &batches {
+            let batch_imgs = image_paths(batch);
+            assert!(
+                batch_imgs.len() <= MAX_BATCH_IMAGES,
+                "batch exceeded 48 images: {}",
+                batch_imgs.len()
+            );
+            actual_images.extend(batch_imgs);
+            for log in batch {
+                actual_duration += log["duration"].as_i64().unwrap();
+                total_logs += 1;
+            }
+        }
+
+        // 130 + 7 empty-screenshot logs + 1 boundary log split into 2 = 139 logs
+        assert_eq!(total_logs, 139);
+        assert_eq!(actual_duration, expected_duration);
+        assert_eq!(actual_images, expected_images);
+    }
+    #[test]
+    fn duplicate_screenshot_paths_do_not_inflate_limit_and_stay_together() {
+        let mut activities = Vec::new();
+        // 48 distinct images repeated multiple times (96 logs total) within one bucket.
+        for round in 0..2_i64 {
+            for i in 0..48_i64 {
+                activities.push(json!({
+                    "id": round * 48 + i + 1,
+                    "timestamp": (round * 48 + i + 1) * 30,
+                    "duration": 30,
+                    "screenshot_path": format!("/shots/dup-{i}.png")
+                }));
+            }
+        }
+        let single_batch = build_batches(&activities).expect("batching should succeed");
+        assert_eq!(single_batch.len(), 1);
+        assert_eq!(single_batch[0].len(), 96);
+        assert_eq!(image_paths(&single_batch[0]).len(), 48);
+
+        // Trailing duplicate of #47 stays in batch 0; new #48 starts batch 1.
+        activities.push(json!({
+            "id": 200,
+            "timestamp": 3000,
+            "duration": 30,
+            "screenshot_path": "/shots/dup-47.png"
+        }));
+        activities.push(json!({
+            "id": 201,
+            "timestamp": 3030,
+            "duration": 30,
+            "screenshot_path": "/shots/new-48.png"
+        }));
+
+        let split_batches = build_batches(&activities).expect("batching should succeed");
+        assert_eq!(split_batches.len(), 2);
+        assert_eq!(split_batches[0].len(), 97);
+        assert_eq!(split_batches[0].last().unwrap()["id"], 200);
+        assert_eq!(image_paths(&split_batches[0]).len(), 48);
+        assert_eq!(split_batches[1].len(), 1);
+        assert_eq!(split_batches[1][0]["id"], 201);
+        assert_eq!(image_paths(&split_batches[1]).len(), 1);
     }
 }

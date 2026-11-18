@@ -10,6 +10,8 @@ use image::RgbaImage;
 use image::{imageops::FilterType, ColorType};
 #[cfg(any(target_os = "linux", test))]
 use regex::Regex;
+#[cfg(any(target_os = "linux", test))]
+use serde_json::Value;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -719,7 +721,7 @@ impl ScreenshotService {
         })
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", test))]
     fn persist_dynamic_image_capture(
         &self,
         dynamic_image: DynamicImage,
@@ -1030,16 +1032,11 @@ impl ScreenshotService {
         active_window: Option<&crate::monitor::ActiveWindow>,
         session: LinuxDesktopSession,
         desktop_environment: LinuxDesktopEnvironment,
-    ) {
-        if should_capture_all_displays(&self.config) {
-            return;
+    ) -> Result<()> {
+        if should_capture_all_displays(&self.config) || session == LinuxDesktopSession::Wayland {
+            return Ok(());
         }
-
-        if let Err(error) =
-            crop_linux_capture_to_rect(temp_png, active_window, session, desktop_environment)
-        {
-            log::warn!("Linux 按窗口边界裁剪截图失败，回退整桌面截图: {error}");
-        }
+        crop_linux_capture_to_rect(temp_png, active_window, session, desktop_environment)
     }
 
     #[cfg(target_os = "linux")]
@@ -1098,7 +1095,7 @@ impl ScreenshotService {
             active_window,
             LinuxDesktopSession::X11,
             desktop_environment,
-        );
+        )?;
 
         self.persist_existing_png_capture(&temp_png, screenshots_dir, time_str, timestamp)
     }
@@ -1112,6 +1109,29 @@ impl ScreenshotService {
         active_window: Option<&crate::monitor::ActiveWindow>,
         desktop_environment: LinuxDesktopEnvironment,
     ) -> Result<ScreenshotResult> {
+        if desktop_environment == LinuxDesktopEnvironment::Hyprland {
+            match self.try_capture_hyprland(screenshots_dir, time_str, timestamp, active_window) {
+                Ok(Some(result)) => return Ok(result),
+                Ok(None) => {
+                    if !wayland_whole_desktop_fallback_allowed(should_capture_all_displays(
+                        &self.config,
+                    )) {
+                        return Err(AppError::Screenshot(
+                            "Hyprlands skärmlista kunde inte läsas. Ingen bild sparades i läget aktiv skärm."
+                                .to_string(),
+                        ));
+                    }
+                    log::warn!("hyprctl 监视器列表不可用，全屏模式回退整桌面 Wayland 截图");
+                }
+                Err(error) => return Err(error),
+            }
+        } else if !wayland_whole_desktop_fallback_allowed(should_capture_all_displays(&self.config))
+        {
+            return Err(AppError::Screenshot(
+                "Aktiv skärm kan inte identifieras i denna Wayland-session. Välj Alla skärmar för att samla in hela skrivbordet.".to_string(),
+            ));
+        }
+
         let temp_png = screenshots_dir.join(format!("{time_str}_temp.png"));
         let _temp_guard = TemporaryCaptureFile::new(&temp_png);
         let output_path = temp_png.to_string_lossy().to_string();
@@ -1160,9 +1180,76 @@ impl ScreenshotService {
             active_window,
             LinuxDesktopSession::Wayland,
             desktop_environment,
-        );
+        )?;
 
         self.persist_existing_png_capture(&temp_png, screenshots_dir, time_str, timestamp)
+    }
+
+    /// Hyprland：用 `hyprctl -j monitors` 的逻辑坐标逐屏 grim。
+    /// 活动模式截窗口中心所在监视器（没有坐标时用 focused），全屏模式逐个采集后按逻辑布局拼接。
+    /// 任一已启用监视器采集失败则返回错误，不悄悄丢屏。
+    /// `hyprctl` 不可用时返回 None。调用方只允许全屏模式继续整桌面采集。
+    #[cfg(target_os = "linux")]
+    fn try_capture_hyprland(
+        &self,
+        screenshots_dir: &Path,
+        time_str: &str,
+        timestamp: i64,
+        active_window: Option<&crate::monitor::ActiveWindow>,
+    ) -> Result<Option<ScreenshotResult>> {
+        let json = match run_hyprctl_monitors_json() {
+            Ok(json) => json,
+            Err(error) => {
+                log::warn!("读取 hyprctl monitors 失败: {error}");
+                return Ok(None);
+            }
+        };
+        let parsed = parse_hypr_monitors(&json).map_err(|error| {
+            AppError::Screenshot(format!("解析 hyprctl monitors 失败: {error}"))
+        })?;
+        let monitors = hypr_monitors_for_capture(&parsed);
+        if monitors.is_empty() {
+            return Err(AppError::Screenshot(
+                "hyprctl 没有可采集的已启用监视器".to_string(),
+            ));
+        }
+
+        if should_capture_all_displays(&self.config) {
+            let mut captures = Vec::with_capacity(monitors.len());
+            for (index, monitor) in monitors.iter().enumerate() {
+                let path = screenshots_dir.join(format!("{time_str}_hypr_{index}.png"));
+                let _guard = TemporaryCaptureFile::new(&path);
+                grim_capture_monitor(monitor, &path)?;
+                let image = image::open(&path).map_err(|error| {
+                    AppError::Screenshot(format!(
+                        "读取监视器 {} 截图失败: {error}",
+                        monitor.label()
+                    ))
+                })?;
+                captures.push((monitor.clone(), image));
+            }
+            let composed = compose_hypr_monitors(&captures).map_err(AppError::Screenshot)?;
+            return Ok(Some(self.persist_dynamic_image_capture(
+                composed,
+                screenshots_dir,
+                time_str,
+                timestamp,
+            )?));
+        }
+
+        let point = capture_target_point(active_window);
+        let index = select_active_hypr_monitor(&monitors, point)
+            .ok_or_else(|| AppError::Screenshot("没有可选的 Hyprland 活动监视器".to_string()))?;
+        let monitor = &monitors[index];
+        let temp_png = screenshots_dir.join(format!("{time_str}_temp.png"));
+        let _temp_guard = TemporaryCaptureFile::new(&temp_png);
+        grim_capture_monitor(monitor, &temp_png)?;
+        Ok(Some(self.persist_existing_png_capture(
+            &temp_png,
+            screenshots_dir,
+            time_str,
+            timestamp,
+        )?))
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -1245,19 +1332,6 @@ fn capture_target_point(
 type LinuxCaptureRect = (i32, i32, u32, u32);
 
 #[cfg(any(target_os = "linux", test))]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn linux_window_rect(
-    active_window: Option<&crate::monitor::ActiveWindow>,
-) -> Option<LinuxCaptureRect> {
-    let bounds = active_window?.window_bounds?;
-    if bounds.width == 0 || bounds.height == 0 {
-        return None;
-    }
-
-    Some((bounds.x, bounds.y, bounds.width, bounds.height))
-}
-
-#[cfg(any(target_os = "linux", test))]
 fn parse_xrandr_active_monitor_rects(output: &str) -> Vec<LinuxCaptureRect> {
     let regex =
         Regex::new(r"(\d+)/\d+x(\d+)/\d+([+-]\d+)([+-]\d+)").expect("xrandr regex 应可编译");
@@ -1276,9 +1350,10 @@ fn parse_xrandr_active_monitor_rects(output: &str) -> Vec<LinuxCaptureRect> {
 
 #[cfg(target_os = "linux")]
 fn run_xrandr_active_monitors() -> Option<Vec<LinuxCaptureRect>> {
-    let output = run_screenshot_command_with_timeout(
+    let output = run_bounded_command_with_output(
         Command::new("xrandr").arg("--listactivemonitors"),
         "xrandr",
+        SCREENSHOT_COMMAND_TIMEOUT,
     )
     .ok()?;
     if !output.status.success() {
@@ -1485,8 +1560,6 @@ fn linux_capture_target_rect(
     active_window: Option<&crate::monitor::ActiveWindow>,
     session: LinuxDesktopSession,
 ) -> Option<LinuxCaptureRect> {
-    let window_rect = linux_window_rect(active_window)?;
-
     if session == LinuxDesktopSession::X11 {
         let center = capture_target_point(active_window)?;
         if let Some(monitor_rect) = run_xrandr_active_monitors().and_then(|rects| {
@@ -1496,9 +1569,326 @@ fn linux_capture_target_rect(
         }) {
             return Some(monitor_rect);
         }
+        return None;
     }
 
-    Some(window_rect)
+    // Wayland 窗口矩形不是监视器矩形。没有监视器几何时不裁剪。
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, PartialEq)]
+struct HyprMonitor {
+    name: String,
+    x: i32,
+    y: i32,
+    pixel_width: u32,
+    pixel_height: u32,
+    scale: f64,
+    /// wl_output transform 0–7。hyprctl 的 width/height 是旋转前的模式像素。
+    transform: i32,
+    focused: bool,
+    disabled: bool,
+    mirrored: bool,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl HyprMonitor {
+    fn label(&self) -> String {
+        if self.name.is_empty() {
+            format!("{},{}", self.x, self.y)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// `hyprctl` width/height 是未变换的模式分辨率。90° 与 270°（含翻转）要交换宽高，
+    /// 再除以 scale 得到 grim 使用的逻辑尺寸。见 wl_output transform 与 Hyprland `m_transform % 2`。
+    fn logical_size(&self) -> std::result::Result<(u32, u32), String> {
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err(format!("监视器 {} 的 scale 无效", self.label()));
+        }
+        let (pixel_width, pixel_height) =
+            transformed_mode_pixels(self.pixel_width, self.pixel_height, self.transform)?;
+        let width = (pixel_width as f64 / self.scale).round();
+        let height = (pixel_height as f64 / self.scale).round();
+        if !(1.0..=u32::MAX as f64).contains(&width) || !(1.0..=u32::MAX as f64).contains(&height) {
+            return Err(format!("监视器 {} 的逻辑尺寸无效", self.label()));
+        }
+        Ok((width as u32, height as u32))
+    }
+
+    fn grim_geometry(&self) -> std::result::Result<String, String> {
+        let (width, height) = self.logical_size()?;
+        Ok(format!("{},{} {}x{}", self.x, self.y, width, height))
+    }
+
+    fn contains_logical_point(&self, point: (i32, i32)) -> bool {
+        let Ok((width, height)) = self.logical_size() else {
+            return false;
+        };
+        rect_contains_point((self.x, self.y, width, height), point)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn json_i32(
+    row: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> std::result::Result<i32, String> {
+    row.get(key)
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| format!("监视器 {label} 缺少整数 {key}"))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn json_u32(
+    row: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> std::result::Result<u32, String> {
+    row.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| format!("监视器 {label} 缺少整数 {key}"))
+}
+
+/// 解析 `hyprctl -j monitors`。缺字段或非法缩放视为失败，避免悄悄丢掉一台显示器。
+#[cfg(any(target_os = "linux", test))]
+fn parse_hypr_monitors(json: &str) -> std::result::Result<Vec<HyprMonitor>, String> {
+    let value: Value =
+        serde_json::from_str(json).map_err(|error| format!("hyprctl JSON: {error}"))?;
+    let rows = value.as_array().ok_or("hyprctl monitors 不是数组")?;
+    let mut monitors = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let object = row
+            .as_object()
+            .ok_or_else(|| format!("监视器 #{index} 不是对象"))?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let label = if name.is_empty() {
+            format!("#{index}")
+        } else {
+            name.clone()
+        };
+        let mirror = object
+            .get("mirrorOf")
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        let monitor = HyprMonitor {
+            name,
+            x: json_i32(object, "x", &label)?,
+            y: json_i32(object, "y", &label)?,
+            pixel_width: json_u32(object, "width", &label)?,
+            pixel_height: json_u32(object, "height", &label)?,
+            scale: object
+                .get("scale")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| format!("监视器 {label} 缺少 scale"))?,
+            transform: object
+                .get("transform")
+                .and_then(Value::as_i64)
+                .map(|value| i32::try_from(value).unwrap_or(i32::MAX))
+                .unwrap_or(0),
+            focused: object
+                .get("focused")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            disabled: object
+                .get("disabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            mirrored: !mirror.is_empty() && mirror != "none",
+        };
+        monitor.logical_size()?;
+        monitors.push(monitor);
+    }
+    Ok(monitors)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn hypr_monitors_for_capture(monitors: &[HyprMonitor]) -> Vec<HyprMonitor> {
+    monitors
+        .iter()
+        .filter(|monitor| !monitor.disabled && !monitor.mirrored)
+        .cloned()
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn select_active_hypr_monitor(
+    monitors: &[HyprMonitor],
+    point: Option<(i32, i32)>,
+) -> Option<usize> {
+    if let Some(point) = point {
+        if let Some(index) = monitors
+            .iter()
+            .position(|monitor| monitor.contains_logical_point(point))
+        {
+            return Some(index);
+        }
+    }
+    monitors.iter().position(|monitor| monitor.focused)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn compose_hypr_monitors(
+    captures: &[(HyprMonitor, DynamicImage)],
+) -> std::result::Result<DynamicImage, String> {
+    if captures.is_empty() {
+        return Err("没有可拼接的监视器".to_string());
+    }
+    let origin_x = captures.iter().map(|(monitor, _)| monitor.x).min().unwrap();
+    let origin_y = captures.iter().map(|(monitor, _)| monitor.y).min().unwrap();
+    let mut max_right = 0i32;
+    let mut max_bottom = 0i32;
+    for (monitor, _) in captures {
+        let (width, height) = monitor.logical_size()?;
+        let right = monitor
+            .x
+            .saturating_sub(origin_x)
+            .saturating_add(i32::try_from(width).map_err(|_| "逻辑宽度溢出".to_string())?);
+        let bottom = monitor
+            .y
+            .saturating_sub(origin_y)
+            .saturating_add(i32::try_from(height).map_err(|_| "逻辑高度溢出".to_string())?);
+        max_right = max_right.max(right);
+        max_bottom = max_bottom.max(bottom);
+    }
+    let canvas_width = u32::try_from(max_right).map_err(|_| "拼接宽度无效".to_string())?;
+    let canvas_height = u32::try_from(max_bottom).map_err(|_| "拼接高度无效".to_string())?;
+    let pixel_count = u64::from(canvas_width).saturating_mul(u64::from(canvas_height));
+    if pixel_count > MAX_COMPOSITE_PIXELS {
+        return Err(format!(
+            "拼接像素过多（{pixel_count} > {MAX_COMPOSITE_PIXELS}），已拒绝分配"
+        ));
+    }
+    let mut canvas = image::RgbaImage::new(canvas_width, canvas_height);
+    for (monitor, image) in captures {
+        let (width, height) = monitor.logical_size()?;
+        let resized = image.resize_exact(width, height, FilterType::Nearest);
+        image::imageops::overlay(
+            &mut canvas,
+            &resized,
+            i64::from(monitor.x.saturating_sub(origin_x)),
+            i64::from(monitor.y.saturating_sub(origin_y)),
+        );
+    }
+    Ok(DynamicImage::ImageRgba8(canvas))
+}
+
+#[cfg(target_os = "linux")]
+fn run_bounded_command_with_output(
+    command: &mut Command,
+    context: &str,
+    timeout: Duration,
+) -> Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| AppError::Screenshot(format!("{context} 启动失败: {error}")))?;
+    let stdout_handle = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buffer);
+            buffer
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buffer);
+            buffer
+        })
+    });
+    let started_at = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started_at.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Screenshot(format!(
+                    "{context} 执行超时（>{}ms）",
+                    timeout.as_millis()
+                )));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Screenshot(format!("{context} 等待失败: {error}")));
+            }
+        }
+    };
+    let stdout = stdout_handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn run_hyprctl_monitors_json() -> Result<String> {
+    let output = run_bounded_command_with_output(
+        Command::new("hyprctl").args(["-j", "monitors"]),
+        "hyprctl -j monitors",
+        Duration::from_secs(2),
+    )?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Screenshot(format!(
+            "hyprctl monitors 失败: {}",
+            stderr.trim()
+        )));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| AppError::Screenshot(format!("hyprctl 输出不是 UTF-8: {error}")))
+}
+
+#[cfg(target_os = "linux")]
+fn grim_capture_monitor(monitor: &HyprMonitor, dest: &Path) -> Result<()> {
+    let path = dest.to_string_lossy().to_string();
+    let geometry = monitor.grim_geometry().map_err(AppError::Screenshot)?;
+    let attempts: Vec<Vec<String>> = if monitor.name.is_empty() {
+        vec![vec!["-g".to_string(), geometry.clone(), path.clone()]]
+    } else {
+        vec![
+            vec!["-o".to_string(), monitor.name.clone(), path.clone()],
+            vec!["-g".to_string(), geometry.clone(), path.clone()],
+        ]
+    };
+    let mut last_error = String::new();
+    for args in attempts {
+        if dest.exists() {
+            let _ = std::fs::remove_file(dest);
+        }
+        match run_screenshot_command_with_timeout(Command::new("grim").args(&args), "grim") {
+            Ok(output) if output.status.success() && dest.exists() => return Ok(()),
+            Ok(output) => {
+                last_error = format!("退出码 {}", output.status);
+            }
+            Err(error) => last_error = error.to_string(),
+        }
+    }
+    Err(AppError::Screenshot(format!(
+        "监视器 {} grim 采集失败（{}），已中止以免丢屏",
+        monitor.label(),
+        last_error
+    )))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1537,9 +1927,11 @@ fn crop_linux_capture_to_rect(
     session: LinuxDesktopSession,
     desktop_environment: LinuxDesktopEnvironment,
 ) -> Result<()> {
-    let Some(target_rect) = linux_capture_target_rect(active_window, session) else {
-        return Ok(());
-    };
+    let target_rect = linux_capture_target_rect(active_window, session).ok_or_else(|| {
+        AppError::Screenshot(
+            "Den aktiva skärmen kunde inte identifieras. Ingen skärmbild sparades.".into(),
+        )
+    })?;
 
     let image = image::open(temp_png)
         .map_err(|e| AppError::Screenshot(format!("读取 Linux 截图失败: {e}")))?;
@@ -1547,7 +1939,9 @@ fn crop_linux_capture_to_rect(
     let Some((crop_x, crop_y, crop_width, crop_height)) =
         normalize_linux_crop_rect(virtual_origin, target_rect, image.width(), image.height())
     else {
-        return Ok(());
+        return Err(AppError::Screenshot(
+            "Den aktiva skärmens bildområde är ogiltigt.".into(),
+        ));
     };
 
     let cropped = image.crop_imm(crop_x, crop_y, crop_width, crop_height);
@@ -1559,6 +1953,34 @@ fn crop_linux_capture_to_rect(
 
 fn should_capture_all_displays(config: &ScreenshotConfig) -> bool {
     config.display_mode == ScreenshotDisplayMode::All
+}
+
+/// 活动屏幕模式在无法定位单台显示器时必须失败，不能改成截整个桌面。
+#[cfg(any(target_os = "linux", test))]
+fn wayland_whole_desktop_fallback_allowed(capture_all_displays: bool) -> bool {
+    capture_all_displays
+}
+
+/// 100 million RGBA pixels is 400 MiB before encoder overhead.
+#[cfg(any(target_os = "linux", test))]
+const MAX_COMPOSITE_PIXELS: u64 = 100_000_000;
+
+/// Hyprland stores the untransformed mode in `width`/`height`. Odd wl_output
+/// transforms (90, 270, flipped-90, flipped-270) swap those axes.
+#[cfg(any(target_os = "linux", test))]
+fn transformed_mode_pixels(
+    width: u32,
+    height: u32,
+    transform: i32,
+) -> std::result::Result<(u32, u32), String> {
+    if !(0..=7).contains(&transform) {
+        return Err(format!("监视器 transform {transform} 超出 0–7"));
+    }
+    if transform % 2 == 1 {
+        Ok((height, width))
+    } else {
+        Ok((width, height))
+    }
 }
 
 /// 检测主屏幕宽度（像素）
@@ -1837,8 +2259,10 @@ fn capture_target_hmonitor(
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_target_point, linux_screenshot_support_for_session, normalize_linux_crop_rect,
-        parse_xrandr_active_monitor_rects, should_capture_all_displays, ScreenshotService,
+        capture_target_point, compose_hypr_monitors, hypr_monitors_for_capture,
+        linux_screenshot_support_for_session, normalize_linux_crop_rect, parse_hypr_monitors,
+        parse_xrandr_active_monitor_rects, select_active_hypr_monitor, should_capture_all_displays,
+        ScreenshotService,
     };
     use crate::linux_session::{LinuxDesktopEnvironment, LinuxDesktopSession};
     use crate::monitor::{ActiveWindow, WindowBounds};
@@ -1860,7 +2284,22 @@ mod tests {
         let root = std::env::temp_dir().join(format!("grit-capture-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let service = ScreenshotService::new(&root, &StorageConfig::default());
-        let result = service.capture().expect("capture virtual display");
+        let active_window = ActiveWindow {
+            app_name: "Grit test".into(),
+            window_title: "Synthetic window".into(),
+            browser_url: None,
+            executable_path: None,
+            is_minimized: false,
+            window_bounds: Some(WindowBounds {
+                x: 10,
+                y: 10,
+                width: 100,
+                height: 100,
+            }),
+        };
+        let result = service
+            .capture_for_window(Some(&active_window))
+            .expect("capture active virtual display");
         assert!(result.path.starts_with(&root));
         let image = image::open(&result.path).expect("saved capture must be decodable");
         assert!(image.width() > 0 && image.height() > 0);
@@ -1953,6 +2392,154 @@ Monitors: 2
             parse_xrandr_active_monitor_rects(output),
             vec![(0, 0, 1920, 1080), (1920, 0, 2560, 1440)]
         );
+    }
+
+    #[test]
+    fn hyprland监视器应保留负坐标与混合缩放且不丢可用屏() {
+        let json = r#"
+        [
+          {"name":"DP-1","x":0,"y":0,"width":1920,"height":1080,"scale":1,"focused":false,"disabled":false,"mirrorOf":"none"},
+          {"name":"DP-2","x":-2048,"y":-10,"width":2560,"height":1440,"scale":1.25,"focused":true,"disabled":false,"mirrorOf":"none"},
+          {"name":"DP-3","x":1920,"y":0,"width":1920,"height":1080,"scale":1,"focused":false,"disabled":true,"mirrorOf":"none"},
+          {"name":"DP-4","x":0,"y":1080,"width":1280,"height":720,"scale":1,"focused":false,"disabled":false,"mirrorOf":"DP-1"},
+          {"name":"ODD","x":1920,"y":0,"width":1366,"height":768,"scale":1.25,"focused":false,"disabled":false,"mirrorOf":"none"}
+        ]
+        "#;
+        let parsed = parse_hypr_monitors(json).unwrap();
+        assert_eq!(parsed.len(), 5, "解析阶段不得丢掉禁用或镜像屏");
+        let capture = hypr_monitors_for_capture(&parsed);
+        let names: Vec<_> = capture
+            .iter()
+            .map(|monitor| monitor.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["DP-1", "DP-2", "ODD"]);
+        assert_eq!(capture[1].grim_geometry().unwrap(), "-2048,-10 2048x1152");
+        assert_eq!(capture[2].grim_geometry().unwrap(), "1920,0 1093x614");
+        assert!(
+            parse_hypr_monitors(r#"[{"name":"BAD","x":0,"y":0,"width":100,"height":100}]"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn hyprland活动屏应按窗口中心选择监视器而非窗口矩形() {
+        let json = r#"
+        [
+          {"name":"LEFT","x":-2048,"y":0,"width":2560,"height":1440,"scale":1.25,"focused":false,"disabled":false,"mirrorOf":"none"},
+          {"name":"RIGHT","x":0,"y":0,"width":1920,"height":1080,"scale":1,"focused":true,"disabled":false,"mirrorOf":"none"}
+        ]
+        "#;
+        let monitors = hypr_monitors_for_capture(&parse_hypr_monitors(json).unwrap());
+        let center = capture_target_point(Some(&ActiveWindow {
+            app_name: "editor".to_string(),
+            window_title: "file".to_string(),
+            browser_url: None,
+            executable_path: None,
+            window_bounds: Some(WindowBounds {
+                x: -1800,
+                y: 40,
+                width: 400,
+                height: 300,
+            }),
+            is_minimized: false,
+        }));
+        assert_eq!(center, Some((-1600, 190)));
+        let index = select_active_hypr_monitor(&monitors, center).unwrap();
+        assert_eq!(monitors[index].name, "LEFT");
+        assert_eq!(
+            monitors[index].grim_geometry().unwrap(),
+            "-2048,0 2048x1152"
+        );
+        let focused = select_active_hypr_monitor(&monitors, None).unwrap();
+        assert_eq!(monitors[focused].name, "RIGHT");
+        let outside = select_active_hypr_monitor(&monitors, Some((9000, 9000))).unwrap();
+        assert_eq!(monitors[outside].name, "RIGHT");
+    }
+
+    #[test]
+    fn hyprland全屏拼接应按逻辑坐标对齐() {
+        let left = parse_hypr_monitors(
+            r#"[{"name":"L","x":-2,"y":0,"width":4,"height":2,"scale":2,"focused":false,"disabled":false,"mirrorOf":"none"}]"#,
+        )
+        .unwrap()
+        .remove(0);
+        let right = parse_hypr_monitors(
+            r#"[{"name":"R","x":0,"y":1,"width":2,"height":2,"scale":1,"focused":true,"disabled":false,"mirrorOf":"none"}]"#,
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(left.logical_size().unwrap(), (2, 1));
+        let left_image =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 2, Rgba([255, 0, 0, 255])));
+        let right_image =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, Rgba([0, 0, 255, 255])));
+        let composed = compose_hypr_monitors(&[(left, left_image), (right, right_image)]).unwrap();
+        assert_eq!((composed.width(), composed.height()), (4, 3));
+        let pixels = composed.to_rgba8();
+        assert_eq!(pixels.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(pixels.get_pixel(2, 1).0, [0, 0, 255, 255]);
+        assert_eq!(
+            pixels.get_pixel(0, 2).0[3],
+            0,
+            "逻辑空隙应保持空白而不是丢屏"
+        );
+    }
+
+    #[test]
+    fn 活动屏幕无法定位时不得放宽到整个桌面() {
+        assert!(!super::wayland_whole_desktop_fallback_allowed(false));
+        assert!(super::wayland_whole_desktop_fallback_allowed(true));
+        let monitors = hypr_monitors_for_capture(
+            &parse_hypr_monitors(
+                r#"[{"name":"ONLY","x":0,"y":0,"width":100,"height":100,"scale":1,"focused":false,"disabled":false,"mirrorOf":"none"}]"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(select_active_hypr_monitor(&monitors, None), None);
+        assert_eq!(
+            select_active_hypr_monitor(&monitors, Some((9_000, 9_000))),
+            None
+        );
+    }
+
+    #[test]
+    fn 竖屏transform应交换未旋转的模式尺寸() {
+        let portrait = parse_hypr_monitors(
+            r#"[{"name":"P","x":0,"y":0,"width":1920,"height":1080,"scale":1,"transform":1,"focused":true,"disabled":false,"mirrorOf":"none"}]"#,
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(portrait.logical_size().unwrap(), (1080, 1920));
+        assert_eq!(portrait.grim_geometry().unwrap(), "0,0 1080x1920");
+        assert_eq!(
+            super::transformed_mode_pixels(1920, 1080, 3).unwrap(),
+            (1080, 1920)
+        );
+        assert_eq!(
+            super::transformed_mode_pixels(1920, 1080, 5).unwrap(),
+            (1080, 1920)
+        );
+        assert_eq!(
+            super::transformed_mode_pixels(1920, 1080, 2).unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(
+            super::transformed_mode_pixels(1920, 1080, 4).unwrap(),
+            (1920, 1080)
+        );
+        assert!(super::transformed_mode_pixels(1920, 1080, 8).is_err());
+    }
+
+    #[test]
+    fn 过大的拼接画布应在分配前拒绝() {
+        let huge = parse_hypr_monitors(
+            r#"[{"name":"BIG","x":0,"y":0,"width":20000,"height":6000,"scale":1,"transform":0,"focused":true,"disabled":false,"mirrorOf":"none"}]"#,
+        )
+        .unwrap()
+        .remove(0);
+        let image = DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255])));
+        let error = compose_hypr_monitors(&[(huge, image)]).unwrap_err();
+        assert!(error.contains("100000000") || error.contains("拒绝"));
     }
 
     #[test]

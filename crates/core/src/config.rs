@@ -2141,7 +2141,7 @@ fn normalize_break_reminder_interval_minutes(value: u64) -> u64 {
 
 /// 截屏间隔最低 5 秒，防止配置值过小导致 CPU/磁盘占用过高
 fn normalize_screenshot_interval(value: u64) -> u64 {
-    value.clamp(5, 600)
+    value.clamp(5, 3600)
 }
 
 fn default_idle_threshold_minutes() -> u32 {

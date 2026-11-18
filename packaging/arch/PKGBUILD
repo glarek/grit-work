@@ -7,7 +7,7 @@ arch=('x86_64')
 url='https://github.com/glarek/grit-work'
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator')
-optdepends=('gnome-keyring: OS credential storage' 'grim: Wayland screenshots' 'imagemagick: X11 screenshots' 'xdotool: X11 window activity' 'tesseract: OCR')
+optdepends=('gnome-keyring: OS credential storage' 'grim: Wayland screenshots' 'imagemagick: X11 screenshots' 'xdotool: X11 window activity' 'xorg-xrandr: X11 monitor selection' 'tesseract: OCR')
 options=('!strip')
 package() {
   local repo_root="$startdir/../.."

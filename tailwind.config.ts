@@ -21,6 +21,7 @@ export default {
       },
       fontFamily: {
         sans: [
+          'Figtree Variable',
           '-apple-system',
           'BlinkMacSystemFont',
           'SF Pro Text',
@@ -30,7 +31,7 @@ export default {
           'Microsoft YaHei',
           'sans-serif',
         ],
-        mono: ['Fira Code', 'monospace'],
+        mono: ['JetBrains Mono Variable', 'ui-monospace', 'monospace'],
       },
     },
   },

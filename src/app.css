@@ -13,7 +13,8 @@
    ══════════════════════════════════════════════════════════ */
 :root {
   color-scheme: light;
-  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Segoe UI Variable Text", "Microsoft YaHei", sans-serif;
+  --font-ui: "Figtree Variable", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Segoe UI Variable Text", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
   font-family: var(--font-ui);
   font-size: 16px;
   line-height: 1.6;
@@ -5352,4 +5353,47 @@
     grid-column: 1 / -1;
     justify-self: start;
   }
+}
+
+/* Grit: quiet surfaces, clear headings, and aligned numerical evidence. */
+.grit-work {
+  --grit-accent: #4f46e5;
+  padding-top: 2rem;
+  padding-bottom: 3rem;
+}
+.grit-work .grit-header {
+  padding: 0.5rem 0 1.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--surface-border-subtle);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.grit-work h1 { font-size: 2rem; font-weight: 650; line-height: 1.2; }
+.grit-work h2 { font-weight: 650; }
+.grit-work button { min-height: 2.5rem; border-radius: var(--radius-md); }
+.grit-work :is(input:not([type="checkbox"]), select) {
+  min-height: 2.5rem;
+  border-radius: var(--radius-sm);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.grit-work :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--grit-accent);
+  outline-offset: 3px;
+}
+.grit-work :is(input[type="date"], input[type="time"], input[type="number"]),
+.grit-work .grit-metric, code, pre, kbd {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.grit-work .grit-metric { font-size: 1.25rem; line-height: 1.6; }
+.grit-work .grit-metric span { font-family: var(--font-ui); letter-spacing: normal; }
+.grit-work .grit-row { padding: 1.25rem; border-radius: var(--radius-md); }
+.grit-work .grit-row label { letter-spacing: 0.06em; }
+.grit-work .grit-row :is(input, select) { letter-spacing: normal; font-weight: 500; }
+.grit-work .grit-summary { border-left: 3px solid var(--grit-accent); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 1rem 1.25rem; line-height: 1.75; }
+.dark .grit-work { --grit-accent: #a5b4fc; }
+@media (prefers-reduced-motion: reduce) {
+  .grit-work :is(input, select, button) { transition: none; }
 }

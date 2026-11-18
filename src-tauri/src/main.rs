@@ -2150,7 +2150,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
     let _power_monitor = activity_clock::PowerMonitor::new();
     let mut activity_clock = activity_clock::ActivityClock::new();
     let mut last_capture_time = std::time::Instant::now();
-    let mut last_grit_screenshot = std::time::Instant::now() - Duration::from_secs(300);
+    let mut last_grit_screenshot = std::time::Instant::now() - Duration::from_secs(3600);
     let mut overlay_sessions = std::collections::HashMap::new();
 
     // ===== 空闲检测器 =====
@@ -2528,7 +2528,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
         // 1. 定时触发：到达配置的间隔时间
         // 2. 应用切换触发：满足最小间隔
         let should_take_screenshot = if elapsed_secs >= screenshot_interval
-            || last_grit_screenshot.elapsed() >= Duration::from_secs(300)
+            || last_grit_screenshot.elapsed() >= Duration::from_secs(screenshot_interval)
         {
             log::debug!("定时截图触发");
             true
@@ -2764,7 +2764,8 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                             active_window.browser_url.as_deref(),
                         ),
                         state_guard.config.storage.screenshots_enabled
-                            && last_grit_screenshot.elapsed() >= Duration::from_secs(300),
+                            && last_grit_screenshot.elapsed()
+                                >= Duration::from_secs(screenshot_interval),
                     )
                 };
                 if screenshots_enabled {
@@ -4224,7 +4225,6 @@ async fn main() {
     }
     #[allow(unused_mut)]
     let mut config = load_result.config;
-    config.screenshot_interval = 300;
     if let Err(e) = grit::recover(&data_dir) {
         log::error!("Grit recovery: {e}");
     }
@@ -4752,6 +4752,7 @@ async fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            grit::grit_save_capture_settings,
             grit::grit_status,
             grit::grit_save_settings,
             grit::grit_save_credentials,

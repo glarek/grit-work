@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import CaptureSettings from './CaptureSettings.svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import {
@@ -487,13 +488,13 @@
   $: totalInvoiceableHours = computeInvoiceableHours(totalMinutes, billableEnabled);
 </script>
 
-<div class="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
+<div class="grit-work mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
   <!-- Header -->
-  <header class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-[#30363d] dark:bg-[#161b22]/90">
+  <header class="grit-header flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-[#30363d] dark:bg-[#161b22]/90">
     <div>
       <div class="flex items-center gap-2.5">
         <h1 class="text-xl font-semibold tracking-tight text-slate-900 dark:text-[#e6edf3]">
-          Grit Work
+          Tidrapporter
         </h1>
         {#if status}
           <span
@@ -712,11 +713,6 @@
               >
                 {statusMeta.label}
               </span>
-              {#if report.revision}
-                <span class="text-xs text-slate-400 dark:text-[#7d8590]">
-                  rev {report.revision}
-                </span>
-              {/if}
               {#if dirtyDraft}
                 <span class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
                   Osparade ändringar
@@ -733,8 +729,8 @@
               <div class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
                 Total tid
               </div>
-              <div class="text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
-                {formatMinutesSwedish(totalMinutes)} ({report.rows.length} rader)
+              <div class="grit-metric text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
+                {formatMinutesSwedish(totalMinutes)} <span class="text-xs font-normal text-slate-500">· {report.rows.length} {report.rows.length === 1 ? 'rad' : 'rader'}</span>
               </div>
             </div>
             <div class="h-7 w-px bg-slate-200 dark:bg-[#30363d]"></div>
@@ -742,7 +738,7 @@
               <div class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
                 Fakturerbar tid (Spiris)
               </div>
-              <div class="text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
+              <div class="grit-metric text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
                 {formatSwedishHours(totalInvoiceableHours)}
                 <span class="ml-1 text-xs font-normal text-slate-500 dark:text-[#8b949e]">
                   ({billableEnabled ? 'Debiterbar tid: På' : 'Debiterbar tid: Av → 0 h'})
@@ -753,7 +749,7 @@
         </div>
 
         {#if report.summary}
-          <div class="rounded-xl bg-slate-50 p-3 text-sm text-slate-700 dark:bg-[#0d1117] dark:text-[#c9d1d9]">
+          <div class="grit-summary rounded-xl bg-slate-50 p-3 text-sm text-slate-700 dark:bg-[#0d1117] dark:text-[#c9d1d9]">
             <span class="font-semibold text-slate-900 dark:text-[#e6edf3]">Sammanfattning: </span>
             <span>{report.summary}</span>
           </div>
@@ -794,7 +790,7 @@
             {#each report.rows as row, index (row.id)}
               {@const knownProject = isKnownProjectId(row.project_id, status?.projects ?? [])}
               {@const rowInvoiceable = computeInvoiceableHours(row.minutes, billableEnabled)}
-              <div class="rounded-xl border p-4 transition {row.needs_review
+              <div class="grit-row rounded-xl border p-4 transition {row.needs_review
                 ? 'border-amber-300 bg-amber-50/40 dark:border-amber-700/60 dark:bg-amber-950/15'
                 : 'border-slate-200 bg-white dark:border-[#30363d] dark:bg-[#0d1117]/60'}">
                 <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
@@ -1024,6 +1020,9 @@
     {/if}
   {:else}
     <!-- Settings tab -->
+    {#if status}
+      <CaptureSettings settings={status.capture} monitors={status.monitors} on:saved={refreshStatusOnly} />
+    {/if}
     <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
       <!-- AI & Spiris defaults -->
       <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
@@ -1120,7 +1119,7 @@
             </label>
 
             <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Tidskod / timeCodeId (krävs)
+              Tidskod (krävs)
               <select
                 value={settingsForm.time_code_id}
                 on:change={(e) =>
@@ -1185,7 +1184,7 @@
                 Debiterbar tid
               </div>
               <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-                Styr fältet invoiceableHours i Spiris: minuter / 60 när aktiverad, annars 0.
+                Markera om den rapporterade tiden ska faktureras kunden.
               </p>
             </div>
           </label>
@@ -1207,10 +1206,10 @@
       <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
         <div>
           <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-            Spiris-autentisering
+            Anslutning till Spiris
           </h2>
           <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-            Uppgifterna maskeras och sparas enbart via säker backend — aldrig i webbläsarens localStorage.
+            Dina uppgifter sparas skyddat i datorns nyckellager.
           </p>
         </div>
 
@@ -1273,7 +1272,7 @@
 
         <div class="flex items-center justify-between pt-2">
           <span class="text-xs text-slate-500 dark:text-[#8b949e]">
-            {status?.credential_saved ? 'Sparade uppgifter finns i backend.' : 'Inga uppgifter sparade ännu.'}
+            {status?.credential_saved ? 'Uppgifterna är sparade i datorns nyckellager.' : 'Inga uppgifter sparade ännu.'}
           </span>
           <button
             type="button"
