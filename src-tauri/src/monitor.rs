@@ -263,12 +263,7 @@ fn is_browser_internal_segment(segment: &str) -> bool {
     }
 
     // chrome:// internal pages
-    if lower.starts_with("chrome://") || lower.starts_with("edge://") || lower.starts_with("about:")
-    {
-        return true;
-    }
-
-    false
+    lower.starts_with("chrome://") || lower.starts_with("edge://") || lower.starts_with("about:")
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
