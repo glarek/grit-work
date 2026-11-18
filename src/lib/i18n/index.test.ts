@@ -113,7 +113,7 @@ test('初始化语言应按显式值、持久化值、浏览器语言和默认�
       preferred: null,
       stored: null,
       browserLanguages: ['fr-FR', 'en-US'],
-      expected: 'zh-CN',
+      expected: 'en',
     },
   ];
 
@@ -138,7 +138,7 @@ test('初始化语言应按显式值、持久化值、浏览器语言和默认�
 
   await withEnvironment({}, async () => {
     const i18n = await importFresh('initialize-default');
-    assert.equal(i18n.initializeLocale(), 'zh-CN');
+    assert.equal(i18n.initializeLocale(), 'en');
   });
 });
 
@@ -169,7 +169,7 @@ test('语言设置、循环和文档方向应使用规范化后的 locale', asyn
 test('SSR 与 localStorage 读写异常不应中断语言初始化', async () => {
   await withEnvironment({}, async () => {
     const i18n = await importFresh('ssr');
-    assert.equal(i18n.initializeLocale(), 'zh-CN');
+    assert.equal(i18n.initializeLocale(), 'en');
     assert.doesNotThrow(() => i18n.applyLocaleToDocument('ar'));
   });
 
@@ -202,7 +202,9 @@ test('翻译函数应支持回退、插值、数组消息和缺失键', async ()
   await withEnvironment({}, async () => {
     const i18n = await importFresh('translations');
     const { default: english } = await import('./locales/en.ts');
+    const { default: zhCN } = await import('./locales/zh-CN.ts');
     const originalExpandAll = english.common.expandAll;
+    const originalZhExpandAll = zhCN.common.expandAll;
 
     try {
       i18n.setLocale('en');
@@ -231,11 +233,14 @@ test('翻译函数应支持回退、插值、数组消息和缺失键', async ()
         i18n.t('common.expandAll', { first: '{second}', second: 'done' }),
         'done',
       );
+      english.common.expandAll = originalExpandAll;
 
-      Reflect.deleteProperty(english.common, 'expandAll');
-      assert.equal(i18n.t('common.expandAll', { count: 2 }), '展开全部 2 条');
+      i18n.setLocale('zh-CN');
+      Reflect.deleteProperty(zhCN.common, 'expandAll');
+      assert.equal(i18n.t('common.expandAll', { count: 2 }), 'Show all 2');
     } finally {
       english.common.expandAll = originalExpandAll;
+      zhCN.common.expandAll = originalZhExpandAll;
     }
   });
 });

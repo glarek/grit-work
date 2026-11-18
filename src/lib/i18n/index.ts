@@ -5,7 +5,7 @@ import zhTW from './locales/zh-TW.ts';
 import ar from './locales/ar.ts';
 
 const LOCALE_STORAGE_KEY = 'work-review.locale';
-const DEFAULT_LOCALE: Locale = 'zh-CN';
+const DEFAULT_LOCALE: Locale = 'en';
 
 export const SUPPORTED_LOCALES = ['zh-CN', 'en', 'zh-TW', 'ar'] as const;
 export type Locale = typeof SUPPORTED_LOCALES[number];
