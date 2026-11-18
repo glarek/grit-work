@@ -42,6 +42,8 @@ pub fn archive_day(
         if manifest.original_activities_sha256 != plan.original_hash {
             return Err("existing archive does not match original activities".into());
         }
+        // Retry after a crash: flush the published tree before the caller deletes sources.
+        sync_archive(&plan.day_dir)?;
         return Ok(());
     }
     for shot in &plan.shots {
@@ -54,6 +56,7 @@ pub fn archive_day(
         if manifest.original_activities_sha256 != plan.original_hash {
             return Err("existing archive does not match original activities".into());
         }
+        sync_archive(&plan.day_dir)?;
         return Ok(());
     }
     guard.disarm();
@@ -65,6 +68,7 @@ pub fn archive_day(
     if manifest.original_activities_sha256 != plan.original_hash {
         return Err("archived activities hash mismatch after rename".into());
     }
+    sync_archive(&plan.day_dir)?;
     Ok(())
 }
 
@@ -95,57 +99,89 @@ pub fn clean_archived_day(
         .iter()
         .map(|shot| (shot.source_str.as_str(), shot))
         .collect();
-    if manifest.sources.len() != planned.len() {
-        return Err("archive source map does not match activities".into());
-    }
     for entry in &manifest.sources {
-        let shot = planned
-            .get(entry.source.as_str())
-            .ok_or_else(|| format!("archive source not in activities: {}", entry.source))?;
-        if entry.archived != shot.archived_str {
-            return Err(format!("archive source mismatch: {}", entry.source));
-        }
-        // A previous clean may already have removed the local file. Compare
-        // bytes only when the source is still present; the manifest hash was
-        // verified against the archived image.
-        if let Some(present) = &shot.sha256 {
-            if present != &entry.sha256 {
-                return Err(format!(
-                    "source image does not match archive: {}",
-                    entry.source
-                ));
+        if let Some(shot) = planned.get(entry.source.as_str()) {
+            if entry.archived != shot.archived_str {
+                return Err(format!("archive source mismatch: {}", entry.source));
             }
-        }
-    }
-    let mut removed = 0;
-    for shot in &plan.shots {
-        let expected = manifest
-            .sources
-            .iter()
-            .find(|entry| entry.source == shot.source_str)
-            .map(|entry| entry.sha256.as_str())
-            .ok_or_else(|| format!("missing source checksum: {}", shot.source_str))?;
-        match fs::symlink_metadata(&shot.source) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(format!("symlink prohibited: {}", shot.source.display()));
-            }
-            Ok(meta) if meta.is_file() => {
-                let on_disk = sha256_file(&shot.source)?;
-                if on_disk != expected {
+            // A previous clean may already have removed the local file. Compare
+            // bytes only when the source is still present; the manifest hash was
+            // verified against the archived copy.
+            if let Some(present) = &shot.sha256 {
+                if present != &entry.sha256 {
                     return Err(format!(
-                        "source image does not match archive: {}",
-                        shot.source.display()
+                        "source bytes do not match archive: {}",
+                        entry.source
                     ));
                 }
-                fs::remove_file(&shot.source)
-                    .map_err(|e| format!("remove {}: {e}", shot.source.display()))?;
+            }
+            continue;
+        }
+        if !is_daily_ocr(
+            &plan.data_dir,
+            date,
+            &entry.source,
+            &plan.day_dir,
+            &entry.archived,
+        ) {
+            return Err(format!(
+                "archive source is not a screenshot or daily ocr log: {}",
+                entry.source
+            ));
+        }
+    }
+    for shot in &plan.shots {
+        if manifest
+            .sources
+            .iter()
+            .any(|entry| entry.source == shot.source_str)
+        {
+            continue;
+        }
+        // A daily log that appeared after the archive was sealed is not a source.
+        if is_daily_ocr(
+            &plan.data_dir,
+            date,
+            &shot.source_str,
+            &plan.day_dir,
+            &shot.archived_str,
+        ) {
+            continue;
+        }
+        return Err(format!(
+            "local source missing from archive map: {}",
+            shot.source_str
+        ));
+    }
+    // Durability: the archive must be on disk before any local source is removed.
+    sync_archive(&plan.day_dir)?;
+    let mut removed = 0;
+    for entry in &manifest.sources {
+        let source = PathBuf::from(&entry.source);
+        if resolve_inside(&plan.data_dir, &source)? != lexical_abs(&source)? {
+            return Err(format!("source escapes data_dir: {}", entry.source));
+        }
+        match fs::symlink_metadata(&source) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!("symlink prohibited: {}", source.display()));
+            }
+            Ok(meta) if meta.is_file() => {
+                let on_disk = sha256_file(&source)?;
+                if on_disk != entry.sha256 {
+                    return Err(format!(
+                        "source bytes do not match archive: {}",
+                        source.display()
+                    ));
+                }
+                fs::remove_file(&source)
+                    .map_err(|e| format!("remove {}: {e}", source.display()))?;
                 removed += 1;
             }
             Ok(_) => {
-                return Err(format!("source is not a file: {}", shot.source.display()));
+                return Err(format!("source is not a file: {}", source.display()));
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("stat {}: {e}", shot.source.display())),
+            Err(e) => return Err(format!("stat {}: {e}", source.display())),
         }
     }
     Ok(removed)
@@ -161,6 +197,7 @@ struct PlannedShot {
 }
 
 struct ArchivePlan {
+    data_dir: PathBuf,
     day_dir: PathBuf,
     original_hash: String,
     rewritten: Value,
@@ -259,12 +296,36 @@ fn prepare(
         }
         rewritten_rows.push(Value::Object(obj));
     }
+    // Optional raw daily OCR log. Missing is fine; a symlink is not.
+    let ocr_rel = PathBuf::from("ocr_logs").join(format!("{date}.txt"));
+    let ocr_source = data_dir.join(&ocr_rel);
+    reject_symlink_chain(&ocr_source, true)?;
+    if let Some(sha256) = hash_source_if_present(&ocr_source)? {
+        if overlaps(&ocr_source, &archive_dir) || overlaps(&ocr_source, &day_dir) {
+            return Err("ocr log overlaps archive".into());
+        }
+        let archived = day_dir.join(&ocr_rel);
+        shots.push(PlannedShot {
+            source: ocr_source.clone(),
+            source_str: path_str(&ocr_source)?,
+            archived_rel: ocr_rel,
+            archived_str: path_str(&archived)?,
+            sha256: Some(sha256),
+        });
+    }
     Ok(ArchivePlan {
+        data_dir,
         day_dir,
         original_hash,
         rewritten: Value::Array(rewritten_rows),
         shots,
     })
+}
+
+fn is_daily_ocr(data_dir: &Path, date: &str, source: &str, day_dir: &Path, archived: &str) -> bool {
+    let expected_source = data_dir.join("ocr_logs").join(format!("{date}.txt"));
+    let expected_archived = day_dir.join("ocr_logs").join(format!("{date}.txt"));
+    Path::new(source) == expected_source && Path::new(archived) == expected_archived
 }
 
 fn hash_source_if_present(source: &Path) -> Result<Option<String>, String> {
@@ -317,7 +378,7 @@ fn stage_archive(plan: &ArchivePlan) -> Result<StageDir, String> {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("create shot dir: {e}"))?;
         }
-        fs::copy(&shot.source, &dest).map_err(|e| format!("copy screenshot: {e}"))?;
+        copy_durable(&shot.source, &dest)?;
         let copied = sha256_file(&dest)?;
         let expected = shot
             .sha256
@@ -360,6 +421,8 @@ fn stage_archive(plan: &ArchivePlan) -> Result<StageDir, String> {
     let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
     write_new(&staging.join(MANIFEST_FILE), &manifest_bytes)?;
     readback_stage(&staging, &manifest, &manifest_bytes, &plan.rewritten)?;
+    sync_tree(&staging)?;
+    sync_dir(&parent)?;
     Ok(guard)
 }
 
@@ -489,8 +552,28 @@ fn read_activities(day_dir: &Path, manifest: &ArchiveManifest) -> Result<Value, 
         }
         referenced.insert(entry.source.clone());
     }
-    if referenced.len() != manifest.sources.len() {
-        return Err("source map does not match archived activities".into());
+    let ocr_rel = format!("ocr_logs/{}.txt", manifest.date);
+    for entry in &manifest.sources {
+        if referenced.contains(&entry.source) {
+            continue;
+        }
+        let archived = PathBuf::from(&entry.archived);
+        if lexical_abs(&archived)? != archived || !archived.starts_with(day_dir) {
+            return Err("archived ocr log escapes archive day".into());
+        }
+        let rel = archived
+            .strip_prefix(day_dir)
+            .map_err(|_| "archived ocr log escapes archive day")?;
+        if rel_key(rel) != ocr_rel {
+            return Err("source map does not match archived activities".into());
+        }
+        let hashed = manifest
+            .files
+            .get(&ocr_rel)
+            .ok_or("no checksum for daily ocr log")?;
+        if hashed != &entry.sha256 || sha256_file(&archived)? != entry.sha256 {
+            return Err("checksum mismatch for daily ocr log".into());
+        }
     }
     Ok(value)
 }
@@ -671,6 +754,60 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("create {}: {e}", path.display()))?;
     file.write_all(bytes)
         .map_err(|e| format!("write {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("sync {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn copy_durable(from: &Path, to: &Path) -> Result<(), String> {
+    let bytes = fs::read(from).map_err(|e| format!("read {}: {e}", from.display()))?;
+    write_new(to, &bytes)
+}
+
+fn sync_file(path: &Path) -> Result<(), String> {
+    let file = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("sync {}: {e}", path.display()))?;
+    Ok(())
+}
+
+fn sync_dir(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let dir = File::open(path).map_err(|e| format!("open dir {}: {e}", path.display()))?;
+        dir.sync_all()
+            .map_err(|e| format!("sync dir {}: {e}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn sync_tree(root: &Path) -> Result<(), String> {
+    sync_dir(root)?;
+    for entry in fs::read_dir(root).map_err(|e| format!("read dir {}: {e}", root.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!("symlink prohibited: {}", path.display()));
+        }
+        if meta.is_dir() {
+            sync_tree(&path)?;
+        } else if meta.is_file() {
+            sync_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn sync_archive(day_dir: &Path) -> Result<(), String> {
+    sync_tree(day_dir)?;
+    if let Some(parent) = day_dir.parent() {
+        sync_dir(parent)?;
+    }
     Ok(())
 }
 
@@ -796,6 +933,133 @@ mod tests {
         assert!(!archive.join("grit-work").join(DAY).exists());
         assert!(archive_day(&data, &archive, "2020-1-15", &missing).is_err());
         assert!(archive_day(&data, &data, DAY, &missing).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ocr_sidecar_roundtrip_and_corruption_preserves_source() {
+        let root = scratch();
+        let data = root.join("data");
+        let archive = root.join("archive");
+        fs::write(data.join("pic.png"), b"img").unwrap();
+        fs::create_dir_all(data.join("ocr_logs")).unwrap();
+        let log = data.join("ocr_logs").join(format!("{DAY}.txt"));
+        fs::write(&log, b"raw-ocr").unwrap();
+        fs::write(data.join("pic.png.ocr.log"), b"leave-me").unwrap();
+        let activities = json!([{"screenshot_path": "pic.png", "ocr_text": "from-db"}]);
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        let day = archive.join("grit-work").join(DAY);
+        let archived_log = day.join("ocr_logs").join(format!("{DAY}.txt"));
+        assert_eq!(fs::read(&archived_log).unwrap(), b"raw-ocr");
+        assert_eq!(
+            load_archive(&archive, DAY).unwrap()[0]["ocr_text"],
+            "from-db"
+        );
+        assert_eq!(
+            clean_archived_day(&data, &archive, DAY, &activities).unwrap(),
+            2
+        );
+        assert!(!data.join("pic.png").exists());
+        assert!(!log.exists());
+        assert_eq!(fs::read(data.join("pic.png.ocr.log")).unwrap(), b"leave-me");
+        assert_eq!(fs::read(&archived_log).unwrap(), b"raw-ocr");
+        assert_eq!(
+            clean_archived_day(&data, &archive, DAY, &activities).unwrap(),
+            0
+        );
+
+        let root2 = scratch();
+        let data2 = root2.join("data");
+        let archive2 = root2.join("archive");
+        fs::write(data2.join("pic.png"), b"img").unwrap();
+        fs::create_dir_all(data2.join("ocr_logs")).unwrap();
+        let log2 = data2.join("ocr_logs").join(format!("{DAY}.txt"));
+        fs::write(&log2, b"raw-ocr").unwrap();
+        archive_day(&data2, &archive2, DAY, &activities).unwrap();
+        let archived2 = archive2
+            .join("grit-work")
+            .join(DAY)
+            .join("ocr_logs")
+            .join(format!("{DAY}.txt"));
+        fs::write(&archived2, b"corrupt").unwrap();
+        assert!(clean_archived_day(&data2, &archive2, DAY, &activities).is_err());
+        assert_eq!(fs::read(&log2).unwrap(), b"raw-ocr");
+        assert_eq!(fs::read(data2.join("pic.png")).unwrap(), b"img");
+
+        let root3 = scratch();
+        let data3 = root3.join("data");
+        let archive3 = root3.join("archive");
+        fs::write(data3.join("pic.png"), b"img").unwrap();
+        archive_day(&data3, &archive3, DAY, &activities).unwrap();
+        assert!(!archive3
+            .join("grit-work")
+            .join(DAY)
+            .join("ocr_logs")
+            .exists());
+        assert_eq!(
+            clean_archived_day(&data3, &archive3, DAY, &activities).unwrap(),
+            1
+        );
+
+        #[cfg(unix)]
+        {
+            let root4 = scratch();
+            let data4 = root4.join("data");
+            let archive4 = root4.join("archive");
+            fs::write(data4.join("pic.png"), b"img").unwrap();
+            fs::create_dir_all(data4.join("ocr_logs")).unwrap();
+            let real = data4.join("ocr_logs").join("real.txt");
+            fs::write(&real, b"secret").unwrap();
+            std::os::unix::fs::symlink(&real, data4.join("ocr_logs").join(format!("{DAY}.txt")))
+                .unwrap();
+            assert!(archive_day(&data4, &archive4, DAY, &activities).is_err());
+            assert_eq!(fs::read(&real).unwrap(), b"secret");
+            assert!(!archive4.join("grit-work").join(DAY).exists());
+            let _ = fs::remove_dir_all(&root4);
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&root2);
+        let _ = fs::remove_dir_all(&root3);
+    }
+
+    #[test]
+    fn existing_archive_retry_syncs_before_partial_sources_are_cleaned() {
+        let root = scratch();
+        let data = root.join("data");
+        let archive = root.join("archive");
+        fs::create_dir_all(data.join("ocr_logs")).unwrap();
+        fs::write(data.join("a.png"), b"aaa").unwrap();
+        fs::write(data.join("b.png"), b"bbb").unwrap();
+        fs::write(data.join("ocr_logs").join(format!("{DAY}.txt")), b"log").unwrap();
+        let activities = json!([
+            {"screenshot_path": "a.png", "ocr_text": "a"},
+            {"screenshot_path": "b.png", "ocr_text": "b"}
+        ]);
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        fs::remove_file(data.join("a.png")).unwrap();
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        assert_eq!(fs::read(data.join("b.png")).unwrap(), b"bbb");
+        assert_eq!(
+            fs::read(data.join("ocr_logs").join(format!("{DAY}.txt"))).unwrap(),
+            b"log"
+        );
+        assert_eq!(
+            clean_archived_day(&data, &archive, DAY, &activities).unwrap(),
+            2
+        );
+        assert!(!data.join("b.png").exists());
+        assert!(!data.join("ocr_logs").join(format!("{DAY}.txt")).exists());
+        assert_eq!(
+            fs::read(
+                archive
+                    .join("grit-work")
+                    .join(DAY)
+                    .join("shots")
+                    .join("a.png")
+            )
+            .unwrap(),
+            b"aaa"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
