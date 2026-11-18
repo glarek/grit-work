@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import CaptureSettings from './CaptureSettings.svelte';
+  import GritSettingsPanel from './GritSettings.svelte';
+  import { get } from 'svelte/store';
+  import WorkflowBar from './WorkflowBar.svelte';
+  import { workDate, selectWorkDate, notifyGritChanged } from './workflow.ts';
   import { invoke } from '@tauri-apps/api/core';
-  import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { save as saveDialog } from '@tauri-apps/plugin-dialog';
   import {
-    applyProviderChange,
     computeInvoiceableHours,
     createDefaultSettings,
     formatMinutesSwedish,
@@ -22,7 +24,6 @@
     unixSecondsToTimeInput,
     validateReportForSubmit,
     type GritArchiveResult,
-    type GritProvider,
     type GritReport,
     type GritRow,
     type GritSettings,
@@ -30,12 +31,11 @@
   } from './gritTypes.ts';
 
   type ActiveTab = 'report' | 'settings';
-  type AuthMode = 'oauth' | 'static';
 
   let activeTab: ActiveTab = 'report';
   let status: GritStatus | null = null;
   let settingsForm: GritSettings = createDefaultSettings();
-  let selectedDate = getYesterdayIsoDate();
+  let selectedDate = get(workDate);
   let report: GritReport | null = null;
   let dirtyDraft = false;
 
@@ -48,8 +48,6 @@
   let canceling = false;
   let syncingSpiris = false;
   let archiving = false;
-  let savingSettings = false;
-  let savingCredentials = false;
 
   let errorMessage: string | null = null;
   let noticeMessage: string | null = null;
@@ -60,10 +58,6 @@
   let dayTimer: ReturnType<typeof setInterval> | null = null;
 
   // Credentials state (memory only, never persisted to localStorage)
-  let authMode: AuthMode = 'oauth';
-  let applicationId = '';
-  let secret = '';
-  let staticToken = '';
 
   function formatError(err: unknown): string {
     if (typeof err === 'string' && err.trim()) return err;
@@ -132,6 +126,7 @@
 
       const targetDate = dateOverride ?? (nextStatus.yesterday || getYesterdayIsoDate());
       selectedDate = targetDate;
+      selectWorkDate(targetDate);
 
       if (nextStatus.report && nextStatus.report.date === targetDate) {
         report = nextStatus.report;
@@ -140,6 +135,7 @@
         report = normalizeGritReport(rawReport);
       }
       dirtyDraft = false;
+      notifyGritChanged();
       generating = report?.status === 'running';
       syncPollingState();
     } catch (err) {
@@ -152,12 +148,14 @@
   async function selectDate(nextDate: string): Promise<void> {
     if (!nextDate) return;
     selectedDate = nextDate;
+    selectWorkDate(nextDate);
     reportLoading = true;
     clearFeedback();
     try {
       const rawReport = await invoke<unknown>('grit_get_report', { date: nextDate });
       report = normalizeGritReport(rawReport);
       dirtyDraft = false;
+      notifyGritChanged();
       generating = report?.status === 'running';
       syncPollingState();
     } catch (err) {
@@ -178,6 +176,7 @@
       if (nextReport) {
         report = nextReport;
         dirtyDraft = false;
+      notifyGritChanged();
       }
       await refreshStatusOnly();
       if (report?.status === 'draft') noticeMessage = `Tidrapport för ${targetDate} genererad.`;
@@ -191,6 +190,7 @@
   }
 
   async function refreshStatusOnly(): Promise<void> {
+    notifyGritChanged();
     const rawStatus = await invoke<unknown>('grit_status');
     status = normalizeGritStatus(rawStatus);
   }
@@ -223,6 +223,7 @@
         report = saved;
       }
       dirtyDraft = false;
+      notifyGritChanged();
       await refreshStatusOnly();
       noticeMessage = 'Utkastet har sparats.';
     } catch (err) {
@@ -245,6 +246,7 @@
           currentReport = saved;
           report = saved;
           dirtyDraft = false;
+      notifyGritChanged();
         }
       }
 
@@ -334,70 +336,15 @@
     }
   }
 
-  async function handlePickArchiveDir(): Promise<void> {
+  async function exportReport(): Promise<void> {
+    if (!report) return;
+    if (dirtyDraft) { errorMessage = 'Spara utkastet före export så att filen innehåller dina senaste ändringar.'; return; }
     try {
-      const picked = await openDialog({
-        directory: true,
-        multiple: false,
-        defaultPath: settingsForm.archive_dir || status?.local_dir || undefined,
-      });
-      if (typeof picked === 'string' && picked.trim()) {
-        settingsForm = { ...settingsForm, archive_dir: picked };
-      }
-    } catch (err) {
-      errorMessage = formatError(err);
-    }
-  }
-
-  function handleProviderSelect(nextProvider: GritProvider): void {
-    settingsForm = applyProviderChange(settingsForm, nextProvider);
-  }
-
-  async function handleSaveSettings(): Promise<void> {
-    clearFeedback();
-    savingSettings = true;
-    try {
-      await invoke('grit_save_settings', { settings: settingsForm });
-      await refreshStatusOnly();
-      if (status) {
-        settingsForm = { ...status.settings };
-      }
-      noticeMessage = 'Inställningarna har sparats.';
-    } catch (err) {
-      errorMessage = formatError(err);
-    } finally {
-      savingSettings = false;
-    }
-  }
-
-  async function handleSaveCredentials(): Promise<void> {
-    clearFeedback();
-    savingCredentials = true;
-    try {
-      const payload =
-        authMode === 'oauth'
-          ? {
-              applicationId: applicationId.trim(),
-              secret: secret.trim(),
-              staticToken: '',
-            }
-          : {
-              applicationId: '',
-              secret: '',
-              staticToken: staticToken.trim(),
-            };
-
-      await invoke('grit_save_credentials', payload);
-      applicationId = '';
-      secret = '';
-      staticToken = '';
-      await refreshStatusOnly();
-      noticeMessage = 'Spiris-uppgifterna har sparats säkert i backend.';
-    } catch (err) {
-      errorMessage = formatError(err);
-    } finally {
-      savingCredentials = false;
-    }
+      const path = await saveDialog({ defaultPath: `grit-tidrapport-${selectedDate}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] });
+      if (!path) return;
+      await invoke('grit_export_report', { date: selectedDate, targetPath: path });
+      noticeMessage = 'Den sparade tidrapporten har exporterats till CSV.';
+    } catch (e) { errorMessage = formatError(e); }
   }
 
   function updateRow(index: number, patch: Partial<GritRow>): void {
@@ -457,7 +404,7 @@
   }
 
   onMount(() => {
-    void loadStatusAndReport();
+    void loadStatusAndReport(selectedDate);
     dayTimer = setInterval(async () => {
       try { status = normalizeGritStatus(await invoke('grit_status')); }
       catch { /* Keep the last known state while the backend is temporarily busy. */ }
@@ -489,6 +436,7 @@
 </script>
 
 <div class="grit-work mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
+  <WorkflowBar date={selectedDate} current="/report" />
   <!-- Header -->
   <header class="grit-header flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm backdrop-blur dark:border-[#30363d] dark:bg-[#161b22]/90">
     <div>
@@ -610,6 +558,7 @@
       </section>
     {/if}
 
+    {#if selectedDate > yesterdayDate}<p class="text-sm text-slate-500 dark:text-[#8b949e]">Arbetsdagen pågår. Du kan analysera underlaget nu och skapa tidrapporten när dygnet är avslutat.</p>{/if}
     <!-- Date selector & pending dates -->
     <section class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
       <div class="flex flex-wrap items-center gap-2">
@@ -623,6 +572,7 @@
         </button>
         <input
           type="date"
+          max={shiftIsoDateString(yesterdayDate, 1)}
           bind:value={selectedDate}
           on:change={() => selectDate(selectedDate)}
           class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
@@ -631,6 +581,7 @@
           type="button"
           on:click={() => selectDate(shiftIsoDateString(selectedDate, 1))}
           class="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
+          disabled={selectedDate >= shiftIsoDateString(yesterdayDate, 1)}
           aria-label="Nästa dag"
         >
           →
@@ -668,7 +619,7 @@
           <button
             type="button"
             on:click={() => handleGenerate(selectedDate)}
-            disabled={generating || reportLoading}
+            disabled={generating || reportLoading || selectedDate > yesterdayDate}
             class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
           >
             {report ? 'Generera om utkast' : 'Generera tidrapport'}
@@ -677,6 +628,7 @@
       </div>
     </section>
 
+    {#if report && !["running", "uploading"].includes(report.status)}<div class="flex justify-end"><button on:click={exportReport} class="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 dark:border-[#30363d] dark:text-[#adbac7]">Exportera tidrapport (CSV)</button></div>{/if}
     <!-- Report body -->
     {#if reportLoading}
       <div class="rounded-xl border border-slate-200/80 bg-white/90 p-10 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
@@ -1019,275 +971,7 @@
       </section>
     {/if}
   {:else}
-    <!-- Settings tab -->
-    {#if status}
-      <CaptureSettings settings={status.capture} monitors={status.monitors} on:saved={refreshStatusOnly} />
-    {/if}
-    <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
-      <!-- AI & Spiris defaults -->
-      <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
-        <div>
-          <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-            Generering & Spiris-standarder
-          </h2>
-          <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-            Välj vilken lokal AI-CLI som skapar tidrapportutkast och vilka standardvärden som skickas till Spiris.
-          </p>
-        </div>
-
-        <div class="space-y-3">
-          <div>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              AI-leverantör (lokal CLI)
-              <select
-                value={settingsForm.provider}
-                on:change={(e) => {
-                  const val = e.currentTarget.value;
-                  if (val === 'codex' || val === 'grok' || val === 'agy') {
-                    handleProviderSelect(val);
-                  }
-                }}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value="codex">Codex CLI (OpenAI)</option>
-                <option value="grok">Grok CLI (xAI)</option>
-                <option value="agy">Antigravity CLI (Google Gemini)</option>
-              </select>
-            </label>
-            <p class="mt-1.5 rounded-lg bg-slate-50 p-2.5 text-xs text-slate-600 dark:bg-[#0d1117] dark:text-[#8b949e]">
-              {providerInfo.description}
-            </p>
-          </div>
-
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Modell
-              <input
-                type="text"
-                bind:value={settingsForm.model}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              />
-            </label>
-
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Timeout (sekunder)
-              <input
-                type="number"
-                min="30"
-                step="30"
-                bind:value={settingsForm.timeout_seconds}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              />
-            </label>
-          </div>
-
-          <div>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Arkivmapp (valfri)
-              <div class="mt-1 flex gap-2">
-                <input
-                  type="text"
-                  bind:value={settingsForm.archive_dir}
-                  placeholder={status?.local_dir || 'Lokal arbetsmapp'}
-                  class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-                />
-                <button
-                  type="button"
-                  on:click={handlePickArchiveDir}
-                  class="shrink-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9]"
-                >
-                  Välj mapp
-                </button>
-              </div>
-            </label>
-          </div>
-
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Spiris-användare (krävs)
-              <select
-                value={settingsForm.user_id}
-                on:change={(e) =>
-                  (settingsForm = { ...settingsForm, user_id: Number(e.currentTarget.value) || 0 })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Välj användare...</option>
-                {#each status?.users ?? [] as user (user.id)}
-                  <option value={user.id}>{user.name}</option>
-                {/each}
-              </select>
-            </label>
-
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Tidskod (krävs)
-              <select
-                value={settingsForm.time_code_id}
-                on:change={(e) =>
-                  (settingsForm = {
-                    ...settingsForm,
-                    time_code_id: Number(e.currentTarget.value) || 0,
-                  })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Välj tidskod...</option>
-                {#each status?.time_codes ?? [] as tc (tc.id)}
-                  <option value={tc.id}>{tc.name}</option>
-                {/each}
-              </select>
-            </label>
-
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Standardaktivitet
-              <select
-                value={settingsForm.activity_id}
-                on:change={(e) =>
-                  (settingsForm = {
-                    ...settingsForm,
-                    activity_id: Number(e.currentTarget.value) || 0,
-                  })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Ingen standard</option>
-                {#each status?.activities ?? [] as act (act.id)}
-                  <option value={act.id}>{act.name}</option>
-                {/each}
-              </select>
-            </label>
-
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Standardartikel
-              <select
-                value={settingsForm.article_id}
-                on:change={(e) =>
-                  (settingsForm = {
-                    ...settingsForm,
-                    article_id: Number(e.currentTarget.value) || 0,
-                  })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Ingen standard</option>
-                {#each status?.articles ?? [] as art (art.id)}
-                  <option value={art.id}>{art.name}</option>
-                {/each}
-              </select>
-            </label>
-          </div>
-
-          <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 dark:border-[#30363d] dark:bg-[#0d1117]">
-            <input
-              type="checkbox"
-              bind:checked={settingsForm.billable}
-              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-            />
-            <div>
-              <div class="text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
-                Debiterbar tid
-              </div>
-              <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-                Markera om den rapporterade tiden ska faktureras kunden.
-              </p>
-            </div>
-          </label>
-        </div>
-
-        <div class="flex justify-end pt-2">
-          <button
-            type="button"
-            on:click={handleSaveSettings}
-            disabled={savingSettings}
-            class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {savingSettings ? 'Sparar...' : 'Spara inställningar'}
-          </button>
-        </div>
-      </section>
-
-      <!-- Spiris Credentials -->
-      <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
-        <div>
-          <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-            Anslutning till Spiris
-          </h2>
-          <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-            Dina uppgifter sparas skyddat i datorns nyckellager.
-          </p>
-        </div>
-
-        <div class="inline-flex rounded-xl border border-slate-200 bg-slate-100/80 p-1 dark:border-[#30363d] dark:bg-[#0d1117]">
-          <button
-            type="button"
-            on:click={() => (authMode = 'oauth')}
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {authMode === 'oauth'
-              ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
-              : 'text-slate-600 dark:text-[#8b949e]'}"
-          >
-            Application ID + Secret
-          </button>
-          <button
-            type="button"
-            on:click={() => (authMode = 'static')}
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {authMode === 'static'
-              ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
-              : 'text-slate-600 dark:text-[#8b949e]'}"
-          >
-            Statisk token
-          </button>
-        </div>
-
-        {#if authMode === 'oauth'}
-          <div class="space-y-3">
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Application ID
-              <input
-                type="password"
-                autocomplete="off"
-                bind:value={applicationId}
-                placeholder={status?.credential_saved ? '•••••••• (sparad)' : 'Ange Application ID'}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              />
-            </label>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Client Secret
-              <input
-                type="password"
-                autocomplete="off"
-                bind:value={secret}
-                placeholder={status?.credential_saved ? '•••••••• (sparad)' : 'Ange Client Secret'}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              />
-            </label>
-          </div>
-        {:else}
-          <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-            Statisk Bearer-token
-            <input
-              type="password"
-              autocomplete="off"
-              bind:value={staticToken}
-              placeholder={status?.credential_saved ? '•••••••• (sparad)' : 'Ange statisk token'}
-              class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-            />
-          </label>
-        {/if}
-
-        <div class="flex items-center justify-between pt-2">
-          <span class="text-xs text-slate-500 dark:text-[#8b949e]">
-            {status?.credential_saved ? 'Uppgifterna är sparade i datorns nyckellager.' : 'Inga uppgifter sparade ännu.'}
-          </span>
-          <button
-            type="button"
-            on:click={handleSaveCredentials}
-            disabled={
-              savingCredentials ||
-              (authMode === 'oauth' ? !applicationId.trim() || !secret.trim() : !staticToken.trim())
-            }
-            class="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-[#238636] dark:hover:bg-[#2ea043]"
-          >
-            {savingCredentials ? 'Sparar...' : 'Spara uppgifter'}
-          </button>
-        </div>
-      </section>
-    </div>
+    <GritSettingsPanel initialStatus={status} on:statusUpdated={(event) => { status = event.detail; settingsForm = { ...event.detail.settings }; }} on:saved={refreshStatusOnly} />
   {/if}
 </div>
 

@@ -325,10 +325,7 @@
           invokeAppIcon
         );
       }),
-      // 2. 日报 (今天) - 检查是否已存在（必须带上当前语言，否则会把中文日报缓存到其他语言的 key 下）
-      invoke<unknown>('get_saved_report', { date: today, locale: $locale }).then(report => {
-        if (report) cache.setReport(`${today}:${$locale}`, report);
-      })
+
     ]).then(() => {
       devLog('预加载完成');
     }).catch(e => {
@@ -342,8 +339,8 @@
     '/timeline': wrap({ asyncComponent: () => import('./routes/timeline/Timeline.svelte') }),
     '/timeline/summary/:date': wrap({ asyncComponent: () => import('./routes/timeline/Summary.svelte') }),
     '/timeline/summary': wrap({ asyncComponent: () => import('./routes/timeline/Summary.svelte') }),
-    '/report': wrap({ asyncComponent: () => import('./routes/report/Report.svelte') }),
-    '/ask': wrap({ asyncComponent: () => import('./routes/ask/Ask.svelte') }),
+    '/report': wrap({ asyncComponent: () => import('./routes/grit/GritWork.svelte') }),
+    '/ask': wrap({ asyncComponent: () => import('./routes/grit/TimeAnalysis.svelte') }),
     '/settings': wrap({ asyncComponent: () => import('./routes/settings/Settings.svelte') }),
     '/about': wrap({ asyncComponent: () => import('./routes/about/About.svelte') }),
   };

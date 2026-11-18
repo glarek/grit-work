@@ -17,6 +17,16 @@ Grit Work är en fork av [Work Review](https://github.com/wm94i/Work-Review) fö
 
 Lagringsuppskattningen visar ett grovt JPEG-spann per dag och 30 dagar utifrån skärmar, intervall, kvalitet och bildstorlek. Loggar tillkommer. Antalet timmar påverkar bara kalkylen. Alla skärmar sparas tillsammans i en bild; större maxbredd kan behövas för läsbar text. På Hyprland hanteras negativa skärmpositioner, blandad skalning och roterade skärmar. Om aktiv skärm inte kan identifieras på Wayland avbryts fångsten i stället för att samla in hela skrivbordet.
 
+## Ett gemensamt arbetsflöde
+
+Översikt, tidslinje, tidsanalys och tidrapport delar vald arbetsdag, underlag och rapportstatus. Översikten visar också projektfördelningen från den sparade tidrapporten. Registrerad aktivitet och rapporterade minuter är skilda mått; projektfördelning och debiterbarhet granskas i rapporten.
+
+Tidslinjens bilder, timsammanfattningar och JSON-export kan läsa verifierade arkiv efter lokal rensning. Arkiverat underlag är skrivskyddat. Översiktens statistik beräknas med samma databasfrågor för lokalt och arkiverat underlag; arkivdata läses i en tillfällig minnesdatabas. Intervall med arkiverade dagar begränsas till 31 dagar åt gången.
+
+**Tidsanalys** ersätter den generella AI-frågevyn i navigationen. Den använder samma inloggade CLI, modell och underlag som rapportgenereringen, med aktuella integritetsfilter. Svar sparas för vald dag (de senaste 20 frågorna); analysen får aldrig skapa tidsrader eller skicka tid till Spiris. Dagens pågående arbete kan analyseras, men tidrapporten skapas först när dygnet är avslutat. Sparade rapporter kan exporteras till CSV.
+
+Båda inställningsingångarna använder samma formulär för skärmbilder, långtidsarkiv, CLI och Spiris. System-, utseende- och integritetsinställningar finns kvar. De gamla, separata inställningarna för AI-API-nycklar, automatisk rapportering och overifierad lagringsrensning ingår inte i det aktiva Grit-flödet.
+
 ## Underlag och arkiv
 
 Lokal data ligger alltid i operativsystemets appdata: `%LOCALAPPDATA%\grit-work` på Windows, `$XDG_DATA_HOME/grit-work` (normalt `~/.local/share/grit-work`) på Linux och `~/Library/Application Support/grit-work` på macOS. På Unix begränsas katalogen till ägaren.
@@ -35,7 +45,7 @@ Arkivplatsen låses efter första arkiverade dygnet; flytt av befintligt arkiv s
 - Befintlig tid i Spiris för samma användare/dag blockerar överföringen. Den första versionen försöker inte slå ihop manuell tid och Grit-tid.
 - Varje avsikt att skicka sparas före anropet. Vid avbrott eller osäkert svar låses rapporten för avstämning. Inga automatiska omförsök av tidsrader. Delvis överförda rapporter kräver manuell avstämning om alla rader inte kan verifieras.
 
-Originalets övriga vyer finns kvar. Grit-flödet är på svenska, originalvyerna använder befintliga översättningar med engelska som standard. Automatisk uppdatering är avstängd tills forken har en egen signerad releasekedja.
+Originalets översiktsdiagram, aktivitetsgranskning och timsammanfattningar används i det gemensamma Grit-flödet. Grit-navigationen är svensk; vissa originalkontroller använder ännu befintliga översättningar med engelska som standard. Automatisk uppdatering är avstängd tills forken har en egen signerad releasekedja.
 
 ## Utveckling och verifiering
 
@@ -53,7 +63,9 @@ På Arch/Omarchy kan den färdigbyggda binären paketeras med `cd packaging/arch
 
 Kör `npm run dev -- --host 127.0.0.1 --port 5182`, sedan `node scripts/test-grit-ui.mjs` för webbläsartestet med syntetiskt underlag. `CHROMIUM_PATH` och `GRIT_TEST_URL` kan sättas. Testet kontrollerar att Spiris-anropet inte sker före bekräftelsen och tar bilder i systemets temporärkatalog.
 
-Typsnitten Figtree och JetBrains Mono följer med appen och fungerar utan nätanslutning. Med utvecklingsservern igång skapar `node scripts/export-grit-review.mjs` en sexsidig gransknings-PDF och separata gränssnittsurklipp i `all-artifacts/interface-review/`, enbart med syntetisk testdata.
+Typsnitten Figtree och JetBrains Mono följer med appen och fungerar utan nätanslutning. Med utvecklingsservern igång skapar `node scripts/export-grit-review.mjs` en niosidig gransknings-PDF och separata gränssnittsurklipp i `all-artifacts/interface-review/`, enbart med syntetisk testdata.
+
+`node scripts/test-grit-workflow.mjs` verifierar datumöverföring mellan vyer, gemensamma skärmbildsinställningar och att analysen inte anropar den gamla rapportmotorn eller Spiris-överföring.
 
 CLI-bildtestet körs med `cargo run -p work-review --example grit-agent-check -- PROVIDER MODEL IMAGE`, där den syntetiska bilden ska innehålla `SAPPHIRE-729`. Använd Herdr-panel för agentkörningar. `spiris-check` är ett separat läsdiagnostikverktyg som använder nyckellagret; det skickar aldrig tid.
 

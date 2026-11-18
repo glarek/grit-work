@@ -19,6 +19,15 @@ use uuid::Uuid;
 const API: &str = "https://publicapi.tid.vismaspcs.se/v1";
 static BUSY: AtomicBool = AtomicBool::new(false);
 static CANCEL: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
+static ANALYSIS_DAY: Mutex<Option<String>> = Mutex::new(None);
+struct AnalysisLease;
+impl Drop for AnalysisLease {
+    fn drop(&mut self) {
+        if let Ok(mut day) = ANALYSIS_DAY.lock() {
+            *day = None;
+        }
+    }
+}
 struct Operation;
 impl Operation {
     fn start() -> Result<Self, String> {
@@ -417,29 +426,30 @@ fn local_activities(state: &Arc<Mutex<AppState>>, date: &str) -> Result<Value, S
     }
     serde_json::to_value(a).map_err(error)
 }
+fn read_day_evidence(
+    state: &Arc<Mutex<AppState>>,
+    dir: &Path,
+    date: &str,
+) -> Result<(Value, bool), String> {
+    let s = state.lock().map_err(error)?;
+    let (rows, archived) =
+        match crate::commands::grit_read::day_activities(dir, &s.database, date).map_err(error)? {
+            crate::commands::grit_read::DayActivities::Local => (
+                s.database
+                    .get_activities_in_range(Some(date), Some(date), 10_000)
+                    .map_err(error)?,
+                false,
+            ),
+            crate::commands::grit_read::DayActivities::Archive(rows) => (rows, true),
+        };
+    let (ignored_apps, excluded_domains) = crate::commands::collect_privacy_filters(&s);
+    let rows =
+        crate::commands::filter_activities_by_privacy(rows, &ignored_apps, &excluded_domains);
+    Ok((serde_json::to_value(rows).map_err(error)?, archived))
+}
+
 fn evidence(state: &Arc<Mutex<AppState>>, dir: &Path, date: &str) -> Result<Value, String> {
-    let database = db(dir)?;
-    let archived: bool = database
-        .query_row("SELECT archived FROM days WHERE date=?", [date], |r| {
-            r.get(0)
-        })
-        .optional()
-        .map_err(error)?
-        .unwrap_or(false);
-    if archived {
-        let settings: Settings = get(&database, "settings")?.unwrap_or_default();
-        return grit_engine::load_archive(Path::new(&settings.archive_dir), date);
-    }
-    let a = local_activities(state, date)?;
-    if a.as_array().is_some_and(|a| !a.is_empty()) {
-        return Ok(a);
-    }
-    let db = db(dir)?;
-    let settings: Settings = get(&db, "settings")?.unwrap_or_default();
-    if settings.archive_dir.is_empty() {
-        return Err("Inget underlag finns för datumet.".into());
-    }
-    grit_engine::load_archive(Path::new(&settings.archive_dir), date)
+    read_day_evidence(state, dir, date).map(|(rows, _)| rows)
 }
 fn collect_dates(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<Vec<String>, String> {
     let mut dates = state
@@ -609,7 +619,7 @@ pub async fn grit_get_report(
     date: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Option<Report>, String> {
-    past_date(&date)?;
+    analysis_date(&date)?;
     report(&db(&local_dir(&state)?)?, &date)
 }
 #[tauri::command]
@@ -731,6 +741,248 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
     }
     Ok(())
 }
+fn evidence_for_cli(ev: &Value, dir: &Path, settings: &Settings) -> Result<Value, String> {
+    let mut ev_copy = ev.clone();
+    let local_root = dir.canonicalize().map_err(error)?;
+    let archive_root = Path::new(&settings.archive_dir).canonicalize().ok();
+    for a in ev_copy.as_array_mut().ok_or("Ogiltigt underlag")? {
+        if let Some(raw) = a["screenshot_path"].as_str().filter(|s| !s.is_empty()) {
+            let p = Path::new(raw);
+            let full = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                dir.join(p)
+            };
+            let actual = full
+                .canonicalize()
+                .map_err(|_| "En underlagsbild saknas.".to_string())?;
+            if !actual.starts_with(&local_root)
+                && !archive_root
+                    .as_ref()
+                    .is_some_and(|root| actual.starts_with(root))
+            {
+                return Err("Bildsökvägen ligger utanför underlaget.".into());
+            }
+            a["screenshot_path"] = json!(actual);
+        }
+    }
+    Ok(ev_copy)
+}
+
+fn analysis_date(date: &str) -> Result<(), String> {
+    let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(error)?;
+    if parsed.to_string() != date || parsed > Local::now().date_naive() {
+        return Err("Välj ett giltigt datum till och med idag.".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AnalysisAnswer {
+    question: String,
+    answer: String,
+    provider: String,
+    model: String,
+    created_at: i64,
+}
+
+#[tauri::command]
+pub async fn grit_day_context(
+    date: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Value, String> {
+    analysis_date(&date)?;
+    let dir = local_dir(&state)?;
+    let database = db(&dir)?;
+    let (ev, archived) = read_day_evidence(state.inner(), &dir, &date)?;
+    let activities = ev.as_array().ok_or("Ogiltigt underlag")?;
+    let seconds: i64 = activities
+        .iter()
+        .map(|a| a["duration"].as_i64().unwrap_or(0).max(0))
+        .sum();
+    let saved_report = report(&database, &date)?;
+    let catalog: Catalog = get(&database, "catalog")?.unwrap_or_default();
+    let mut allocation = std::collections::BTreeMap::<i64, (i64, bool)>::new();
+    if let Some(report) = &saved_report {
+        for row in &report.rows {
+            let entry = allocation.entry(row.project_id).or_default();
+            entry.0 += row.minutes;
+            entry.1 |= row.needs_review;
+        }
+    }
+    let projects: Vec<Value> = allocation.into_iter().map(|(id,(minutes,needs_review))| {
+        let project = catalog.projects.iter().find(|p|p.id==id);
+        json!({"id":id,"name":project.map(|p|p.name.as_str()).unwrap_or("Ej fördelat projekt"),"minutes":minutes,"needs_review":needs_review || project.is_none()})
+    }).collect();
+    Ok(
+        json!({"source":if archived {"archive"} else {"local"}, "activities":activities.len(), "minutes":seconds as f64 / 60.0, "report_status":saved_report.map(|r|r.status),"projects":projects}),
+    )
+}
+
+fn report_csv_cell(value: &str) -> String {
+    let risky =
+        value.trim_start().starts_with(['=', '+', '-', '@']) || value.starts_with(['\t', '\r']);
+    format!(
+        "\"{}{}\"",
+        if risky { "'" } else { "" },
+        value.replace('"', "\"\"")
+    )
+}
+
+#[tauri::command]
+pub async fn grit_export_report(
+    date: String,
+    target_path: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    analysis_date(&date)?;
+    let database = db(&local_dir(&state)?)?;
+    let saved = report(&database, &date)?.ok_or("Ingen sparad tidrapport finns för datumet.")?;
+    if ["running", "uploading"].contains(&saved.status.as_str()) {
+        return Err("Vänta tills rapportjobbet är klart före export.".into());
+    }
+    let catalog: Catalog = get(&database, "catalog")?.unwrap_or_default();
+    let target = Path::new(&target_path);
+    if target.extension().and_then(|v| v.to_str()) != Some("csv") {
+        return Err("Välj en fil med ändelsen .csv.".into());
+    }
+    let mut output =
+        String::from("\u{feff}Datum;Projekt-ID;Projekt;Start;Slut;Minuter;Beskrivning;Status\r\n");
+    for row in &saved.rows {
+        let project = catalog
+            .projects
+            .iter()
+            .find(|p| p.id == row.project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Ej fördelat projekt".into());
+        let time = |ts| {
+            Local
+                .timestamp_opt(ts, 0)
+                .single()
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default()
+        };
+        let fields = [
+            date.clone(),
+            row.project_id.to_string(),
+            project,
+            time(row.start),
+            time(row.end),
+            row.minutes.to_string(),
+            row.description.clone(),
+            saved.status.clone(),
+        ];
+        output.push_str(
+            &fields
+                .iter()
+                .map(|v| report_csv_cell(v))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+        output.push_str("\r\n");
+    }
+    std::fs::write(target, output).map_err(error)
+}
+
+#[tauri::command]
+pub async fn grit_get_analysis(
+    date: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Vec<AnalysisAnswer>, String> {
+    analysis_date(&date)?;
+    Ok(get(&db(&local_dir(&state)?)?, &format!("analysis:{date}"))?.unwrap_or_default())
+}
+
+fn analysis_text(value: &Value) -> Result<&str, String> {
+    let answer = value["summary"]
+        .as_str()
+        .filter(|v| !v.trim().is_empty() && v.len() <= 40_000)
+        .ok_or("Analysen saknar ett giltigt textsvar.")?;
+    if !value["rows"].as_array().is_some_and(|r| r.is_empty()) {
+        return Err(
+            "Analys får inte skapa tidsrader. Använd tidrapporten för rapportförslag.".into(),
+        );
+    }
+    Ok(answer)
+}
+
+#[tauri::command]
+pub async fn grit_analysis_job() -> Result<Option<String>, String> {
+    Ok(ANALYSIS_DAY.lock().map_err(error)?.clone())
+}
+
+#[tauri::command]
+pub async fn grit_analyze(
+    date: String,
+    question: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Vec<AnalysisAnswer>, String> {
+    let op = Arc::new(Operation::start()?);
+    analysis_date(&date)?;
+    let question = question.trim().to_string();
+    if question.is_empty() || question.len() > 4000 {
+        return Err("Skriv en fråga på högst 4 000 tecken.".into());
+    }
+    let dir = local_dir(&state)?;
+    let database = db(&dir)?;
+    let settings: Settings = get(&database, "settings")?.unwrap_or_default();
+    let cat: Catalog = get(&database, "catalog")?.unwrap_or_default();
+    let ev = evidence(state.inner(), &dir, &date)?;
+    let ev_copy = evidence_for_cli(&ev, &dir, &settings)?;
+    let project_data = json!({"projects":cat.projects, "analysis_question":question});
+    let workspace = dir.join("jobs").join(Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&workspace).map_err(error)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700))
+            .map_err(error)?;
+    }
+    let cancel = CANCEL
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .clone();
+    cancel.store(false, Ordering::SeqCst);
+    let worker_settings = settings.clone();
+    let work = workspace.clone();
+    *ANALYSIS_DAY.lock().map_err(error)? = Some(date.clone());
+    let analysis_lease = Arc::new(AnalysisLease);
+    let worker_analysis_lease = analysis_lease.clone();
+    let worker_lease = op.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _lease = worker_lease;
+        let _analysis_lease = worker_analysis_lease;
+        crate::grit_cli::run_agent(
+            &worker_settings.provider,
+            &worker_settings.model,
+            &work,
+            &ev_copy,
+            &project_data,
+            worker_settings.timeout_seconds,
+            cancel,
+        )
+    })
+    .await
+    .map_err(error)
+    .and_then(|r| r);
+    let _ = std::fs::remove_dir_all(workspace);
+    let value = result?;
+    let answer = analysis_text(&value)?;
+    let key = format!("analysis:{date}");
+    let mut history: Vec<AnalysisAnswer> = get(&database, &key)?.unwrap_or_default();
+    history.push(AnalysisAnswer {
+        question,
+        answer: answer.into(),
+        provider: settings.provider,
+        model: settings.model,
+        created_at: Local::now().timestamp(),
+    });
+    if history.len() > 20 {
+        history.drain(..history.len() - 20);
+    }
+    put(&database, &key, &history)?;
+    Ok(history)
+}
+
 #[tauri::command]
 pub async fn grit_generate(
     date: String,
@@ -765,30 +1017,7 @@ pub async fn grit_generate(
         .clone();
     cancel.store(false, Ordering::SeqCst);
     let project_data = json!({"projects":cat.projects,"activities":cat.activities,"articles":cat.articles,"default_activity_id":settings.activity_id,"default_article_id":settings.article_id});
-    let mut ev_copy = ev.clone();
-    let local_root = dir.canonicalize().map_err(error)?;
-    let archive_root = Path::new(&settings.archive_dir).canonicalize().ok();
-    for a in ev_copy.as_array_mut().ok_or("Ogiltigt underlag")? {
-        if let Some(raw) = a["screenshot_path"].as_str().filter(|s| !s.is_empty()) {
-            let p = Path::new(raw);
-            let full = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                dir.join(p)
-            };
-            let actual = full
-                .canonicalize()
-                .map_err(|_| "En underlagsbild saknas.".to_string())?;
-            if !actual.starts_with(&local_root)
-                && !archive_root
-                    .as_ref()
-                    .is_some_and(|root| actual.starts_with(root))
-            {
-                return Err("Bildsökvägen ligger utanför underlaget.".into());
-            }
-            a["screenshot_path"] = json!(actual);
-        }
-    }
+    let ev_copy = evidence_for_cli(&ev, &dir, &settings)?;
     let workspace = dir.join("jobs").join(Uuid::new_v4().to_string());
     std::fs::create_dir_all(&workspace).map_err(error)?;
     #[cfg(unix)]
@@ -1229,6 +1458,25 @@ pub fn capture_resumed(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spreadsheet_export_quotes_values_and_neutralizes_formulas() {
+        assert_eq!(report_csv_cell("=1+1"), "\"'=1+1\"");
+        assert_eq!(report_csv_cell("a;\"b\""), "\"a;\"\"b\"\"\"");
+        assert_eq!(report_csv_cell("Utveckling"), "\"Utveckling\"");
+    }
+    #[test]
+    fn analysis_rejects_report_rows_and_invalid_text() {
+        assert_eq!(
+            analysis_text(&json!({"summary":"Underlag #1 visar arbete.","rows":[]})).unwrap(),
+            "Underlag #1 visar arbete."
+        );
+        assert!(analysis_text(&json!({"summary":"ok","rows":[{"project_id":42}]})).is_err());
+        assert!(analysis_text(&json!({"summary":" ","rows":[]})).is_err());
+        assert!(analysis_text(&json!({"summary":"x".repeat(40_001),"rows":[]})).is_err());
+        assert!(analysis_date(&Local::now().date_naive().to_string()).is_ok());
+        assert!(analysis_date("2099-12-31").is_err());
+        assert!(analysis_date("2026-99-99").is_err());
+    }
     #[test]
     fn capture_settings_validate_and_survive_config_normalization() {
         let mut config = work_review_core::config::AppConfig::default();

@@ -14,7 +14,11 @@ fn main() -> Result<(), String> {
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let activities = json!([{"id":1,"timestamp":1768208400_i64,"duration":3600,"app_name":"Editor","window_title":"Task board","screenshot_path":image}]);
-    let projects = json!({"projects":[{"id":42,"name":"ORBIT","number":"42","active":true}],"activities":[{"id":2,"name":"Development"}],"articles":[{"id":3,"name":"Hour"}],"default_activity_id":2,"default_article_id":3});
+    let mut projects = json!({"projects":[{"id":42,"name":"ORBIT","number":"42","active":true}],"activities":[{"id":2,"name":"Development"}],"articles":[{"id":3,"name":"Hour"}],"default_activity_id":2,"default_article_id":3});
+    let analysis = std::env::args().nth(4).as_deref() == Some("--analysis");
+    if analysis {
+        projects["analysis_question"] = json!("Vilket är det exakta ärendenumret som syns i bilden? Svara med numret och vad underlaget visar.");
+    }
     let result = grit_cli::run_agent(
         &provider,
         &model,
@@ -30,18 +34,24 @@ fn main() -> Result<(), String> {
         eprintln!("Synthetic diagnostic retained at {}", work.display());
     }
     let result = result?;
-    let description = result["rows"]
+    let mut description = result["rows"]
         .as_array()
         .ok_or("rows missing")?
         .iter()
         .map(|r| r["description"].as_str().unwrap_or(""))
         .collect::<Vec<_>>()
         .join(" ");
+    if analysis {
+        if !result["rows"].as_array().is_some_and(|r| r.is_empty()) {
+            return Err("Analysis created report rows".into());
+        }
+        description = result["summary"].as_str().unwrap_or("").into();
+    }
     if !description.contains("SAPPHIRE-729") {
         return Err(format!(
             "Vision identifier not present in description: {description}"
         ));
     }
-    println!("PASS: {provider} read synthetic image identifier and produced report JSON");
+    println!("PASS: {provider} read synthetic image identifier and produced valid JSON (analysis={analysis})");
     Ok(())
 }

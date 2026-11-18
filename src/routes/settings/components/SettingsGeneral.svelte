@@ -33,6 +33,7 @@
   type TimePart = number | string | null | undefined;
 
   export let config: GeneralConfig;
+  export let showAutoReport = true;
 
   const dispatch = createEventDispatcher<{ change: GeneralConfig }>();
   $: currentLocale = $locale;
@@ -441,6 +442,7 @@
         <input type="checkbox" bind:checked={config.memory_enabled} on:change={handleChange} class="accent-primary-500" />
       </label>
     </CollapsibleSection>
+    {#if showAutoReport}
     <div class="settings-block pt-4 border-t border-slate-200 dark:border-[#30363d]">
       <div class="flex flex-wrap items-center gap-3">
         <span class="settings-text">{t('settingsGeneral.reportAutoGenerateTime')}</span>
@@ -471,6 +473,7 @@
       </div>
       <p class="settings-note">{t('settingsGeneral.reportAutoGenerateTimeHint')}</p>
     </div>
+    {/if}
 
     <!-- 系统行为 -->
     <div class="settings-block pt-4 border-t border-slate-200 dark:border-[#30363d]">

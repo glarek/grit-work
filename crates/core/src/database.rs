@@ -758,6 +758,16 @@ impl Database {
         Ok(db)
     }
 
+    /// Ephemeral database for verified archive rows. Nothing is written to the app database.
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
+        db.init_tables()?;
+        Ok(db)
+    }
+
     /// 备份数据库到目标路径
     pub fn backup_to(&self, db_path: &Path) -> Result<()> {
         if let Some(parent) = db_path.parent() {
@@ -1178,6 +1188,56 @@ impl Database {
         tx.commit()?;
 
         Ok(activity_id)
+    }
+
+    /// Insert a verified activity while keeping its original primary key.
+    /// Used by ephemeral archive reads so grouped timeline rows keep evidence ids.
+    pub fn insert_activity_snapshot(&self, activity: &Activity) -> Result<i64> {
+        let id = activity.id.ok_or_else(|| {
+            AppError::Database(rusqlite::Error::InvalidParameterName(
+                "活动快照缺少原始 id".to_string(),
+            ))
+        })?;
+        let conn = self.conn.lock().map_err(|e| {
+            AppError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
+        let normalized_browser_url = activity
+            .browser_url
+            .as_deref()
+            .map(normalize_url)
+            .filter(|url| !url.is_empty());
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO activities (id, timestamp, app_name, window_title, screenshot_path, ocr_text, category, duration, browser_url, executable_path, semantic_category, semantic_confidence, screenshot_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                id,
+                activity.timestamp,
+                activity.app_name,
+                activity.window_title,
+                activity.screenshot_path,
+                activity.ocr_text,
+                activity.category,
+                activity.duration,
+                normalized_browser_url,
+                activity.executable_path,
+                activity.semantic_category,
+                activity.semantic_confidence,
+                activity.screenshot_url,
+            ],
+        )?;
+        tx.execute(
+            "UPDATE semantic_memory_state
+             SET rebuild_required = CASE WHEN status = 'ready' THEN 1 ELSE rebuild_required END,
+                 status = CASE WHEN status = 'ready' THEN 'idle' ELSE status END,
+                 build_id = CASE WHEN status = 'ready' THEN '' ELSE build_id END,
+                 total_activities = (SELECT COUNT(*) FROM activities),
+                 updated_at = ?1
+             WHERE singleton_id = 1",
+            params![chrono::Utc::now().timestamp()],
+        )?;
+        tx.commit()?;
+        Ok(id)
     }
 
     /// 获取指定应用最近24小时内的最新一条活动记录
@@ -5137,13 +5197,7 @@ mod tests {
     }
 
     fn in_memory_db() -> Database {
-        let db = Database {
-            conn: std::sync::Arc::new(std::sync::Mutex::new(
-                rusqlite::Connection::open_in_memory().expect("创建内存数据库失败"),
-            )),
-        };
-        db.init_tables().expect("初始化内存数据库失败");
-        db
+        Database::open_in_memory().expect("创建内存数据库失败")
     }
 
     #[test]

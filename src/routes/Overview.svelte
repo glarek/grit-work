@@ -1,4 +1,6 @@
 <script lang="ts">
+  import WorkflowBar from "./grit/WorkflowBar.svelte";
+  import { workDate, selectWorkDate } from "./grit/workflow.ts";
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
@@ -257,10 +259,10 @@
   let unlisten: (() => void) | null = null;
   let componentDestroyed = false;
   let currentTime = new Date();
-  let overviewMode: OverviewMode = 'today';
+  let overviewMode: OverviewMode = 'date';
   let selectedCompositionCategory: string | null = null;
-  let selectedDateFrom = getLocalDateString();
-  let selectedDateTo = getLocalDateString();
+  let selectedDateFrom = get(workDate);
+  let selectedDateTo = get(workDate);
   let clockInterval: ReturnType<typeof setInterval> | null = null;
   let refreshInterval: ReturnType<typeof setInterval> | null = null;
   let handleActivityAdded: EventListener | null = null;
@@ -1105,6 +1107,8 @@
     loadStats(true);
   }
 
+  $: selectWorkDate(overviewMode === 'today' ? getLocalDateString() : selectedDateFrom);
+
   function normalizeSelectedDateRange() {
     if (selectedDateTo < selectedDateFrom) {
       selectedDateTo = selectedDateFrom;
@@ -1409,6 +1413,7 @@
 />
 
 <div class="page-shell" data-locale={currentLocale}>
+  <WorkflowBar date={overviewMode === "today" ? getLocalDateString() : selectedDateFrom} current="/overview" showProjects />
   <!-- 页面标题 -->
   <div class="page-header">
     <div class="page-title-group">
@@ -1418,7 +1423,7 @@
         </svg>
       </div>
       <div class="page-title-copy">
-        <h2>{t('overview.title')}</h2>
+        <h2>Arbetsöversikt</h2>
         <p>
         {overviewSubtitle}
         {#if overviewMode === 'today'}

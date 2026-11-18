@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { get } from "svelte/store";
+  import WorkflowBar from "../grit/WorkflowBar.svelte";
+  import { workDate, selectWorkDate } from "../grit/workflow.ts";
   import { onMount, onDestroy, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -108,7 +111,8 @@
   let hourlySummaries: HourlySummaryRecord[] = [];
   let loading = true;
   let error: string | null = null;
-  let selectedDate = getLocalDateString();
+  let selectedDate = get(workDate);
+  let archivedDay = false;
   let selectedActivity: TimelineActivityDetail | null = null;
   let showSummaryDrawer = false;
   let summaryRefreshing = false;
@@ -1029,7 +1033,7 @@
     await tick();
     detailCloseButton?.focus();
 
-    const freshActivityPromise = activity.id
+    const freshActivityPromise = activity.id && !archivedDay
       ? invoke<TimelineActivity | null>('get_activity', { id: activity.id }).catch((e) => {
           console.warn('获取最新活动数据失败:', e);
           return null;
@@ -1156,6 +1160,7 @@
 
   // 删除单条活动记录（连带截图）
   async function deleteActivity(activity: TimelineActivity | null): Promise<void> {
+    if (archivedDay) { showToast('Arkiverat underlag är skrivskyddat.', 'error'); return; }
     if (!activity?.id) return;
     const ok = await confirm({
       tone: 'warning',
@@ -1206,6 +1211,7 @@
   }
 
   async function doCleanupByDate() {
+    if (archivedDay) { showToast('Arkiverat underlag är skrivskyddat.', 'error'); return; }
     if (!selectedDate || cleanupBusy) return;
     const ok = await confirm({
       tone: 'warning',
@@ -1234,6 +1240,7 @@
   }
 
   async function doCleanupByRange() {
+    if (archivedDay) { showToast('Arkiverat underlag är skrivskyddat.', 'error'); return; }
     if (cleanupBusy) return;
     if (!cleanupRangeStart || !cleanupRangeEnd) {
       showToast(t('timeline.noActivitiesToDelete'), 'error');
@@ -1271,6 +1278,7 @@
   }
 
   async function doCleanupByApp() {
+    if (archivedDay) { showToast('Arkiverat underlag är skrivskyddat.', 'error'); return; }
     if (cleanupBusy || !cleanupApp) return;
     const ok = await confirm({
       tone: 'warning',
@@ -1314,6 +1322,7 @@
   $: featuredActivityIds = new Set(selectFeaturedActivityIds(activities));
 
   // 检查是否是今天
+  $: selectWorkDate(selectedDate);
   $: isToday = selectedDate === getLocalDateString();
   // 圆点绿+脉冲还需要"正在录制"：停止记录后圆点应变灰（issue #131）
   $: recordingState = $recordingStore;
@@ -1403,6 +1412,8 @@
 <svelte:window on:keydown={handleTimelineWindowKeydown} />
 
 <div class="page-shell" data-locale={currentLocale}>
+  <WorkflowBar date={selectedDate} current="/timeline" bind:archived={archivedDay} />
+  {#if archivedDay}<p class="mb-4 text-sm text-slate-500">Verifierat arkiv: underlaget är skrivskyddat. Projektfördelning och tidsjusteringar görs i tidrapporten.</p>{/if}
   <!-- 页面标题 -->
   <div class="page-header">
     <div class="page-title-group">
@@ -1413,9 +1424,9 @@
         </svg>
       </div>
       <div class="page-title-copy">
-        <h2>{t('timeline.title')}</h2>
+        <h2>Tidslinje</h2>
         <p>
-        {t('timeline.subtitle')}
+        Arbetsunderlag för analys och tidrapport
         {#if isToday}
           <span class="ms-1.5 inline-flex items-center gap-1.5">
             <span class="w-1.5 h-1.5 rounded-full {timelineDotActive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400 dark:bg-[#484f58]'}"></span>

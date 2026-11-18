@@ -33,7 +33,7 @@ test('应用应提供 A/B/C 三套可持久化界面风格并作用到根壳层'
   assert.match(settingsSource, /loadedConfig\.ui_visual_style/);
   assert.match(settingsSource, /loadedConfig\.ui_visual_style = 'c'/);
   assert.match(settingsSource, /import SettingsAppearance/);
-  assert.match(settingsSource, /settings\.tabs\.appearance/);
+  assert.match(settingsSource, /id:\s*'appearance',\s*label:\s*'Utseende'/);
   assert.match(settingsSource, /activeTab === 'appearance'/);
   assert.match(settingsSource, /function handleSettingsChange/);
   assert.match(settingsSource, /function handleSettingsChange\(event: CustomEvent<unknown>\)/);

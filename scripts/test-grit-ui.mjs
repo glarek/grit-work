@@ -9,9 +9,21 @@ await page.addInitScript(()=>{
  const settings={archive_dir:'/mnt/archive/grit',provider:'codex',model:'gpt-6.2-sol',user_id:1,article_id:3,activity_id:2,time_code_id:4,billable:false,timeout_seconds:600};
  let report={date,revision:'review-1',status:'draft',summary:'Arbetade med ORBIT: förbättrade återförsök vid uppladdning och verifierade felhanteringen.',rows:[{id:'row-1',project_id:42,article_id:3,activity_id:2,start,end:start+3600,minutes:60,description:'SAPPHIRE-729: förbättrade återförsök och verifierade felhantering.',evidence_ids:[1,2,3],needs_review:false,remote_id:null}],error:null};
  const status={capture:{interval_seconds:300,display_mode:'active_window',jpeg_quality:85,max_image_width:2560,width_mode:'fixed'},monitors:[{name:'Skärm 1',width:2560,height:1440,x:0,y:0,scale_factor:1},{name:'Skärm 2',width:1920,height:1080,x:2560,y:0,scale_factor:1}],settings,local_dir:'/home/example/.local/share/grit-work',yesterday:date,pending_dates:[],projects:[{id:42,name:'ORBIT',number:'42',active:true}],users:[{id:1,name:'Testanvändare'}],articles:[{id:3,name:'Arbetstid'}],activities:[{id:2,name:'Utveckling'}],time_codes:[{id:4,name:'Normal arbetstid'}],credential_saved:true,report,last_error:null};
- window.testCalls=[];
+ let analysisHistory=[]; let analysisJob=null;
+ window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:()=>{}};
+ window.testCalls=[]; window.testCallArgs=[];
  window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:()=>0,convertFileSrc:p=>p,invoke:async(cmd,args)=>{
-  window.testCalls.push(cmd);
+  window.testCalls.push(cmd); window.testCallArgs.push({cmd,args});
+  if(cmd==='grit_day_context')return {source:'archive',activities:3,minutes:60,report_status:report.status,projects:[{id:42,name:'ORBIT',minutes:60,needs_review:false}]};
+  if(cmd==='grit_get_analysis')return analysisHistory;
+  if(cmd==='grit_analysis_job')return analysisJob;
+  if(cmd==='grit_analyze'){analysisJob=args.date; await new Promise(resolve=>setTimeout(resolve,window.analysisDelay||0)); analysisHistory=[...analysisHistory,{question:args.question,answer:'Underlaget visar 60 minuter arbete med ORBIT. Kontrollera projektfördelningen mot tidslinjen före rapportering. Underlag: #1, #2, #3.',provider:settings.provider,model:settings.model,created_at:start+3600}];analysisJob=null;return analysisHistory;}
+  if(cmd==='grit_save_settings'){Object.assign(settings,args.settings);return null;}
+  if(cmd==='get_timeline')return [{id:1,timestamp:start+3600,duration:3600,app_name:'Editor',window_title:'ORBIT · SAPPHIRE-729',screenshot_path:'',ocr_text:null,category:'work',browser_url:null,executable_path:null,semantic_category:null,semantic_confidence:null}];
+  if(['get_hourly_summaries','get_categories','get_custom_semantic_categories','get_semantic_categories','get_hourly_app_breakdown'].includes(cmd))return [];
+  if(['get_today_stats','get_daily_stats','get_overview_stats'].includes(cmd))return {total_duration:3600,screenshot_count:3,app_usage:[{app_name:'Editor',duration:3600,count:3}],category_usage:[{category:'work',duration:3600}],browser_duration:0,domain_usage:[],domain_total_count:0,browser_usage:[],work_time_duration:3600,overtime_duration:0,hourly_activity_distribution:[]};
+  if(cmd==='get_range_daily_totals')return [{date,total_duration:3600}];
+  if(cmd==='get_overview_domains')return {total_count:0,domains:[]};
   if(cmd==='grit_status')return {...status,report};
   if(cmd==='grit_get_report')return report;
   if(cmd==='grit_save_capture_settings'){status.capture={...args.settings};return null;}

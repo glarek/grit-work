@@ -55,12 +55,22 @@ pub(crate) fn load_daily_stats_for_overview(
 ) -> Result<DailyStats, AppError> {
     let segments = state.config.effective_work_segments();
     let (ignored_apps, excluded_domains) = collect_privacy_filters(state);
-    let mut stats = state.database.get_daily_stats_with_segments_filtered(
-        date,
-        &segments,
-        &ignored_apps,
-        &excluded_domains,
-    )?;
+    let mut stats = match super::grit_read::day_activities(&state.data_dir, &state.database, date)?
+    {
+        super::grit_read::DayActivities::Local => {
+            state.database.get_daily_stats_with_segments_filtered(
+                date,
+                &segments,
+                &ignored_apps,
+                &excluded_domains,
+            )?
+        }
+        super::grit_read::DayActivities::Archive(rows) => {
+            let rows =
+                super::shared::filter_activities_by_privacy(rows, &ignored_apps, &excluded_domains);
+            super::grit_read::daily_stats_from_activities(date, &rows, &segments)?
+        }
+    };
 
     apply_flex_overtime_correction(
         &mut stats,
@@ -620,6 +630,7 @@ fn load_full_overview_stats(
                 let date_value = start.format("%Y-%m-%d").to_string();
                 load_daily_stats_for_overview(state, &date_value)?
             } else {
+                super::grit_read::ensure_archive_range(&state.data_dir, start, end)?;
                 let mut daily_stats = Vec::new();
                 let mut current = start;
                 while current <= end {
@@ -639,6 +650,7 @@ fn load_full_overview_stats(
                 .map_err(|e| AppError::Config(format!("解析周概览开始日期失败: {e}")))?;
             let end = chrono::NaiveDate::parse_from_str(&date_to, "%Y-%m-%d")
                 .map_err(|e| AppError::Config(format!("解析周概览结束日期失败: {e}")))?;
+            super::grit_read::ensure_archive_range(&state.data_dir, start, end)?;
 
             let mut daily_stats = Vec::new();
             let mut current = start;
@@ -740,22 +752,8 @@ pub(crate) fn get_daily_stats_inner(
     date: &str,
     state: &Arc<Mutex<AppState>>,
 ) -> Result<DailyStats, AppError> {
-    let s = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
-    let segments = s.config.effective_work_segments();
-    let (ignored_apps, excluded_domains) = collect_privacy_filters(&s);
-    let mut stats = s.database.get_daily_stats_with_segments_filtered(
-        date,
-        &segments,
-        &ignored_apps,
-        &excluded_domains,
-    )?;
-    apply_flex_overtime_correction(
-        &mut stats,
-        s.config.work_time_enabled,
-        s.config.standard_work_hours,
-    );
-    let stats = apply_website_semantic_rules_to_stats(stats, &s.config.website_semantic_rules);
-    Ok(stats)
+    let state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+    load_daily_stats_for_overview(&state, date)
 }
 
 /// 获取指定日期的统计
@@ -798,13 +796,56 @@ pub(crate) fn get_hourly_app_breakdown_inner(
         }
     };
 
+    let start = chrono::NaiveDate::parse_from_str(&date_from, "%Y-%m-%d")
+        .map_err(|error| AppError::Config(format!("解析小时统计开始日期失败: {error}")))?;
+    let end = chrono::NaiveDate::parse_from_str(&date_to, "%Y-%m-%d")
+        .map_err(|error| AppError::Config(format!("解析小时统计结束日期失败: {error}")))?;
+    super::grit_read::ensure_archive_range(&state.data_dir, start, end)?;
     let (ignored_apps, excluded_domains) = collect_privacy_filters(&state);
-    state.database.get_hourly_app_breakdown_range_filtered(
-        &date_from,
-        &date_to,
-        &ignored_apps,
-        &excluded_domains,
-    )
+    let mut archived_days = Vec::new();
+    let mut current = start;
+    while current <= end {
+        let current_date = current.format("%Y-%m-%d").to_string();
+        if let super::grit_read::DayActivities::Archive(rows) =
+            super::grit_read::day_activities(&state.data_dir, &state.database, &current_date)?
+        {
+            let rows =
+                super::shared::filter_activities_by_privacy(rows, &ignored_apps, &excluded_domains);
+            archived_days.push((current_date, rows));
+        }
+        current = current
+            .succ_opt()
+            .ok_or_else(|| AppError::Config("计算小时统计日期失败".to_string()))?;
+    }
+    if archived_days.is_empty() {
+        return state.database.get_hourly_app_breakdown_range_filtered(
+            &date_from,
+            &date_to,
+            &ignored_apps,
+            &excluded_domains,
+        );
+    }
+    let mut buckets = Vec::new();
+    let mut cursor = start;
+    while cursor <= end {
+        let current_date = cursor.format("%Y-%m-%d").to_string();
+        let day_buckets =
+            if let Some((_, rows)) = archived_days.iter().find(|(day, _)| day == &current_date) {
+                super::grit_read::hourly_apps_from_activities(&current_date, rows)?
+            } else {
+                state.database.get_hourly_app_breakdown_range_filtered(
+                    &current_date,
+                    &current_date,
+                    &ignored_apps,
+                    &excluded_domains,
+                )?
+            };
+        super::grit_read::add_hourly_app_buckets(&mut buckets, &day_buckets);
+        cursor = cursor
+            .succ_opt()
+            .ok_or_else(|| AppError::Config("计算小时统计日期失败".to_string()))?;
+    }
+    Ok(buckets)
 }
 
 /// 获取每小时×应用的时长分布
@@ -1005,6 +1046,28 @@ pub(crate) fn get_hourly_summaries_inner(
     state: &Arc<Mutex<AppState>>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     use chrono::Timelike;
+
+    let archived = {
+        let guard = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+        match super::grit_read::day_activities(&guard.data_dir, &guard.database, date)? {
+            super::grit_read::DayActivities::Archive(rows) => {
+                let (ignored_apps, excluded_domains) = collect_privacy_filters(&guard);
+                let data_dir = guard.data_dir.clone();
+                let rows = super::shared::filter_activities_by_privacy(
+                    rows,
+                    &ignored_apps,
+                    &excluded_domains,
+                );
+                Some(super::grit_read::hourly_summaries_from_activities(
+                    date, &rows, &data_dir,
+                )?)
+            }
+            super::grit_read::DayActivities::Local => None,
+        }
+    };
+    if let Some(summaries) = archived {
+        return Ok(summaries);
+    }
 
     let app_state = state.clone();
 

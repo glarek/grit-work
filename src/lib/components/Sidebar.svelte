@@ -35,10 +35,9 @@
   let localeMenuContainer: HTMLElement | null = null;
 
   const navItems: NavItem[] = [
-    { path: '/', labelKey: 'Grit Work', icon: 'grit' },
+    { path: '/', labelKey: 'Tidrapporter', icon: 'grit' },
     { path: '/overview', labelKey: 'sidebar.nav.overview', icon: 'home' },
     { path: '/timeline', labelKey: 'sidebar.nav.timeline', icon: 'timeline' },
-    { path: '/report', labelKey: 'sidebar.nav.report', icon: 'report' },
     { path: '/ask', labelKey: 'sidebar.nav.ask', icon: 'ask' },
     { path: '/settings', labelKey: 'sidebar.nav.settings', icon: 'settings' },
     { path: '/about', labelKey: 'sidebar.nav.about', icon: 'info' },
@@ -47,7 +46,8 @@
   $: currentLocale = $locale;
   $: translate = (key: string, params: InterpolationParams = {}) => {
     currentLocale;
-    return t(key, params);
+    const labels: Record<string, string> = { 'sidebar.nav.overview': 'Översikt', 'sidebar.nav.timeline': 'Tidslinje', 'sidebar.nav.ask': 'Tidsanalys', 'sidebar.nav.settings': 'Inställningar', 'sidebar.nav.about': 'Om Grit Work', 'sidebar.recordingStatus': 'Insamling', 'sidebar.resume': 'Återuppta', 'sidebar.pause': 'Pausa' };
+    return labels[key] ?? t(key, params);
   };
   const localeOptionsBase: LocaleOption[] = [
     { value: 'zh-CN', label: 'ZH', fullLabelKey: 'sidebar.localeNames.zhCN' },
@@ -115,7 +115,7 @@
   $: activeStates = navItems.reduce<Record<string, boolean>>((acc, item) => {
     const loc = $location || '/';
     if (item.path === '/') {
-      acc[item.path] = loc === '/';
+      acc[item.path] = loc === '/' || loc === '/report';
     } else {
       acc[item.path] = loc === item.path || loc.startsWith(item.path + '/');
     }

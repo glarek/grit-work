@@ -109,15 +109,11 @@ test('设置页应在顶部单独展示权限区，并将背景外观放入独�
   const systemSource = readFileSync(new URL('../../../routes/settings/components/SettingsSystem.svelte', import.meta.url), 'utf8');
   const appearanceSource = readFileSync(new URL('../../../routes/settings/components/SettingsAppearance.svelte', import.meta.url), 'utf8');
 
-  assert.match(settingsSource, /settings\.tabs\.avatar/);
-  assert.match(settingsSource, /settings\.tabs\.appearance/);
-  assert.match(settingsSource, /import SettingsAvatar/);
+  assert.match(settingsSource, /id:\s*'appearance',\s*label:\s*'Utseende'/);
   assert.match(settingsSource, /import SettingsAppearance/);
   assert.match(settingsSource, /import SettingsSystem/);
   assert.match(settingsSource, /invoke(?:<[^>]+>)?\('get_runtime_platform'\)/);
-  assert.match(settingsSource, /activeTab === 'avatar'/);
   assert.match(settingsSource, /activeTab === 'appearance'/);
-  assert.match(settingsSource, /<SettingsAvatar bind:config on:change=\{\(\) => dirty = true\} \/>/);
   assert.match(settingsSource, /<SettingsAppearance bind:config mode="background-only" on:change=\{handleSettingsChange\} \/>/);
   assert.match(settingsSource, /\{#if settingsRuntimePlatform === 'macos'\}/);
   assert.match(settingsSource, /<SettingsSystem \/>/);
@@ -144,11 +140,11 @@ test('设置页应提供桌宠连续缩放滑杆', () => {
   assert.match(source, /step="0\.05"/);
 });
 
-test('桌面化身 Beta 应展示在外层标签栏，设置内容卡内不再渲染硬编码 Beta 徽标', () => {
+test('桌面化身 Beta 已从主设置工作台移除，设置内容卡内不再渲染硬编码 Beta 徽标', () => {
   const settingsSource = readFileSync(new URL('../../../routes/settings/Settings.svelte', import.meta.url), 'utf8');
   const appearanceSource = readFileSync(new URL('../../../routes/settings/components/SettingsAppearance.svelte', import.meta.url), 'utf8');
 
-  assert.match(settingsSource, /id:\s*'avatar'[\s\S]*beta:\s*true/);
+  assert.doesNotMatch(settingsSource, /id:\s*'avatar'/);
   assert.match(appearanceSource, /settingsAppearance\.avatar/);
   assert.match(appearanceSource, /settingsAppearance\.avatarBetaHint/);
   // 桌面化身区用 avatarBetaHint 文案、不应硬编码 Beta 徽标；

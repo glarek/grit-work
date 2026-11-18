@@ -4754,6 +4754,11 @@ async fn main() {
         .invoke_handler(tauri::generate_handler![
             grit::grit_save_capture_settings,
             grit::grit_status,
+            grit::grit_day_context,
+            grit::grit_get_analysis,
+            grit::grit_analyze,
+            grit::grit_analysis_job,
+            grit::grit_export_report,
             grit::grit_save_settings,
             grit::grit_save_credentials,
             grit::grit_sync_spiris,

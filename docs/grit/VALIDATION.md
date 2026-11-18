@@ -1,15 +1,19 @@
 # Validation — 2026-11-18
 
-- Frontend: `npm run verify:frontend` — 777 tests passed; Svelte check and Vite production build passed.
+- Frontend: `npm run verify:frontend` — 778 tests passed; Svelte check and Vite production build passed.
 - New report/archive/CLI and retention checks: `cargo test -p work-review --bin grit-work grit -- --test-threads=1` — 17 passed before adding the separately run, ignored display integration test.
 - Screen lock checks: 2 passed, including all-outputs-asleep handling.
 - Real active-monitor capture service on isolated Xvfb display (with xrandr output preserved): `grit_virtual_desktop_capture_saves_readable_image` — passed; saved file decoded successfully. This test is ignored in ordinary runs and requires `GRIT_VIRTUAL_DISPLAY_TEST=1`.
 - Core library: 189 tests passed, including rejecting corrupt activity rows instead of silently omitting them from an archive export.
-- Capture update: the full workspace run hit the unchanged timing-sensitive upstream retry-deadline test. A serial workspace run excluding that single test passed 793 tests, with the display test ignored; the retry-deadline test then passed separately (2.41 seconds). No deadline budget or test assertion was relaxed. The display test also passed separately.
+- Integrated workflow: final `cargo test --workspace --all-targets -- --test-threads=1` passed all 800 tests, with one virtual-display test ignored (passed separately in the capture iteration). Earlier runs exposed the known timing-sensitive upstream retry-deadline test; it passed in this final full run without changing its budget.
 - `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- Chromium interaction test with synthetic report: no runtime errors; the submit command occurs only after the final confirmation. Capture interval and all-screen selection persist across navigation. Both bundled fonts load successfully.
+- Chromium interaction test with synthetic report: no runtime errors; the submit command occurs only after the final confirmation. Capture interval and all-screen selection persist across navigation. Both bundled fonts load successfully. A separate workflow test carries a non-default date across timeline, overview, analysis and report; changes capture settings from the main Settings route and reads them in the report route; verifies no legacy AI/submission calls during analysis; and leaves/reopens a running background analysis successfully.
+- Archive read integration compares original SQL statistics, browser/domain data, hourly buckets and grouped timeline with verified archive results; preserves original IDs 123/907; covers duplicate local leftovers, corrupt archives, bounded ranges (including the inclusive 31-day boundary) and screenshot path confinement. Snapshot rows exist only in an in-memory database.
+- Settings merge tests preserve newer capture/appearance/privacy values while applying only fields edited in the stale form, including idle threshold and daily goals. Browser regression also confirms that saving capture options preserves an unsaved CLI-model edit.
+- CSV tests quote values and neutralize spreadsheet formulas. Analysis result validation rejects nonempty time rows and invalid text.
+- Codex read-only time analysis passed the synthetic image-only identifier test through Herdr using the same CLI runner as report generation.
 - New capture tests cover interval validation/normalization, storage estimate scaling, negative monitor coordinates, mixed DPI, portrait transforms, active-monitor selection, composition geometry, and rejecting excessive canvas allocation. CLI batches preserve all logs and images while limiting each batch to 48 distinct images.
-- Six-page PDF and seven interface excerpts exported from synthetic browser fixtures; every page visually inspected, including dark theme. No real time was submitted by the export.
+- Nine-page PDF and ten interface excerpts exported from synthetic browser fixtures; every page visually inspected, including dark theme. No real time was submitted by the export.
 - Native Linux application starts and renders in WebKitGTK on an isolated virtual display. The real Omarchy desktop was locked; it was not unlocked for testing. Grit now queries Omarchy's lock status and waits while outputs are asleep.
 - Live read-only Spiris test: authentication and all five registries returned HTTP 200 (47 projects, 5 users, 3 activities, 3 time codes, 8 time articles). No real time entries were posted.
 - Codex `gpt-6.2-sol`, Grok `grok-4.7-build-fast`, and agy `gemini-4-hydrogen-medium`: each read an identifier present only in a synthetic image and returned report JSON. CLI smoke tests were run visibly in the existing Herdr workspace.
