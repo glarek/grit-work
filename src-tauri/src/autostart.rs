@@ -71,7 +71,7 @@ pub fn init_autostart(app: &AppHandle) -> Result<()> {
     let quoted_exe = quote_windows_command_path(&current_exe.display().to_string());
 
     app.manage(AutoLaunchConfig {
-        app_name: app.package_info().name.clone(),
+        app_name: WINDOWS_AUTOSTART_RUN_VALUE.to_string(),
         quoted_app_path: quoted_exe,
     });
     Ok(())
@@ -149,9 +149,9 @@ pub fn is_autostart_enabled(app: AppHandle) -> Result<bool> {
     }
 }
 
-/// HKCU Run value. Must match `windows/hooks.nsh` and the Cargo package name.
-#[cfg(test)]
-pub const WINDOWS_AUTOSTART_RUN_VALUE: &str = "work-review";
+/// Fork-specific HKCU Run value; must match `windows/hooks.nsh`.
+#[cfg(any(windows, test))]
+pub const WINDOWS_AUTOSTART_RUN_VALUE: &str = "Grit Work";
 /// Opt-out marker. Installer upgrades must not recreate the Run value when this is 1.
 #[cfg(any(windows, test))]
 pub const WINDOWS_AUTOSTART_POLICY_KEY: &str = r"Software\se.grit.work";
@@ -234,7 +234,7 @@ mod installer_contract_tests {
 
     #[test]
     fn fresh_install_command_is_current_user_silent() {
-        assert_eq!(WINDOWS_AUTOSTART_RUN_VALUE, "work-review");
+        assert_eq!(WINDOWS_AUTOSTART_RUN_VALUE, "Grit Work");
         assert_eq!(
             windows_run_command(
                 r"C:\Users\adrian\AppData\Local\Grit Work\grit-work.exe",
@@ -265,9 +265,8 @@ mod installer_contract_tests {
     #[test]
     fn nsis_hook_matches_current_user_silent_default_and_opt_out() {
         let hook = include_str!("../windows/hooks.nsh");
-        assert!(hook.contains(
-            "HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"work-review\""
-        ));
+        assert!(hook
+            .contains("HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"Grit Work\""));
         assert!(hook.contains("--autostart --hidden"));
         assert!(hook.contains(WINDOWS_AUTOSTART_POLICY_KEY));
         assert!(hook.contains(WINDOWS_AUTOSTART_USER_DISABLED_VALUE));
