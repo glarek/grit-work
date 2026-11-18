@@ -12,6 +12,8 @@ export type GritReportStatus =
 
 export interface GritSettings {
   archive_dir: string;
+  archive_retention_days: number;
+  ai_consent: boolean;
   provider: GritProvider;
   model: string;
   user_id: number;
@@ -42,9 +44,12 @@ export interface GritRow {
   start: number;
   end: number;
   minutes: number;
+  submitted_minutes: number;
   description: string;
   evidence_ids: number[];
   needs_review: boolean;
+  manual: boolean;
+  manual_reason: string;
   remote_id: number | null;
 }
 
@@ -121,6 +126,8 @@ export const PROVIDER_LABELS: Record<
 export function createDefaultSettings(): GritSettings {
   return {
     archive_dir: '',
+    archive_retention_days: 90,
+    ai_consent: false,
     provider: 'codex',
     model: PROVIDER_DEFAULT_MODELS.codex,
     user_id: 0,
@@ -176,6 +183,11 @@ export function normalizeGritSettings(raw: unknown): GritSettings {
 
   return {
     archive_dir: toStringOr(raw.archive_dir, defaults.archive_dir),
+    archive_retention_days: Math.max(
+      1,
+      Math.trunc(toFiniteNumber(raw.archive_retention_days, defaults.archive_retention_days)),
+    ),
+    ai_consent: typeof raw.ai_consent === 'boolean' ? raw.ai_consent : defaults.ai_consent,
     provider,
     model,
     user_id: Math.trunc(toFiniteNumber(raw.user_id, defaults.user_id)),
@@ -222,9 +234,12 @@ export function normalizeGritRow(raw: unknown, index = 0): GritRow {
       start: 0,
       end: 0,
       minutes: 0,
+      submitted_minutes: 0,
       description: '',
       evidence_ids: [],
       needs_review: true,
+      manual: false,
+      manual_reason: '',
       remote_id: null,
     };
   }
@@ -249,9 +264,12 @@ export function normalizeGritRow(raw: unknown, index = 0): GritRow {
     start: Math.trunc(toFiniteNumber(raw.start, 0)),
     end: Math.trunc(toFiniteNumber(raw.end, 0)),
     minutes: Math.max(0, Math.trunc(toFiniteNumber(raw.minutes, 0))),
+    submitted_minutes: Math.max(0, Math.trunc(toFiniteNumber(raw.submitted_minutes, 0))),
     description: toStringOr(raw.description, ''),
     evidence_ids,
     needs_review: Boolean(raw.needs_review),
+    manual: Boolean(raw.manual),
+    manual_reason: toStringOr(raw.manual_reason, ''),
     remote_id,
   };
 }
@@ -380,10 +398,166 @@ export function formatMinutesSwedish(totalMinutes: number): string {
   return `${hours} h ${mins} min`;
 }
 
+export interface ProjectRoundingSummary {
+  projectId: number;
+  projectName: string;
+  recordedMinutes: number;
+  submittedMinutes: number;
+  paddingMinutes: number;
+  rowCount: number;
+}
+
+export interface ReportRoundingResult {
+  rowSubmittedMinutes: number[];
+  rowPaddingMinutes: number[];
+  projectTotals: ProjectRoundingSummary[];
+  totalRecordedMinutes: number;
+  totalSubmittedMinutes: number;
+  totalPaddingMinutes: number;
+}
+
+/**
+ * Deterministic per-project/day 30-minute ceiling rounding:
+ * submitted_minutes = ceil(sum(raw minutes) / 30) * 30 per project,
+ * with padding assigned to the LAST row for that project.
+ *
+ * When `preservePersisted` is true (uploaded/unknown/partial/uploading historical reports),
+ * persisted `row.submitted_minutes` (or `row.minutes` for legacy rows with 0) is used
+ * without re-rounding.
+ */
+export function computeProjectRounding(
+  rows: readonly GritRow[],
+  projects: readonly GritProject[],
+  preservePersisted = false,
+): ReportRoundingResult {
+  const rowSubmittedMinutes = rows.map((r) => Math.max(0, Math.trunc(r.minutes || 0)));
+  const rowPaddingMinutes = rows.map(() => 0);
+  const projectGroups = new Map<
+    number,
+    { indices: number[]; recordedMinutes: number; persistedSubmittedMinutes: number }
+  >();
+
+  rows.forEach((row, index) => {
+    const minutes = Math.max(0, Math.trunc(row.minutes || 0));
+    const persisted =
+      row.submitted_minutes > 0 ? Math.max(0, Math.trunc(row.submitted_minutes)) : minutes;
+    const existing = projectGroups.get(row.project_id);
+    if (existing) {
+      existing.indices.push(index);
+      existing.recordedMinutes += minutes;
+      existing.persistedSubmittedMinutes += persisted;
+    } else {
+      projectGroups.set(row.project_id, {
+        indices: [index],
+        recordedMinutes: minutes,
+        persistedSubmittedMinutes: persisted,
+      });
+    }
+    if (preservePersisted) {
+      rowSubmittedMinutes[index] = persisted;
+      rowPaddingMinutes[index] = Math.max(0, persisted - minutes);
+    }
+  });
+
+  const projectTotals: ProjectRoundingSummary[] = [];
+  let totalRecordedMinutes = 0;
+  let totalSubmittedMinutes = 0;
+
+  for (const [projectId, group] of projectGroups.entries()) {
+    const recordedMinutes = group.recordedMinutes;
+    const submittedMinutes = preservePersisted
+      ? group.persistedSubmittedMinutes
+      : recordedMinutes > 0
+        ? Math.ceil(recordedMinutes / 30) * 30
+        : 0;
+    const paddingMinutes = Math.max(0, submittedMinutes - recordedMinutes);
+
+    if (!preservePersisted) {
+      const lastIndex = group.indices[group.indices.length - 1];
+      if (lastIndex !== undefined && paddingMinutes > 0) {
+        rowSubmittedMinutes[lastIndex] = (rowSubmittedMinutes[lastIndex] ?? 0) + paddingMinutes;
+        rowPaddingMinutes[lastIndex] = paddingMinutes;
+      }
+    }
+
+    const project = projects.find((p) => p.id === projectId);
+    const projectName = project
+      ? `${project.number ? `${project.number} · ` : ''}${project.name}`
+      : projectId > 0
+        ? `Projekt #${projectId}`
+        : 'Inget projekt valt';
+
+    projectTotals.push({
+      projectId,
+      projectName,
+      recordedMinutes,
+      submittedMinutes,
+      paddingMinutes,
+      rowCount: group.indices.length,
+    });
+
+    totalRecordedMinutes += recordedMinutes;
+    totalSubmittedMinutes += submittedMinutes;
+  }
+
+  return {
+    rowSubmittedMinutes,
+    rowPaddingMinutes,
+    projectTotals,
+    totalRecordedMinutes,
+    totalSubmittedMinutes,
+    totalPaddingMinutes: totalSubmittedMinutes - totalRecordedMinutes,
+  };
+}
+
+export interface UnassignedGap {
+  start: number;
+  end: number;
+  minutes: number;
+}
+
+/**
+ * Finds unassigned gaps strictly between the first and last recorded/manual intervals
+ * (no assumed shift start/end or 8h day). Gaps are never auto-counted into totals.
+ */
+export function computeUnassignedGaps(rows: readonly GritRow[]): UnassignedGap[] {
+  const intervals = rows
+    .filter((r) => r.start > 0 && r.end > r.start)
+    .map((r) => ({ start: r.start, end: r.end }))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+
+  if (intervals.length < 2) {
+    return [];
+  }
+
+  const gaps: UnassignedGap[] = [];
+  let cursor = intervals[0]!.end;
+
+  for (let i = 1; i < intervals.length; i += 1) {
+    const current = intervals[i]!;
+    if (current.start > cursor) {
+      const minutes = Math.floor((current.start - cursor) / 60);
+      if (minutes >= 1) {
+        gaps.push({
+          start: cursor,
+          end: current.start,
+          minutes,
+        });
+      }
+    }
+    if (current.end > cursor) {
+      cursor = current.end;
+    }
+  }
+
+  return gaps;
+}
+
 export interface SubmitValidationResult {
   canSubmit: boolean;
   blockers: string[];
   totalMinutes: number;
+  submittedMinutes: number;
   invoiceableHours: number;
   unresolvedReviewCount: number;
   invalidProjectCount: number;
@@ -400,20 +574,30 @@ export function validateReportForSubmit(
       canSubmit: false,
       blockers: ['Ingen tidrapport är laddad.'],
       totalMinutes: 0,
+      submittedMinutes: 0,
       invoiceableHours: 0,
       unresolvedReviewCount: 0,
       invalidProjectCount: 0,
     };
   }
 
-  const totalMinutes = report.rows.reduce((sum, r) => sum + Math.max(0, r.minutes || 0), 0);
-  const invoiceableHours = computeInvoiceableHours(totalMinutes, status.settings.billable);
+  const rounding = computeProjectRounding(
+    report.rows,
+    status.projects,
+    !isReportEditable(report.status),
+  );
+  const totalMinutes = rounding.totalRecordedMinutes;
+  const submittedMinutes = rounding.totalSubmittedMinutes;
+  const invoiceableHours = computeInvoiceableHours(submittedMinutes, status.settings.billable);
   const unresolvedReviewCount = report.rows.filter((r) => r.needs_review).length;
   const invalidProjectCount = report.rows.filter(
     (r) => !isKnownProjectId(r.project_id, status.projects),
   ).length;
   const zeroMinuteCount = report.rows.filter((r) => (r.minutes || 0) <= 0).length;
   const emptyDescriptionCount = report.rows.filter((r) => !r.description.trim()).length;
+  const missingManualReasonCount = report.rows.filter(
+    (r) => r.manual && !r.manual_reason.trim(),
+  ).length;
 
   if (report.status !== 'draft') {
     if (report.status === 'uploaded') {
@@ -469,6 +653,12 @@ export function validateReportForSubmit(
     );
   }
 
+  if (missingManualReasonCount > 0) {
+    blockers.push(
+      `${missingManualReasonCount} ${missingManualReasonCount === 1 ? 'manuell rad saknar' : 'manuella rader saknar'} orsak/anledning.`,
+    );
+  }
+
   if (!report.revision.trim()) {
     blockers.push('Utkastet saknar revision. Spara utkastet först.');
   }
@@ -477,6 +667,7 @@ export function validateReportForSubmit(
     canSubmit: blockers.length === 0,
     blockers,
     totalMinutes,
+    submittedMinutes,
     invoiceableHours,
     unresolvedReviewCount,
     invalidProjectCount,

@@ -7847,6 +7847,7 @@ dependencies = [
  "uuid",
  "winapi",
  "windows-capture",
+ "winreg 0.55.0",
  "work-review-core",
  "x11",
 ]

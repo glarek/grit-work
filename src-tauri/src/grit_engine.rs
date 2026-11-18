@@ -72,6 +72,153 @@ pub fn archive_day(
     Ok(())
 }
 
+/// Delete one verified archive day. The day is renamed to `{date}.expired` first.
+/// A retry finishes that tombstone only when every remaining file still matches
+/// the manifest. Unknown files are left in place.
+pub fn expire_archive(archive_dir: &Path, date: &str) -> Result<(), String> {
+    parse_past_day(date)?;
+    let archive_dir = real_dir(archive_dir)?;
+    let root = archive_dir.join("grit-work");
+    if !path_exists_dir(&root)? {
+        return Ok(());
+    }
+    let root = real_dir(&root)?;
+    let day_dir = root.join(date);
+    let tombstone = root.join(format!("{date}.expired"));
+    if lexical_abs(&day_dir)? != day_dir || lexical_abs(&tombstone)? != tombstone {
+        return Err("archive day path is not canonical".into());
+    }
+    if !day_dir.starts_with(&root) || !tombstone.starts_with(&root) || day_dir == tombstone {
+        return Err("archive day escapes archive root".into());
+    }
+    let day_exists = path_exists_dir(&day_dir)?;
+    let tomb_exists = path_exists_dir(&tombstone)?;
+    if day_exists && tomb_exists {
+        return Err("archive expire is ambiguous: day and tombstone both exist".into());
+    }
+    if day_exists {
+        verify_day(&day_dir, date)?;
+        fs::rename(&day_dir, &tombstone)
+            .map_err(|e| format!("rename archive to tombstone: {e}"))?;
+        // Activities store original absolute day paths; tombstone cleanup
+        // verifies the same manifest hashes without reinterpreting those paths.
+    } else if !tomb_exists {
+        return Ok(());
+    }
+    cleanup_tombstone(&tombstone, date)
+}
+
+fn path_exists_dir(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err(format!("symlink prohibited: {}", path.display()))
+        }
+        Ok(meta) if meta.is_dir() => Ok(true),
+        Ok(_) => Err(format!(
+            "archive day is not a directory: {}",
+            path.display()
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("stat {}: {e}", path.display())),
+    }
+}
+
+fn cleanup_tombstone(dir: &Path, date: &str) -> Result<(), String> {
+    reject_symlink_chain(dir, false)?;
+    let manifest_path = dir.join(MANIFEST_FILE);
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err(format!("symlink prohibited: {}", manifest_path.display()))
+        }
+        Ok(meta) if meta.is_file() => cleanup_manifest_tombstone(dir, date, &manifest_path),
+        Ok(_) => Err("tombstone manifest is not a file".into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => cleanup_empty_tombstone(dir),
+        Err(error) => Err(format!("stat tombstone manifest: {error}")),
+    }
+}
+
+/// Payload files go first. `manifest.json` stays until they are gone so a crash can resume.
+fn cleanup_manifest_tombstone(dir: &Path, date: &str, manifest_path: &Path) -> Result<(), String> {
+    let manifest_bytes =
+        fs::read(manifest_path).map_err(|e| format!("read tombstone manifest: {e}"))?;
+    let manifest: ArchiveManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| format!("parse tombstone manifest: {e}"))?;
+    if manifest.date != date {
+        return Err("tombstone manifest date mismatch".into());
+    }
+    let on_disk = list_files(dir)?;
+    let mut allowed: BTreeSet<String> = manifest.files.keys().cloned().collect();
+    allowed.insert(MANIFEST_FILE.into());
+    if !on_disk.is_subset(&allowed) {
+        return Err("tombstone contains files that are not in the manifest".into());
+    }
+    let mut payload = Vec::new();
+    for (rel, expected_hash) in &manifest.files {
+        if rel == MANIFEST_FILE
+            || rel
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(format!("illegal archived path: {rel}"));
+        }
+        let path = dir.join(rel);
+        if lexical_abs(&path)? != path_under(dir, rel)? {
+            return Err(format!("archived path escapes tombstone: {rel}"));
+        }
+        if !path.exists() {
+            continue;
+        }
+        reject_symlink_chain(&path, false)?;
+        if sha256_file(&path)? != *expected_hash {
+            return Err(format!("tombstone file hash mismatch: {rel}"));
+        }
+        payload.push(path);
+    }
+    for path in payload {
+        fs::remove_file(&path)
+            .map_err(|e| format!("remove archived file {}: {e}", path.display()))?;
+    }
+    fs::remove_file(manifest_path).map_err(|e| format!("remove tombstone manifest: {e}"))?;
+    remove_empty_owned_dirs(dir)
+}
+
+/// Manifest already removed. Only empty directories may remain.
+fn cleanup_empty_tombstone(dir: &Path) -> Result<(), String> {
+    let on_disk = list_files(dir)?;
+    if !on_disk.is_empty() {
+        return Err("tombstone has files but no manifest".into());
+    }
+    remove_empty_owned_dirs(dir)
+}
+
+fn remove_empty_owned_dirs(root: &Path) -> Result<(), String> {
+    let mut dirs = Vec::new();
+    collect_real_dirs(root, &mut dirs)?;
+    dirs.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for dir in dirs {
+        fs::remove_dir(&dir)
+            .map_err(|e| format!("remove empty archive dir {}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+fn collect_real_dirs(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    reject_symlink_chain(dir, false)?;
+    out.push(dir.to_path_buf());
+    for entry in fs::read_dir(dir).map_err(|e| format!("read dir {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!("symlink prohibited: {}", path.display()));
+        }
+        if meta.is_dir() {
+            collect_real_dirs(&path, out)?;
+        }
+    }
+    Ok(())
+}
+
 /// Verify the archive and return the rewritten activity array.
 pub fn load_archive(archive_dir: &Path, date: &str) -> Result<Value, String> {
     parse_past_day(date)?;
@@ -1060,6 +1207,90 @@ mod tests {
             .unwrap(),
             b"aaa"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expire_removes_only_the_verified_day_and_retries_a_tombstone() {
+        let root = scratch();
+        let data = root.join("data");
+        let archive = root.join("archive");
+        fs::write(data.join("a.png"), b"aaa").unwrap();
+        let activities = json!([{"screenshot_path": "a.png", "ocr_text": "a"}]);
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        archive_day(&data, &archive, "2020-01-16", &activities).unwrap();
+        let keep = archive.join("grit-work").join("2020-01-16");
+        let day = archive.join("grit-work").join(DAY);
+        fs::write(day.join("extra.bin"), b"keep-me").unwrap();
+        assert!(expire_archive(&archive, DAY).is_err());
+        assert!(day.join("extra.bin").is_file());
+        assert!(day.join("activities.json").is_file());
+        fs::remove_file(day.join("extra.bin")).unwrap();
+        expire_archive(&archive, DAY).unwrap();
+        expire_archive(&archive, DAY).unwrap();
+        assert!(!day.exists());
+        assert!(keep.join("activities.json").is_file());
+        assert!(load_archive(&archive, "2020-01-16").is_ok());
+
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        let tomb = archive.join("grit-work").join(format!("{DAY}.expired"));
+        fs::rename(&day, &tomb).unwrap();
+        let shot = tomb.join("shots").join("a.png");
+        if shot.is_file() {
+            fs::remove_file(&shot).unwrap();
+        }
+        expire_archive(&archive, DAY).unwrap();
+        assert!(!tomb.exists());
+        assert!(keep.join("activities.json").is_file());
+
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        fs::rename(&day, &tomb).unwrap();
+        fs::write(tomb.join("evil.bin"), b"no").unwrap();
+        assert!(expire_archive(&archive, DAY).is_err());
+        assert_eq!(fs::read(tomb.join("evil.bin")).unwrap(), b"no");
+        assert!(tomb.join("activities.json").is_file());
+        fs::create_dir(&day).unwrap();
+        assert!(expire_archive(&archive, DAY)
+            .unwrap_err()
+            .contains("ambiguous"));
+        assert!(tomb.join("evil.bin").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expire_interruption_keeps_manifest_until_payload_is_gone() {
+        let root = scratch();
+        let data = root.join("data");
+        let archive = root.join("archive");
+        fs::write(data.join("a.png"), b"aaa").unwrap();
+        let activities = json!([{"screenshot_path": "a.png", "ocr_text": "a"}]);
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        let day = archive.join("grit-work").join(DAY);
+        let tomb = archive.join("grit-work").join(format!("{DAY}.expired"));
+        fs::rename(&day, &tomb).unwrap();
+        for entry in fs::read_dir(&tomb).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap() != MANIFEST_FILE {
+                if path.is_dir() {
+                    fs::remove_dir_all(&path).unwrap();
+                } else {
+                    fs::remove_file(&path).unwrap();
+                }
+            }
+        }
+        assert!(tomb.join(MANIFEST_FILE).is_file());
+        expire_archive(&archive, DAY).unwrap();
+        assert!(!tomb.exists());
+
+        fs::create_dir_all(tomb.join("shots")).unwrap();
+        expire_archive(&archive, DAY).unwrap();
+        assert!(!tomb.exists());
+
+        fs::create_dir_all(&tomb).unwrap();
+        fs::write(tomb.join("orphan.bin"), b"left").unwrap();
+        let error = expire_archive(&archive, DAY).unwrap_err();
+        assert!(error.contains("no manifest"));
+        assert_eq!(fs::read(tomb.join("orphan.bin")).unwrap(), b"left");
         let _ = fs::remove_dir_all(&root);
     }
 }

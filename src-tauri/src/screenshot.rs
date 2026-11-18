@@ -253,7 +253,63 @@ impl ScreenshotService {
         self.config = ScreenshotConfig::from(storage_config);
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    /// Windows callers must supply current privacy rules; no unguarded entry point.
+    pub fn capture_for_window_with_privacy(
+        &self,
+        active_window: Option<&crate::monitor::ActiveWindow>,
+        privacy: &work_review_core::config::PrivacyConfig,
+    ) -> Result<ScreenshotResult> {
+        #[cfg(target_os = "windows")]
+        {
+            let _capture_guard = self
+                .capture_lock
+                .lock()
+                .map_err(|_| AppError::Screenshot("Capture lock unavailable".into()))?;
+            // GDI returns pixels in memory. WGC's file-writing fallback is intentionally
+            // unavailable here: a rejected frame must never reach temporary disk files.
+            let (pixels, width, height) = privacy_checked_capture(
+                || crate::monitor::screenshots_permitted(privacy),
+                || {
+                    self.capture_with_gdi(if should_capture_all_displays(&self.config) {
+                        None
+                    } else {
+                        active_window
+                    })
+                },
+            )?;
+            let now = chrono::Local::now();
+            let directory = self
+                .data_dir
+                .join("screenshots")
+                .join(now.format("%Y-%m-%d").to_string());
+            std::fs::create_dir_all(&directory)?;
+            self.persist_rgba_capture(
+                &pixels,
+                width,
+                height,
+                &directory,
+                &now.format("%H%M%S_%3f").to_string(),
+                now.timestamp(),
+            )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = privacy;
+            self.capture_for_window(active_window)
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn capture_for_window(
+        &self,
+        _active_window: Option<&crate::monitor::ActiveWindow>,
+    ) -> Result<ScreenshotResult> {
+        Err(AppError::Screenshot(
+            "Capture requires current privacy rules".into(),
+        ))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn capture_for_window(
         &self,
         active_window: Option<&crate::monitor::ActiveWindow>,
@@ -284,7 +340,10 @@ impl ScreenshotService {
     /// 执行截屏（Windows）
     /// 优先使用 GDI BitBlt（完全静默，无隐私边框闪烁）
     /// 失败时降级到 Windows Graphics Capture API（Win11 会显示黄色边框）
+    // Retained for legacy backend compatibility; production Windows capture uses
+    // capture_for_window_with_privacy and never invokes this disk-writing WGC fallback.
     #[cfg(target_os = "windows")]
+    #[allow(dead_code)]
     fn capture_impl(
         &self,
         active_window: Option<&crate::monitor::ActiveWindow>,
@@ -2740,5 +2799,39 @@ Monitors: 2
 
         let _ = fs::remove_dir_all(&data_dir);
         let _ = fs::remove_dir_all(super::ocr_temp_root(&data_dir));
+    }
+}
+
+/// Both checks happen before any persistence. Inspection failure is suppression.
+#[cfg(any(target_os = "windows", test))]
+fn privacy_checked_capture<T>(
+    mut permitted: impl FnMut() -> bool,
+    capture: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if !permitted() {
+        return Err(AppError::Privacy(
+            "Capture suppressed by privacy guard".into(),
+        ));
+    }
+    let frame = capture()?;
+    if !permitted() {
+        return Err(AppError::Privacy(
+            "Capture suppressed by privacy guard".into(),
+        ));
+    }
+    Ok(frame)
+}
+
+#[cfg(test)]
+mod capture_guard_tests {
+    use super::*;
+    #[test]
+    fn capture_guard_blocks_before_pixels_and_drops_changed_scene() {
+        let blocked =
+            privacy_checked_capture(|| false, || -> Result<()> { panic!("must not capture") });
+        assert!(blocked.is_err());
+        let mut checks = [true, false].into_iter();
+        assert!(privacy_checked_capture(|| checks.next().unwrap(), || Ok(vec![0u8; 4])).is_err());
+        assert_eq!(privacy_checked_capture(|| true, || Ok(42)).unwrap(), 42);
     }
 }

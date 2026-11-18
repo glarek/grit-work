@@ -252,6 +252,24 @@
             </p>
           </div>
 
+          <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition {settingsForm.ai_consent
+            ? 'border-emerald-200/80 bg-emerald-50/50 dark:border-emerald-800/50 dark:bg-emerald-950/20'
+            : 'border-amber-200/80 bg-amber-50/50 dark:border-amber-800/50 dark:bg-amber-950/20'}">
+            <input
+              type="checkbox"
+              bind:checked={settingsForm.ai_consent}
+              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            <div>
+              <div class="text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
+                Informerat samtycke till AI-analys ({providerInfo.name})
+              </div>
+              <p class="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">
+                Jag samtycker till att skärmbilder och aktivitetsloggar skickas till vald inloggad CLI-leverantör ({providerInfo.name} · {providerInfo.vendor}, utan separata API-nycklar). När samtycke är aktiverat kan Grit Work även förbereda rapportutkast i bakgrunden för väntande dagar.
+              </p>
+            </div>
+          </label>
+
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
               Modell
@@ -274,24 +292,39 @@
             </label>
           </div>
 
-          <div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div class="sm:col-span-2">
+              <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
+                Arkivmapp (valfri)
+                <div class="mt-1 flex gap-2">
+                  <input
+                    type="text"
+                    bind:value={settingsForm.archive_dir}
+                    placeholder={status.local_dir || 'Lokal arbetsmapp'}
+                    class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                  />
+                  <button
+                    type="button"
+                    on:click={handlePickArchiveDir}
+                    class="shrink-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9]"
+                  >
+                    Välj mapp
+                  </button>
+                </div>
+              </label>
+            </div>
+
             <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Arkivmapp (valfri)
-              <div class="mt-1 flex gap-2">
-                <input
-                  type="text"
-                  bind:value={settingsForm.archive_dir}
-                  placeholder={status.local_dir || 'Lokal arbetsmapp'}
-                  class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-                />
-                <button
-                  type="button"
-                  on:click={handlePickArchiveDir}
-                  class="shrink-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9]"
-                >
-                  Välj mapp
-                </button>
-              </div>
+              Arkivlagring (dagar)
+              <input
+                type="number"
+                min="1"
+                max="3650"
+                step="1"
+                bind:value={settingsForm.archive_retention_days}
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+              />
+              <span class="mt-1 block font-normal text-slate-500">Standard: 90 dagar. Ofärdiga rapporter och deras underlag sparas tills de har skickats eller hoppats över.</span>
             </label>
           </div>
 

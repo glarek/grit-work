@@ -779,15 +779,20 @@ fn build_capture_payload(
 async fn handle_capture_screenshot(state: &Arc<Mutex<AppState>>) -> Result<HttpResponse> {
     let permit = acquire_api_capture_permit()?;
     let active_window = crate::monitor::get_active_window_fast().ok();
-    let (data_dir, screenshot_service) = {
+    let (data_dir, screenshot_service, privacy) = {
         let guard = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
         ensure_api_capture_enabled(guard.config.storage.screenshots_enabled)?;
-        (guard.data_dir.clone(), guard.screenshot_service.clone())
+        (
+            guard.data_dir.clone(),
+            guard.screenshot_service.clone(),
+            guard.config.privacy.clone(),
+        )
     };
 
     let payload = tokio::task::spawn_blocking(move || -> Result<ScreenshotCapturePayload> {
         let _permit = permit;
-        let result = screenshot_service.capture_for_window(active_window.as_ref())?;
+        let result =
+            screenshot_service.capture_for_window_with_privacy(active_window.as_ref(), &privacy)?;
         let encoded_result = screenshot_service.generate_full_image_base64(&result.path);
 
         if let Some(temp_path) = result

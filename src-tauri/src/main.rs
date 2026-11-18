@@ -2107,22 +2107,23 @@ async fn capture_screenshot_for_window(
     active_window: &monitor::ActiveWindow,
     sample: activity_clock::Sample,
 ) -> work_review_core::error::Result<ScreenshotResult> {
-    let screenshot_service = {
+    let (screenshot_service, privacy_config) = {
         let state_guard = state.lock().unwrap_or_else(|e| e.into_inner());
-        state_guard.screenshot_service.clone()
+        (
+            state_guard.screenshot_service.clone(),
+            state_guard.config.privacy.clone(),
+        )
     };
     let active_window = active_window.clone();
     let result = tokio::task::spawn_blocking(move || {
-        screenshot_service
-            .capture_for_window(Some(&active_window))
-            .map_err(|error| error.to_string())
+        screenshot_service.capture_for_window_with_privacy(Some(&active_window), &privacy_config)
     })
     .await
     .map_err(|error| {
         work_review_core::error::AppError::Unknown(format!("截图任务异常: {error}"))
     })?;
 
-    let result = result.map_err(work_review_core::error::AppError::Screenshot)?;
+    let result = result?;
     if !activity_clock::Sample::now().follows(sample) {
         if let Some(path) = result
             .ocr_source_path
@@ -2376,12 +2377,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
         // 注意 explorer 特殊处理：有窗口标题时是文件管理器，应该记录
         {
             if should_skip_system_window(&active_window) {
-                log::debug!(
-                    "跳过系统/桌面窗口: {} (title={}, minimized={})",
-                    active_window.app_name,
-                    active_window.window_title,
-                    active_window.is_minimized
-                );
+                log::debug!("跳过系统/桌面窗口");
                 last_app_name = None;
                 last_app_window_title = None;
                 last_browser_url = None;
@@ -2409,12 +2405,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
             },
         ) {
             if last_browser_url.as_deref() != Some(resolved_url.as_str()) {
-                log::debug!(
-                    "浏览器 URL 预探测命中: {} | {} -> {}",
-                    active_window.app_name,
-                    active_window.window_title,
-                    resolved_url
-                );
+                log::debug!("浏览器 URL 预探测命中");
             }
             active_window.browser_url = Some(resolved_url);
         }
@@ -2443,12 +2434,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
             };
 
             if let Some(recovered_url) = recovered_url {
-                log::debug!(
-                    "恢复浏览器 URL: {} | {} -> {}",
-                    active_window.app_name,
-                    active_window.window_title,
-                    recovered_url
-                );
+                log::debug!("恢复浏览器 URL");
                 active_window.browser_url = Some(recovered_url);
             }
         }
@@ -2491,13 +2477,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
 
         // ===== 应用切换日志 =====
         if app_changed && last_app_name.is_some() {
-            log::info!(
-                "📊 应用切换: {} [{}] → {} [{}]",
-                last_app_name.as_deref().unwrap_or("无"),
-                previous_window_title.as_deref().unwrap_or(""),
-                active_window.app_name,
-                active_window.window_title,
-            );
+            log::info!("应用切换");
         }
 
         // ===== 空闲检测第一阶段：键鼠活动检查 =====
@@ -2572,12 +2552,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
             },
         ) {
             if active_window.browser_url.as_deref() != Some(resolved_url.as_str()) {
-                log::debug!(
-                    "浏览器 URL 落库前刷新: {} | {} -> {}",
-                    active_window.app_name,
-                    active_window.window_title,
-                    resolved_url
-                );
+                log::debug!("浏览器 URL 落库前刷新");
             }
             active_window.browser_url = Some(resolved_url);
             url_changed = match (&last_browser_url, &active_window.browser_url) {
@@ -2647,11 +2622,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
         use work_review_core::privacy::PrivacyAction;
         let result: Option<work_review_core::database::Activity> = match privacy_action {
             PrivacyAction::Skip => {
-                log::debug!(
-                    "完全跳过: {} - {}",
-                    active_window.app_name,
-                    active_window.window_title
-                );
+                log::debug!("隐私规则：跳过记录");
                 // 切到忽略应用不应吞掉上一应用的最后一段经过时间：
                 // 与 Anonymize/Record 路径一致,先回补给上一活动再跳过本条
                 let skip_is_confirmed_idle =
@@ -2675,11 +2646,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                 None
             }
             PrivacyAction::Anonymize => {
-                log::debug!(
-                    "内容脱敏: {} - {}",
-                    active_window.app_name,
-                    active_window.window_title
-                );
+                log::debug!("隐私规则：内容脱敏");
                 let classification = {
                     let state_guard = state.lock().unwrap_or_else(|e| e.into_inner());
                     crate::resolve_activity_classification(
@@ -2767,6 +2734,20 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                             && last_grit_screenshot.elapsed()
                                 >= Duration::from_secs(screenshot_interval),
                     )
+                };
+                // Suppress images independently of permitted foreground activity logs.
+                let screenshots_enabled = if screenshots_enabled {
+                    let privacy = state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .config
+                        .privacy
+                        .clone();
+                    tokio::task::spawn_blocking(move || monitor::screenshots_permitted(&privacy))
+                        .await
+                        .unwrap_or(false)
+                } else {
+                    false
                 };
                 if screenshots_enabled {
                     last_grit_screenshot = std::time::Instant::now();
@@ -3336,6 +3317,12 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                                         None
                                     }
                                 }
+                            }
+                            Err(work_review_core::error::AppError::Privacy(_)) => {
+                                // A private window appeared between the two guards.
+                                // Skip this frame; retry normally next capture interval.
+                                log::debug!("Capture skipped by privacy rules");
+                                None
                             }
                             Err(e) => {
                                 log::error!("截屏失败: {e}");
@@ -4714,6 +4701,11 @@ async fn main() {
             // 先发布句柄，再注册后台电源通知，避免恢复事件找不到应用。
             let _ = APP_HANDLE.set(app.handle().clone());
 
+            let grit_report_state = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                grit::report_task(grit_report_state).await;
+            });
+
             // 启动后台截屏任务
             tauri::async_runtime::spawn(async move {
                 background_screenshot_task(state_clone, screenshot_app_handle).await;
@@ -4766,6 +4758,7 @@ async fn main() {
             grit::grit_generate,
             grit::grit_get_report,
             grit::grit_save_draft,
+            grit::grit_create_manual_report,
             grit::grit_submit,
             grit::grit_reconcile,
             grit::grit_cancel,

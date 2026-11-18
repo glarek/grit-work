@@ -24,6 +24,19 @@ pub(crate) fn day_activities(
     database: &Database,
     date: &str,
 ) -> Result<DayActivities, AppError> {
+    if let Some(connection) = open_grit_db(data_dir)? {
+        let expired: Option<String> = connection
+            .query_row(
+                "SELECT value FROM kv WHERE key=?",
+                [format!("expired:{date}")],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Unknown(e.to_string()))?;
+        if expired.as_deref() == Some("true") {
+            return Ok(DayActivities::Archive(vec![]));
+        }
+    }
     let parsed = parse_day(date)?;
     let _ = parsed;
     let local = database

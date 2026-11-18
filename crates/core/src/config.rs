@@ -1366,8 +1366,8 @@ impl Default for AppConfig {
             mcp_server_enabled: false,
             node_devices: Vec::new(),
             node_gateway: NodeGatewayConfig::default(),
-            auto_start: false,
-            auto_start_silent: false,
+            auto_start: cfg!(windows),
+            auto_start_silent: cfg!(windows),
             macos_screen_capture_permission_prompted: false,
             last_app_version: None,
             theme: "system".to_string(),
@@ -2895,10 +2895,16 @@ mod tests {
     }
 
     #[test]
-    fn 开机自启动默认应显示主界面() {
+    fn 开机自启动默认应在_windows_静默开启() {
         let config = AppConfig::default();
 
-        assert!(!config.auto_start_silent);
+        if cfg!(windows) {
+            assert!(config.auto_start);
+            assert!(config.auto_start_silent);
+        } else {
+            assert!(!config.auto_start);
+            assert!(!config.auto_start_silent);
+        }
     }
 
     #[test]

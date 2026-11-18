@@ -59,6 +59,8 @@ pub struct Settings {
     pub time_code_id: i64,
     pub billable: bool,
     pub timeout_seconds: u64,
+    pub archive_retention_days: u32,
+    pub ai_consent: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -72,6 +74,8 @@ impl Default for Settings {
             time_code_id: 0,
             billable: false,
             timeout_seconds: 600,
+            archive_retention_days: 90,
+            ai_consent: false,
         }
     }
 }
@@ -105,6 +109,12 @@ pub struct Row {
     pub start: i64,
     pub end: i64,
     pub minutes: i64,
+    #[serde(default)]
+    pub submitted_minutes: i64,
+    #[serde(default)]
+    pub manual: bool,
+    #[serde(default)]
+    pub manual_reason: String,
     pub description: String,
     pub evidence_ids: Vec<i64>,
     pub needs_review: bool,
@@ -241,8 +251,42 @@ fn report(db: &Connection, date: &str) -> Result<Option<Report>, String> {
         })
         .optional()
         .map_err(error)?;
-    v.map(|s| serde_json::from_str(&s).map_err(error))
-        .transpose()
+    v.map(|s| {
+        let mut r: Report = serde_json::from_str(&s).map_err(error)?;
+        if ["draft"].contains(&r.status.as_str()) {
+            apply_rounding(&mut r)?;
+        } else {
+            // Older submissions retain their original amounts for reconciliation.
+            for row in &mut r.rows {
+                if row.submitted_minutes == 0 {
+                    row.submitted_minutes = row.minutes;
+                }
+            }
+        }
+        Ok(r)
+    })
+    .transpose()
+}
+/// Round once per project/day; keep measured intervals intact. The final row
+/// carries the rounding adjustment, also when a project has multiple activities.
+fn apply_rounding(report: &mut Report) -> Result<(), String> {
+    let mut totals = std::collections::BTreeMap::<i64, (i64, usize)>::new();
+    for (index, row) in report.rows.iter_mut().enumerate() {
+        if !(1..=1500).contains(&row.minutes) {
+            return Err("Ogiltig tidslängd.".into());
+        }
+        row.submitted_minutes = row.minutes;
+        let entry = totals.entry(row.project_id).or_default();
+        entry.0 = entry
+            .0
+            .checked_add(row.minutes)
+            .ok_or("Tiden är för stor.")?;
+        entry.1 = index;
+    }
+    for (_, (minutes, index)) in totals {
+        report.rows[index].submitted_minutes += (30 - minutes % 30) % 30;
+    }
+    Ok(())
 }
 fn save_report(db: &Connection, r: &Report) -> Result<(), String> {
     db.execute("INSERT INTO reports(date,body) VALUES(?1,?2) ON CONFLICT(date) DO UPDATE SET body=excluded.body",params![r.date,serde_json::to_string(r).map_err(error)?]).map_err(error)?;
@@ -459,7 +503,9 @@ fn collect_dates(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<Vec<String>
         .grit_activity_dates()
         .map_err(error)?;
     let db = db(dir)?;
-    let mut q = db.prepare("SELECT date FROM days").map_err(error)?;
+    let mut q = db
+        .prepare("SELECT date FROM days UNION SELECT date FROM reports")
+        .map_err(error)?;
     for d in q.query_map([], |r| r.get::<_, String>(0)).map_err(error)? {
         dates.push(d.map_err(error)?);
     }
@@ -483,7 +529,7 @@ fn status(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<Status, String> {
             .optional()
             .map_err(error)?
             .unwrap_or(false);
-        if !dismissed && report(&db, &date)?.is_none() {
+        if !dismissed && report(&db, &date)?.is_none_or(|r| r.status != "uploaded") {
             pending_dates.push(date);
         }
     }
@@ -541,6 +587,9 @@ pub async fn grit_save_settings(
     }
     if !(30..=3600).contains(&settings.timeout_seconds) {
         return Err("Tidsgränsen måste vara 30–3600 sekunder.".into());
+    }
+    if !(1..=3650).contains(&settings.archive_retention_days) {
+        return Err("Välj en lagringstid mellan 1 och 3 650 dagar.".into());
     }
     let dir = local_dir(&state)?;
     if !settings.archive_dir.is_empty() {
@@ -700,6 +749,19 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
                 return Err(format!("Välj en giltig {label} för varje rad."));
             }
         }
+        if row.manual {
+            if row.manual_reason.trim().is_empty()
+                || row.manual_reason.chars().count() > 2000
+                || !row.evidence_ids.is_empty()
+            {
+                return Err(
+                    "Manuell tid behöver en förklaring och får inte ange automatiskt underlag."
+                        .into(),
+                );
+            }
+            intervals.push((row.start, row.end));
+            continue;
+        }
         if row.evidence_ids.is_empty() {
             return Err("Varje rad måste hänvisa till verkligt underlag.".into());
         }
@@ -847,7 +909,7 @@ pub async fn grit_export_report(
         return Err("Välj en fil med ändelsen .csv.".into());
     }
     let mut output =
-        String::from("\u{feff}Datum;Projekt-ID;Projekt;Start;Slut;Minuter;Beskrivning;Status\r\n");
+        String::from("\u{feff}Datum;Projekt-ID;Projekt;Start;Slut;Registrerade minuter;Rapporterade minuter;Beskrivning;Status\r\n");
     for row in &saved.rows {
         let project = catalog
             .projects
@@ -869,6 +931,7 @@ pub async fn grit_export_report(
             time(row.start),
             time(row.end),
             row.minutes.to_string(),
+            row.submitted_minutes.to_string(),
             row.description.clone(),
             saved.status.clone(),
         ];
@@ -926,6 +989,7 @@ pub async fn grit_analyze(
     let dir = local_dir(&state)?;
     let database = db(&dir)?;
     let settings: Settings = get(&database, "settings")?.unwrap_or_default();
+    require_ai_consent(&settings)?;
     let cat: Catalog = get(&database, "catalog")?.unwrap_or_default();
     let ev = evidence(state.inner(), &dir, &date)?;
     let ev_copy = evidence_for_cli(&ev, &dir, &settings)?;
@@ -988,19 +1052,29 @@ pub async fn grit_generate(
     date: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Report, String> {
+    prepare_report(date, state.inner()).await
+}
+fn require_ai_consent(settings: &Settings) -> Result<(), String> {
+    if !settings.ai_consent {
+        return Err("Godkänn överföring av skärmbilder och loggar till vald AI-leverantör i inställningarna först.".into());
+    }
+    Ok(())
+}
+async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Report, String> {
     let op = Arc::new(Operation::start()?);
     past_date(&date)?;
-    let dir = local_dir(&state)?;
+    let dir = state.lock().map_err(error)?.data_dir.clone();
     let db = db(&dir)?;
     if report(&db, &date)?.is_some_and(|r| !["draft", "failed"].contains(&r.status.as_str())) {
         return Err("Rapporten är låst eller körs redan.".into());
     }
     let settings: Settings = get(&db, "settings")?.unwrap_or_default();
+    require_ai_consent(&settings)?;
     let cat: Catalog = get(&db, "catalog")?.unwrap_or_default();
     if cat.projects.iter().all(|p| !p.active) {
         return Err("Anslut Spiris och synkronisera projekt först.".into());
     }
-    let ev = evidence(state.inner(), &dir, &date)?;
+    let ev = evidence(state, &dir, &date)?;
     if ev.as_array().is_none_or(|a| a.is_empty()) {
         return Err("Inget underlag för datumet.".into());
     }
@@ -1059,9 +1133,13 @@ pub async fn grit_generate(
         r.rows = o.rows;
         for row in &mut r.rows {
             row.remote_id = None;
-            row.needs_review = true;
+            if row.manual || !row.manual_reason.is_empty() {
+                return Err("Agenten får inte skapa manuell tid utan underlag.".into());
+            }
+            row.needs_review |= row.project_id == 0;
         }
-        validate_report(&r, &cat, &ev, false)
+        validate_report(&r, &cat, &ev, false)?;
+        apply_rounding(&mut r)
     });
     match checked {
         Ok(()) => r.status = "draft".into(),
@@ -1071,6 +1149,28 @@ pub async fn grit_generate(
         }
     }
     save_report(&db, &r)?;
+    Ok(r)
+}
+#[tauri::command]
+pub async fn grit_create_manual_report(
+    date: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Report, String> {
+    let _op = Operation::start()?;
+    past_date(&date)?;
+    let database = db(&local_dir(&state)?)?;
+    if report(&database, &date)?.is_some_and(|r| r.status != "failed") {
+        return Err("Rapporten finns redan. Läs in den för att komplettera.".into());
+    }
+    let r = Report {
+        date,
+        revision: Uuid::new_v4().to_string(),
+        status: "draft".into(),
+        summary: "Manuellt kompletterad arbetsdag".into(),
+        rows: vec![],
+        error: None,
+    };
+    save_report(&database, &r)?;
     Ok(r)
 }
 #[tauri::command]
@@ -1091,6 +1191,7 @@ pub async fn grit_save_draft(
     let cat = get(&db, "catalog")?.unwrap_or_default();
     let ev = evidence(state.inner(), &dir, &report.date)?;
     validate_report(&report, &cat, &ev, false)?;
+    apply_rounding(&mut report)?;
     report.revision = Uuid::new_v4().to_string();
     report.status = "draft".into();
     report.error = None;
@@ -1150,11 +1251,42 @@ fn archive_all(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<ArchiveResult
         db.execute("INSERT INTO days(date,archived) VALUES(?1,1) ON CONFLICT(date) DO UPDATE SET archived=1",[&date]).map_err(error)?;
         archived += 1;
     }
+    expire_finished_evidence(&db, archive, settings.archive_retention_days)?;
     put(&db, "last_error", &Option::<String>::None)?;
     Ok(ArchiveResult {
         archived,
         message: format!("{archived} dygn verifierade och rensade lokalt."),
     })
+}
+fn retention_eligible(date: NaiveDate, today: NaiveDate, days: u32, finished: bool) -> bool {
+    finished && days > 0 && (today - date).num_days() >= i64::from(days)
+}
+fn expire_finished_evidence(
+    database: &Connection,
+    archive: &Path,
+    days: u32,
+) -> Result<(), String> {
+    let mut query = database
+        .prepare("SELECT date,dismissed FROM days WHERE archived=1")
+        .map_err(error)?;
+    let candidates = query
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))
+        .map_err(error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(error)?;
+    for (date, dismissed) in candidates {
+        let finished =
+            dismissed || report(database, &date)?.is_some_and(|r| r.status == "uploaded");
+        let day = past_date(&date)?;
+        if !retention_eligible(day, Local::now().date_naive(), days, finished) {
+            continue;
+        }
+        // The tombstone marker makes readers return an empty evidence view after
+        // expiry, while all report bodies and submission receipts remain intact.
+        crate::grit_engine::expire_archive(archive, &date)?;
+        put(database, &format!("expired:{date}"), &true)?;
+    }
+    Ok(())
 }
 #[tauri::command]
 pub async fn grit_archive(state: State<'_, Arc<Mutex<AppState>>>) -> Result<ArchiveResult, String> {
@@ -1281,7 +1413,7 @@ pub async fn grit_submit(
     for i in 0..r.rows.len() {
         let row = &r.rows[i];
         let mark = marker(&db, &date, row)?;
-        let hours = row.minutes as f64 / 60.0;
+        let hours = row.submitted_minutes as f64 / 60.0;
         let payload = json!({"date":format!("{date} 00:00:00"),"hours":hours,"invoiceableHours":if s.billable {hours}else{0.0},"comment":row.description,"internalComment":mark,"userId":s.user_id,"projectId":row.project_id,"activityId":row.activity_id,"timeCodeId":s.time_code_id,"timeArticleId":row.article_id});
         // Persist intent before POST. A crash after this point is an ambiguous submission.
         put(&db, &format!("attempt:{date}:{}", row.id), &payload)?;
@@ -1377,7 +1509,8 @@ pub async fn grit_reconcile(
         }
         if let Some(v) = matches.first() {
             if v["project"]["id"].as_i64() != Some(row.project_id)
-                || (v["hours"].as_f64().unwrap_or(-1.0) - row.minutes as f64 / 60.0).abs() > 0.001
+                || (v["hours"].as_f64().unwrap_or(-1.0) - row.submitted_minutes as f64 / 60.0).abs()
+                    > 0.001
             {
                 return Err("Spiris-raden har ändrats. Manuell avstämning krävs.".into());
             }
@@ -1418,6 +1551,80 @@ pub fn recover(dir: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+/// Prepare completed days without uploading. A persisted report, including a
+/// failure, stops retries; user-edited drafts are never overwritten by the worker.
+fn next_background_date(
+    state: &Arc<Mutex<AppState>>,
+    dir: &Path,
+) -> Result<Option<String>, String> {
+    let database = db(dir)?;
+    let settings: Settings = get(&database, "settings")?.unwrap_or_default();
+    if !settings.ai_consent {
+        return Ok(None);
+    }
+    let cat: Catalog = get(&database, "catalog")?.unwrap_or_default();
+    if !cat.projects.iter().any(|p| p.active) {
+        return Ok(None);
+    }
+    let mut dates = collect_dates(state, dir)?;
+    dates.reverse();
+    for date in dates {
+        let dismissed: bool = database
+            .query_row("SELECT dismissed FROM days WHERE date=?", [&date], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(error)?
+            .unwrap_or(false);
+        if !dismissed && report(&database, &date)?.is_none() {
+            return Ok(Some(date));
+        }
+    }
+    Ok(None)
+}
+pub async fn report_task(state: Arc<Mutex<AppState>>) {
+    // Delay gives startup recovery and the UI time to settle.
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        if BUSY.load(Ordering::SeqCst) {
+            continue;
+        }
+        let dir = match state.lock() {
+            Ok(s) => s.data_dir.clone(),
+            Err(_) => return,
+        };
+        let date = match next_background_date(&state, &dir) {
+            Ok(Some(date)) => date,
+            Ok(None) => continue,
+            Err(e) => {
+                if let Ok(db) = db(&dir) {
+                    let _ = put(&db, "last_error", &Some(e));
+                }
+                continue;
+            }
+        };
+        if let Err(e) = prepare_report(date.clone(), &state).await {
+            // Busy races are retried next tick. Other preflight failures have a
+            // durable failed queue entry so an offline archive cannot spin CLIs.
+            if !BUSY.load(Ordering::SeqCst) {
+                if let Ok(database) = db(&dir) {
+                    if report(&database, &date).ok().flatten().is_none() {
+                        let failed = Report {
+                            date,
+                            revision: Uuid::new_v4().to_string(),
+                            status: "failed".into(),
+                            summary: String::new(),
+                            rows: vec![],
+                            error: Some(e),
+                        };
+                        let _ = save_report(&database, &failed);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub async fn archive_task(state: Arc<Mutex<AppState>>) {
     // Run after startup and once per hour; only completed days are eligible.
     loop {
@@ -1458,6 +1665,76 @@ pub fn capture_resumed(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retention_preserves_unfinished_reports_and_respects_exact_boundary() {
+        let day = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        assert!(!retention_eligible(
+            day,
+            day + chrono::Days::new(89),
+            90,
+            true
+        ));
+        assert!(retention_eligible(
+            day,
+            day + chrono::Days::new(90),
+            90,
+            true
+        ));
+        assert!(!retention_eligible(
+            day,
+            day + chrono::Days::new(190),
+            90,
+            false
+        ));
+    }
+    #[test]
+    fn rounding_groups_project_day_and_preserves_raw_evidence() {
+        let (mut r, _, _) = fixture();
+        r.rows[0].minutes = 10;
+        let mut second = r.rows[0].clone();
+        second.id = "second".into();
+        second.minutes = 20;
+        r.rows.push(second);
+        apply_rounding(&mut r).unwrap();
+        assert_eq!(r.rows.iter().map(|r| r.submitted_minutes).sum::<i64>(), 30);
+        r.rows[1].minutes = 30;
+        apply_rounding(&mut r).unwrap();
+        assert_eq!(r.rows.iter().map(|r| r.submitted_minutes).sum::<i64>(), 60);
+        assert_eq!(r.rows[1].minutes, 30);
+        r.rows[1].project_id = 9;
+        apply_rounding(&mut r).unwrap();
+        assert_eq!(r.rows[0].submitted_minutes, 30);
+        assert_eq!(r.rows[1].submitted_minutes, 30);
+        // Idempotent; forged submitted amounts never survive saving.
+        r.rows[0].submitted_minutes = 9999;
+        apply_rounding(&mut r).unwrap();
+        assert_eq!(r.rows[0].submitted_minutes, 30);
+    }
+    #[test]
+    fn manual_time_requires_explanation_and_still_rejects_overlap() {
+        let (mut r, c, e) = fixture();
+        r.rows[0].manual = true;
+        r.rows[0].evidence_ids.clear();
+        assert!(validate_report(&r, &c, &json!([]), true).is_err());
+        r.rows[0].manual_reason = "Kundmöte utan dator".into();
+        assert!(validate_report(&r, &c, &json!([]), true).is_ok());
+        let mut duplicate = r.rows[0].clone();
+        duplicate.id = "overlap".into();
+        r.rows.push(duplicate);
+        assert!(validate_report(&r, &c, &e, true).is_err());
+    }
+    #[test]
+    fn old_settings_require_informed_consent_and_default_to_ninety_days() {
+        let settings: Settings = serde_json::from_value(json!({"provider":"codex"})).unwrap();
+        assert!(!settings.ai_consent);
+        assert_eq!(settings.archive_retention_days, 90);
+        assert!(require_ai_consent(&settings).is_err());
+        assert!(require_ai_consent(&Settings {
+            ai_consent: true,
+            ..settings
+        })
+        .is_ok());
+    }
     #[test]
     fn spreadsheet_export_quotes_values_and_neutralizes_formulas() {
         assert_eq!(report_csv_cell("=1+1"), "\"'=1+1\"");
@@ -1507,6 +1784,9 @@ mod tests {
             start,
             end: start + 3600,
             minutes: 60,
+            submitted_minutes: 60,
+            manual: false,
+            manual_reason: String::new(),
             description: "Implementerade projektfunktion".into(),
             evidence_ids: vec![7],
             needs_review: false,

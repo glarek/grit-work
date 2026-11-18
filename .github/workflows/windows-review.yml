@@ -1,0 +1,38 @@
+name: Grit Work Windows review
+on:
+  push:
+    branches: [grit/initial-app]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: grit-windows-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:frontend
+      - run: npm run build
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --all-targets -- --test-threads=1
+      - run: npm run tauri:build -- --bundles nsis
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Grit-Work-Windows-review
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -8,6 +8,8 @@
   import { save as saveDialog } from '@tauri-apps/plugin-dialog';
   import {
     computeInvoiceableHours,
+    computeProjectRounding,
+    computeUnassignedGaps,
     createDefaultSettings,
     formatMinutesSwedish,
     formatSwedishHours,
@@ -28,6 +30,7 @@
     type GritRow,
     type GritSettings,
     type GritStatus,
+    type UnassignedGap,
   } from './gritTypes.ts';
 
   type ActiveTab = 'report' | 'settings';
@@ -91,11 +94,13 @@
   }
 
   async function pollActiveReport(): Promise<void> {
+    const requestedDate = selectedDate;
     try {
       const [rawStatus, rawReport] = await Promise.all([
         invoke<unknown>('grit_status'),
-        invoke<unknown>('grit_get_report', { date: selectedDate }),
+        invoke<unknown>('grit_get_report', { date: requestedDate }),
       ]);
+      if (requestedDate !== selectedDate) return;
       const nextStatus = normalizeGritStatus(rawStatus);
       status = nextStatus;
 
@@ -167,6 +172,11 @@
 
   async function handleGenerate(targetDate = selectedDate): Promise<void> {
     clearFeedback();
+    if (!status?.settings.ai_consent) {
+      errorMessage =
+        'AI-generering kräver att du först ger informerat samtycke under Inställningar (skärmbilder och loggar skickas då till din valda inloggade CLI-leverantör).';
+      return;
+    }
     selectedDate = targetDate;
     generating = true;
     activeTab = 'report';
@@ -373,10 +383,11 @@
     });
   }
 
-  function addManualRow(): void {
+  function addManualRow(gap?: UnassignedGap): void {
     if (!report || !isReportEditable(report.status) || !status) return;
-    const startSec = timeInputToUnixSeconds(report.date, '09:00');
-    const endSec = timeInputToUnixSeconds(report.date, '10:00');
+    const startSec = gap?.start ?? timeInputToUnixSeconds(report.date, '09:00');
+    const endSec = gap?.end ?? timeInputToUnixSeconds(report.date, '10:00');
+    const mins = gap?.minutes ?? 60;
     const newRow: GritRow = {
       id: `manual-${Date.now()}`,
       project_id: status.projects[0]?.id ?? 0,
@@ -384,14 +395,33 @@
       article_id: status.settings.article_id || status.articles[0]?.id || 0,
       start: startSec,
       end: endSec,
-      minutes: 60,
+      minutes: mins,
+      submitted_minutes: mins,
       description: '',
       evidence_ids: [],
       needs_review: true,
+      manual: true,
+      manual_reason: '',
       remote_id: null,
     };
     report = { ...report, rows: [...report.rows, newRow] };
     dirtyDraft = true;
+  }
+
+  async function createManualReportAndRow(): Promise<void> {
+    if (!status) return;
+    clearFeedback();
+    try {
+      const rawReport = await invoke<unknown>('grit_create_manual_report', { date: selectedDate });
+      const created = normalizeGritReport(rawReport);
+      if (created) {
+        report = created;
+        addManualRow();
+        notifyGritChanged();
+      }
+    } catch (err) {
+      errorMessage = formatError(err);
+    }
   }
 
   function removeRow(index: number): void {
@@ -405,10 +435,9 @@
 
   onMount(() => {
     void loadStatusAndReport(selectedDate);
-    dayTimer = setInterval(async () => {
-      try { status = normalizeGritStatus(await invoke('grit_status')); }
-      catch { /* Keep the last known state while the backend is temporarily busy. */ }
-    }, 60000);
+    dayTimer = setInterval(() => {
+      void pollActiveReport();
+    }, 15000);
   });
 
   onDestroy(() => {
@@ -421,18 +450,23 @@
     status &&
       status.pending_dates.includes(yesterdayDate) &&
       !laterDismissedDates.has(yesterdayDate) &&
-      !(report?.date === yesterdayDate && report?.status === 'uploaded'),
+      !(report?.date === yesterdayDate && report !== null),
   );
   $: editable = isReportEditable(report?.status);
   $: reconcilable = isReportReconcilable(report?.status);
   $: statusMeta = getStatusBadgeMeta(report?.status ?? '');
   $: submitValidation = validateReportForSubmit(report, status);
   $: providerInfo = PROVIDER_LABELS[settingsForm.provider];
-  $: totalMinutes = report
-    ? report.rows.reduce((sum, row) => sum + Math.max(0, row.minutes || 0), 0)
-    : 0;
+  $: aiConsent = Boolean(status?.settings.ai_consent);
+  $: rounding = report
+    ? computeProjectRounding(report.rows, status?.projects ?? [], !isReportEditable(report.status))
+    : null;
+  $: unassignedGaps = report && editable ? computeUnassignedGaps(report.rows) : [];
+  $: totalMinutes = rounding?.totalRecordedMinutes ?? 0;
+  $: totalSubmittedMinutes = rounding?.totalSubmittedMinutes ?? 0;
+  $: totalPaddingMinutes = rounding?.totalPaddingMinutes ?? 0;
   $: billableEnabled = Boolean(status?.settings.billable);
-  $: totalInvoiceableHours = computeInvoiceableHours(totalMinutes, billableEnabled);
+  $: totalInvoiceableHours = computeInvoiceableHours(totalSubmittedMinutes, billableEnabled);
 </script>
 
 <div class="grit-work mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
@@ -535,7 +569,7 @@
           <button
             type="button"
             on:click={() => handleGenerate(yesterdayDate)}
-            disabled={generating}
+            disabled={generating || !aiConsent}
             class="rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
           >
             Skapa rapport
@@ -589,7 +623,7 @@
 
         {#if status && status.pending_dates.length > 0}
           <div class="ml-2 flex flex-wrap items-center gap-1.5">
-            <span class="text-xs text-slate-500 dark:text-[#8b949e]">Väntande:</span>
+            <span class="text-xs text-slate-500 dark:text-[#8b949e]">Att hantera (redo / behöver granskas):</span>
             {#each status.pending_dates as pendingDate}
               <button
                 type="button"
@@ -616,10 +650,20 @@
             {canceling ? 'Avbryter...' : 'Avbryt generering'}
           </button>
         {:else if !report || editable}
+          {#if !report || report.status === 'failed'}
+            <button
+              type="button"
+              on:click={createManualReportAndRow}
+              disabled={generating || reportLoading || selectedDate > shiftIsoDateString(yesterdayDate, 1)}
+              class="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#e6edf3]"
+            >
+              Starta manuell rapport
+            </button>
+          {/if}
           <button
             type="button"
             on:click={() => handleGenerate(selectedDate)}
-            disabled={generating || reportLoading || selectedDate > yesterdayDate}
+            disabled={generating || reportLoading || selectedDate > yesterdayDate || !aiConsent}
             class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
           >
             {report ? 'Generera om utkast' : 'Generera tidrapport'}
@@ -627,6 +671,26 @@
         {/if}
       </div>
     </section>
+
+    {#if !aiConsent}
+      <section class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50/90 p-4 dark:border-amber-800/60 dark:bg-amber-950/30">
+        <div class="max-w-3xl">
+          <h2 class="text-sm font-semibold text-amber-950 dark:text-amber-200">
+            Informerat samtycke krävs innan AI-generering
+          </h2>
+          <p class="mt-0.5 text-xs leading-relaxed text-amber-900/80 dark:text-amber-300/80">
+            För att generera tidrapportutkast skickas dagens skärmbilder och aktivitetsloggar till din valda inloggade CLI-leverantör. Aktivera samtycke under Inställningar för att låsa upp generering och automatisk bakgrundsförberedelse.
+          </p>
+        </div>
+        <button
+          type="button"
+          on:click={() => (activeTab = 'settings')}
+          class="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-amber-700"
+        >
+          Öppna inställningar
+        </button>
+      </section>
+    {/if}
 
     {#if report && !["running", "uploading"].includes(report.status)}<div class="flex justify-end"><button on:click={exportReport} class="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 dark:border-[#30363d] dark:text-[#adbac7]">Exportera tidrapport (CSV)</button></div>{/if}
     <!-- Report body -->
@@ -640,8 +704,19 @@
           Ingen tidrapport för {selectedDate}
         </h2>
         <p class="mt-1 text-sm text-slate-500 dark:text-[#8b949e]">
-          Klicka på "Generera tidrapport" för att låta vald AI-CLI sammanställa dagens arbete till ett granskningsbart utkast.
+          Klicka på "Generera tidrapport" för att sammanställa dagens arbete, eller lägg till en manuell lucka om du arbetat utan dator.
         </p>
+        {#if selectedDate <= shiftIsoDateString(yesterdayDate, 1)}
+          <div class="mt-4 flex justify-center">
+            <button
+              type="button"
+              on:click={createManualReportAndRow}
+              class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#e6edf3]"
+            >
+              Starta manuell rapport
+            </button>
+          </div>
+        {/if}
       </div>
     {:else}
       <!-- Report status & totals card -->
@@ -679,10 +754,24 @@
           <div class="flex flex-wrap items-center gap-4 rounded-xl border border-slate-200/80 bg-slate-50/80 px-4 py-2.5 dark:border-[#30363d] dark:bg-[#0d1117]">
             <div>
               <div class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                Total tid
+                Inspelad tid
               </div>
               <div class="grit-metric text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
                 {formatMinutesSwedish(totalMinutes)} <span class="text-xs font-normal text-slate-500">· {report.rows.length} {report.rows.length === 1 ? 'rad' : 'rader'}</span>
+              </div>
+            </div>
+            <div class="h-7 w-px bg-slate-200 dark:bg-[#30363d]"></div>
+            <div>
+              <div class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
+                Avrundad tid (Spiris)
+              </div>
+              <div class="grit-metric text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
+                {formatMinutesSwedish(totalSubmittedMinutes)}
+                {#if totalPaddingMinutes > 0}
+                  <span class="ml-1 text-xs font-normal text-indigo-600 dark:text-indigo-400">
+                    (+{totalPaddingMinutes} min)
+                  </span>
+                {/if}
               </div>
             </div>
             <div class="h-7 w-px bg-slate-200 dark:bg-[#30363d]"></div>
@@ -699,6 +788,29 @@
             </div>
           </div>
         </div>
+
+        {#if rounding && rounding.projectTotals.length > 0}
+          <div class="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5 dark:border-[#30363d] dark:bg-[#0d1117]">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs font-semibold text-slate-800 dark:text-[#e6edf3]">
+                Summering per projekt (inspelad vs. avrundad tid)
+              </span>
+              <span class="text-[11px] text-slate-500 dark:text-[#8b949e]">
+                Varje projekt avrundas uppåt till närmaste 30 min per dag (påslag läggs på projektets sista rad, inte per enskilt pass).
+              </span>
+            </div>
+            <div class="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {#each rounding.projectTotals as proj}
+                <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-200/80 bg-white px-3 py-2 text-xs dark:border-[#30363d] dark:bg-[#161b22]">
+                  <span class="truncate font-medium text-slate-800 dark:text-[#e6edf3]">{proj.projectName}</span>
+                  <span class="shrink-0 font-mono text-slate-600 dark:text-[#adbac7]">
+                    {formatMinutesSwedish(proj.recordedMinutes)} → <strong class="text-slate-900 dark:text-[#e6edf3]">{formatMinutesSwedish(proj.submittedMinutes)}</strong>
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
 
         {#if report.summary}
           <div class="grit-summary rounded-xl bg-slate-50 p-3 text-sm text-slate-700 dark:bg-[#0d1117] dark:text-[#c9d1d9]">
@@ -732,6 +844,38 @@
           </div>
         {/if}
 
+        {#if unassignedGaps.length > 0}
+          <div class="rounded-xl border border-amber-200/80 bg-amber-50/60 p-3.5 dark:border-amber-800/50 dark:bg-amber-950/20">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-xs font-semibold text-amber-950 dark:text-amber-200">
+                Ej tilldelade luckor mellan arbetspass
+              </span>
+              <span class="text-[11px] text-amber-900/80 dark:text-amber-300/80">
+                Räknas inte automatiskt in i totaltid. Lägg till manuellt vid behov.
+              </span>
+            </div>
+            <div class="mt-2.5 flex flex-wrap gap-2">
+              {#each unassignedGaps as gap}
+                <div class="inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 text-xs dark:border-amber-800/60 dark:bg-[#161b22]">
+                  <span class="font-mono text-slate-800 dark:text-[#e6edf3]">
+                    {unixSecondsToTimeInput(gap.start)}–{unixSecondsToTimeInput(gap.end)}
+                  </span>
+                  <span class="text-slate-500 dark:text-[#8b949e]">
+                    ({formatMinutesSwedish(gap.minutes)})
+                  </span>
+                  <button
+                    type="button"
+                    on:click={() => addManualRow(gap)}
+                    class="rounded-md bg-indigo-600 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                  >
+                    Lägg till manuell tid
+                  </button>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         <!-- Rows table / cards -->
         <div class="space-y-3">
           {#if report.rows.length === 0}
@@ -741,10 +885,22 @@
           {:else}
             {#each report.rows as row, index (row.id)}
               {@const knownProject = isKnownProjectId(row.project_id, status?.projects ?? [])}
-              {@const rowInvoiceable = computeInvoiceableHours(row.minutes, billableEnabled)}
+              {@const rowSubmittedMinutes = rounding?.rowSubmittedMinutes[index] ?? row.minutes}
+              {@const rowPaddingMinutes = rounding?.rowPaddingMinutes[index] ?? 0}
+              {@const rowInvoiceable = computeInvoiceableHours(rowSubmittedMinutes, billableEnabled)}
               <div class="grit-row rounded-xl border p-4 transition {row.needs_review
                 ? 'border-amber-300 bg-amber-50/40 dark:border-amber-700/60 dark:bg-amber-950/15'
                 : 'border-slate-200 bg-white dark:border-[#30363d] dark:bg-[#0d1117]/60'}">
+                {#if row.manual}
+                  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <span class="inline-flex items-center rounded-full bg-indigo-100 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">
+                      Manuell lucka (utanför datorn)
+                    </span>
+                    <span class="text-[11px] text-slate-500 dark:text-[#8b949e]">
+                      Minuter beräknas automatiskt från start- och sluttid.
+                    </span>
+                  </div>
+                {/if}
                 <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
                   <!-- Project -->
                   <div class="md:col-span-4">
@@ -816,18 +972,18 @@
                   <!-- Minutes -->
                   <div class="md:col-span-2">
                     <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                      Minuter
+                      {row.manual ? 'Minuter (intervall)' : 'Inspelade min'}
                       <input
                         type="number"
                         min="0"
                         step="5"
                         value={row.minutes}
-                        disabled={!editable}
+                        disabled={!editable || row.manual}
                         on:input={(e) =>
                           updateRow(index, {
                             minutes: Math.max(0, Math.trunc(Number(e.currentTarget.value) || 0)),
                           })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 disabled:bg-slate-50 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3] dark:disabled:bg-[#0d1117]"
                       />
                     </label>
                   </div>
@@ -860,7 +1016,7 @@
                   </div>
 
                   <!-- Description -->
-                  <div class="md:col-span-8">
+                  <div class={row.manual ? 'md:col-span-4' : 'md:col-span-8'}>
                     <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
                       Beskrivning
                       <input
@@ -873,6 +1029,24 @@
                       />
                     </label>
                   </div>
+
+                  {#if row.manual}
+                    <div class="md:col-span-4">
+                      <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
+                        Orsak till manuell tid (krävs)
+                        <input
+                          type="text"
+                          value={row.manual_reason}
+                          disabled={!editable}
+                          placeholder="T.ex. kundmöte, telefonsamtal, verkstad"
+                          on:input={(e) => updateRow(index, { manual_reason: e.currentTarget.value })}
+                          class="mt-1 w-full rounded-lg border px-3 py-1.5 text-sm dark:bg-[#161b22] dark:text-[#e6edf3] {!row.manual_reason.trim()
+                            ? 'border-amber-400 bg-amber-50/60 text-slate-900 dark:border-amber-600'
+                            : 'border-slate-200 bg-white text-slate-900 dark:border-[#30363d]'}"
+                        />
+                      </label>
+                    </div>
+                  {/if}
                 </div>
 
                 <div class="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 pt-2.5 text-xs dark:border-[#30363d]">
@@ -886,12 +1060,18 @@
                           updateRow(index, { needs_review: e.currentTarget.checked })}
                         class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                       />
-                      Kräver granskning
+                      {row.manual ? 'Bekräfta manuell rad (avmarkera när klar)' : 'Kräver granskning'}
                     </label>
 
                     <span class="text-slate-500 dark:text-[#8b949e]">
                       Fakturerbart: {formatSwedishHours(rowInvoiceable)}
                     </span>
+
+                    {#if rowPaddingMinutes > 0}
+                      <span class="rounded bg-indigo-100 px-2 py-0.5 font-mono font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">
+                        +{rowPaddingMinutes} min projektavrundning → {rowSubmittedMinutes} min till Spiris
+                      </span>
+                    {/if}
 
                     {#if row.evidence_ids.length > 0}
                       <span class="text-slate-500 dark:text-[#8b949e]">
@@ -925,10 +1105,10 @@
           <div class="flex justify-start">
             <button
               type="button"
-              on:click={addManualRow}
+              on:click={() => addManualRow()}
               class="rounded-xl border border-dashed border-slate-300 px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
             >
-              + Lägg till rad
+              + Lägg till manuell tid
             </button>
           </div>
         {/if}
@@ -1003,8 +1183,17 @@
           <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">{report.rows.length}</dd>
         </div>
         <div class="flex justify-between">
-          <dt class="text-slate-500 dark:text-[#8b949e]">Total tid</dt>
+          <dt class="text-slate-500 dark:text-[#8b949e]">Inspelad tid</dt>
           <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">{formatMinutesSwedish(totalMinutes)}</dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-slate-500 dark:text-[#8b949e]">Avrundad tid till Spiris</dt>
+          <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">
+            {formatMinutesSwedish(totalSubmittedMinutes)}
+            {#if totalPaddingMinutes > 0}
+              <span class="ml-1 text-xs font-normal text-indigo-600 dark:text-indigo-400">(+{totalPaddingMinutes} min)</span>
+            {/if}
+          </dd>
         </div>
         <div class="flex justify-between">
           <dt class="text-slate-500 dark:text-[#8b949e]">Fakturerbar tid</dt>
@@ -1013,6 +1202,21 @@
           </dd>
         </div>
       </dl>
+
+      {#if rounding && rounding.projectTotals.length > 0}
+        <div class="space-y-1.5 rounded-xl border border-slate-200/80 p-3 text-xs dark:border-[#30363d]">
+          <div class="font-semibold text-slate-800 dark:text-[#e6edf3]">Projekt (inspelad → avrundad)</div>
+          {#each rounding.projectTotals as proj}
+            <div class="flex justify-between gap-2 text-slate-600 dark:text-[#adbac7]">
+              <span class="truncate">{proj.projectName}</span>
+              <span class="shrink-0 font-mono">{formatMinutesSwedish(proj.recordedMinutes)} → {formatMinutesSwedish(proj.submittedMinutes)}</span>
+            </div>
+          {/each}
+          <p class="pt-1 text-[11px] text-slate-500 dark:text-[#8b949e]">
+            Avrundning sker per projekt och dygn uppåt till närmaste 30 min (påslag på projektets sista rad).
+          </p>
+        </div>
+      {/if}
 
       <div class="flex justify-end gap-2.5 pt-1">
         <button

@@ -46,7 +46,7 @@ fn build_autolaunch(config: &AutoLaunchConfig, silent: bool) -> Result<AutoLaunc
     let mut builder = AutoLaunchBuilder::new();
     builder.set_app_name(&config.app_name);
     builder.set_app_path(&config.quoted_app_path);
-    builder.set_windows_enable_mode(WindowsEnableMode::Dynamic);
+    builder.set_windows_enable_mode(WindowsEnableMode::CurrentUser);
     builder.set_args(autolaunch_args(silent));
     builder
         .build()
@@ -90,6 +90,7 @@ pub fn enable_autostart(app: AppHandle, silent: bool) -> Result<()> {
             let auto = build_autolaunch(config, silent)?;
             auto.enable()
                 .map_err(|e| AppError::Unknown(format!("开启开机自启失败: {e}")))?;
+            set_windows_autostart_user_disabled(false)?;
             Ok(())
         })
     }
@@ -115,6 +116,7 @@ pub fn disable_autostart(app: AppHandle) -> Result<()> {
             let auto = build_autolaunch(config, false)?;
             auto.disable()
                 .map_err(|e| AppError::Unknown(format!("关闭开机自启失败: {e}")))?;
+            set_windows_autostart_user_disabled(true)?;
             Ok(())
         })
     }
@@ -147,6 +149,55 @@ pub fn is_autostart_enabled(app: AppHandle) -> Result<bool> {
     }
 }
 
+/// HKCU Run value. Must match `windows/hooks.nsh` and the Cargo package name.
+#[cfg(test)]
+pub const WINDOWS_AUTOSTART_RUN_VALUE: &str = "work-review";
+/// Opt-out marker. Installer upgrades must not recreate the Run value when this is 1.
+#[cfg(any(windows, test))]
+pub const WINDOWS_AUTOSTART_POLICY_KEY: &str = r"Software\se.grit.work";
+#[cfg(any(windows, test))]
+pub const WINDOWS_AUTOSTART_USER_DISABLED_VALUE: &str = "AutostartUserDisabled";
+
+#[cfg(test)]
+pub fn windows_run_command(exe: &str, silent: bool) -> String {
+    let quoted = format!("\"{}\"", exe.trim().trim_matches('"'));
+    if silent {
+        format!("{quoted} --autostart --hidden")
+    } else {
+        format!("{quoted} --autostart")
+    }
+}
+
+#[cfg(test)]
+pub fn windows_run_command_preserving_visibility(exe: &str, previous: &str) -> String {
+    let silent = previous
+        .split_whitespace()
+        .any(|arg| arg == "--hidden" || arg == "--minimized");
+    windows_run_command(exe, silent)
+}
+
+#[cfg(windows)]
+fn set_windows_autostart_user_disabled(disabled: bool) -> Result<()> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu
+        .create_subkey(WINDOWS_AUTOSTART_POLICY_KEY)
+        .map_err(|error| AppError::Unknown(format!("写入开机自启选择失败: {error}")))?;
+    if disabled {
+        key.set_value(WINDOWS_AUTOSTART_USER_DISABLED_VALUE, &1u32)
+            .map_err(|error| AppError::Unknown(format!("记录关闭开机自启失败: {error}")))?;
+    } else if let Err(error) = key.delete_value(WINDOWS_AUTOSTART_USER_DISABLED_VALUE) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(AppError::Unknown(format!(
+                "清除关闭开机自启标记失败: {error}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::{autolaunch_args, quote_windows_command_path, AUTOSTART_HIDDEN_ARG};
@@ -170,5 +221,59 @@ mod tests {
 
         let visible = autolaunch_args(false);
         assert!(!visible.contains(&AUTOSTART_HIDDEN_ARG));
+    }
+}
+
+#[cfg(test)]
+mod installer_contract_tests {
+    use super::{
+        windows_run_command, windows_run_command_preserving_visibility,
+        WINDOWS_AUTOSTART_POLICY_KEY, WINDOWS_AUTOSTART_RUN_VALUE,
+        WINDOWS_AUTOSTART_USER_DISABLED_VALUE,
+    };
+
+    #[test]
+    fn fresh_install_command_is_current_user_silent() {
+        assert_eq!(WINDOWS_AUTOSTART_RUN_VALUE, "work-review");
+        assert_eq!(
+            windows_run_command(
+                r"C:\Users\adrian\AppData\Local\Grit Work\grit-work.exe",
+                true
+            ),
+            "\"C:\\Users\\adrian\\AppData\\Local\\Grit Work\\grit-work.exe\" --autostart --hidden"
+        );
+    }
+
+    #[test]
+    fn upgrade_keeps_a_visible_autostart_command() {
+        let previous = "\"C:\\Old\\grit-work.exe\" --autostart";
+        assert_eq!(
+            windows_run_command_preserving_visibility(r"C:\New\grit-work.exe", previous),
+            "\"C:\\New\\grit-work.exe\" --autostart"
+        );
+    }
+
+    #[test]
+    fn upgrade_keeps_hidden_autostart() {
+        let previous = "\"C:\\Old\\grit-work.exe\" --autostart --hidden";
+        assert!(
+            windows_run_command_preserving_visibility(r"C:\New\grit-work.exe", previous)
+                .ends_with("--autostart --hidden")
+        );
+    }
+
+    #[test]
+    fn nsis_hook_matches_current_user_silent_default_and_opt_out() {
+        let hook = include_str!("../windows/hooks.nsh");
+        assert!(hook.contains(
+            "HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"work-review\""
+        ));
+        assert!(hook.contains("--autostart --hidden"));
+        assert!(hook.contains(WINDOWS_AUTOSTART_POLICY_KEY));
+        assert!(hook.contains(WINDOWS_AUTOSTART_USER_DISABLED_VALUE));
+        assert!(hook.contains("NSIS_HOOK_PREUNINSTALL"));
+        assert!(hook.contains("$UpdateMode <> 1"));
+        assert!(hook.contains("$GritPrevInstall"));
+        assert!(hook.contains("$GritUserDisabled = 1"));
     }
 }

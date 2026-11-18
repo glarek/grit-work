@@ -1,5 +1,18 @@
 # Validation — 2026-11-18
 
+## Windows requirements integration
+
+- Confirmed interview decisions implemented: per-project/day upward half-hour totals with raw evidence retained, manual gap entries, automatic completed-day draft preparation, explicit overall Spiris approval, retention setting (90 days), and per-installation AI transfer consent.
+- Local full workspace Rust run: **822 passed**, one real-display test ignored. A pre-existing timing-sensitive HTTP retry test failed on the first run and passed on the final full serial run; its budget was not changed. The first retention run exposed an absolute-path check after tombstone rename; this was fixed before the passing run.
+- Frontend: **784 passed**, Svelte zero errors/warnings, production Vite build passed. Chromium report confirmation and shared-workflow tests passed with no page errors. Updated nine-page synthetic interface PDF generated and report view inspected.
+- Rust all-target Clippy with warnings denied passed. Windows capture checks and native/npm CLI resolver have synthetic tests; these are not evidence of real multi-monitor capture or logged-in Windows CLI execution.
+- Windows NSIS hooks install current-user silent autostart by default, preserve explicit opt-out on upgrade, and remove the owned Run value on uninstall. New Windows CI workflow builds an NSIS review artifact; native outcome recorded separately below when available.
+- Privacy checks cover all visible Windows windows before and after memory-only GDI capture. Unknown browser URL with configured domain exclusions blocks the image; privacy skips do not permanently pause recording. Localhost screenshot requests use the same guard.
+- Retention preserves unfinished report evidence, verifies an archive before expiry, deletes payload before its manifest, and resumes interrupted cleanup without deleting unexpected files. Reports and submission receipts remain.
+- Windows VM SSH and installed Rust were inspected read-only. A Visual Studio installation was not discovered by vswhere. No real Spiris time was posted.
+
+## Earlier integrated preview checks
+
 - Frontend: `npm run verify:frontend` — 778 tests passed; Svelte check and Vite production build passed.
 - New report/archive/CLI and retention checks: `cargo test -p work-review --bin grit-work grit -- --test-threads=1` — 17 passed before adding the separately run, ignored display integration test.
 - Screen lock checks: 2 passed, including all-outputs-asleep handling.
