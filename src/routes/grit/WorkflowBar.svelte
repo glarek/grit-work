@@ -1,48 +1,134 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import GritIcon from './GritIcon.svelte';
   import { selectWorkDate } from './workflow.ts';
   import { getStatusBadgeMeta } from './gritTypes.ts';
+
   export let date: string;
   export let current = '';
   export let archived = false;
   export let showProjects = false;
-  type DayContext = { source: string; activities: number; minutes: number; report_status: string | null; projects?: {id:number;name:string;minutes:number;needs_review:boolean}[] };
+
+  type DayContext = {
+    source: string;
+    activities: number;
+    minutes: number;
+    report_status: string | null;
+    projects?: { id: number; name: string; minutes: number; needs_review: boolean }[];
+  };
+
   let context: DayContext | null = null;
   let error = '';
   let sequence = 0;
   let mounted = false;
   let lastDate = '';
   let poll: ReturnType<typeof setInterval>;
+
   async function refresh() {
     const request = ++sequence;
     error = '';
     try {
       const value = await invoke<DayContext>('grit_day_context', { date });
-      if (request === sequence) { context = value; archived = value?.source === 'archive'; }
-    } catch (e) { if (request === sequence) error = String(e); }
+      if (request === sequence) {
+        context = value;
+        archived = value?.source === 'archive';
+      }
+    } catch (e) {
+      if (request === sequence) error = String(e);
+    }
   }
-  $: if (mounted && date !== lastDate) { context = null; lastDate = date; void refresh(); }
-  onMount(() => { mounted = true; window.addEventListener('grit-changed', refresh); poll = setInterval(refresh, 15000); });
-  onDestroy(() => { sequence++; clearInterval(poll); if (typeof window !== 'undefined') window.removeEventListener('grit-changed', refresh); });
-  const links = [{path:'/overview',label:'Översikt'}, {path:'/timeline',label:'Tidslinje'}, {path:'/ask',label:'Analysera'}, {path:'/report',label:'Tidrapport'}];
+
+  $: if (mounted && date !== lastDate) {
+    context = null;
+    lastDate = date;
+    void refresh();
+  }
+
+  onMount(() => {
+    mounted = true;
+    window.addEventListener('grit-changed', refresh);
+    poll = setInterval(refresh, 15000);
+  });
+
+  onDestroy(() => {
+    sequence++;
+    clearInterval(poll);
+    if (typeof window !== 'undefined') window.removeEventListener('grit-changed', refresh);
+  });
+
+  const links: Array<{ path: string; label: string; icon: 'overview' | 'timeline' | 'analyze' | 'report' }> = [
+    { path: '/overview', label: 'Översikt', icon: 'overview' },
+    { path: '/timeline', label: 'Tidslinje', icon: 'timeline' },
+    { path: '/ask', label: 'Analysera', icon: 'analyze' },
+    { path: '/report', label: 'Tidrapport', icon: 'report' },
+  ];
+
+  $: reportStatusLabel = context?.report_status
+    ? getStatusBadgeMeta(context.report_status).label
+    : 'Inte skapad';
 </script>
-<div class="grit-workflow mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm dark:border-[#30363d] dark:bg-[#161b22]">
+
+<div class="grit-workflow mb-5 rounded-xl border border-slate-200/90 bg-slate-50/90 p-3.5 text-sm dark:border-[#30363d] dark:bg-[#161b22]">
   <div class="flex flex-wrap items-center justify-between gap-3">
-    <div><strong class="font-mono text-slate-900 dark:text-[#e6edf3]">{date}</strong>
-      <span class="ml-3 text-slate-500 dark:text-[#8b949e]">{context ? `${context.activities} poster · ${Math.round(context.minutes)} min · ${context.source === 'archive' ? 'verifierat arkiv' : 'lokalt underlag'}` : error || 'Hämtar gemensamt underlag…'}</span>
+    <div class="flex flex-wrap items-center gap-2.5">
+      <strong class="font-mono text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">{date}</strong>
+      <span class="text-xs text-slate-500 dark:text-[#8b949e]">
+        {#if context}
+          {context.activities} poster · {Math.round(context.minutes)} min · {context.source === 'archive' ? 'Arkiv' : 'Lokalt'}
+        {:else}
+          {error || 'Hämtar underlag…'}
+        {/if}
+      </span>
     </div>
-    <span class="text-xs text-slate-600 dark:text-[#adbac7]">Rapport: {context?.report_status ? getStatusBadgeMeta(context.report_status).label : 'inte skapad'}</span>
+
+    <span class="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs font-medium text-slate-700 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#adbac7]">
+      <GritIcon name="report" sizeClass="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+      <span>{reportStatusLabel}</span>
+    </span>
   </div>
+
   <nav aria-label="Arbetsflöde för vald dag" class="mt-3 flex flex-wrap gap-2">
-    {#each links as item}<a href={`#${item.path}`} on:click={() => selectWorkDate(date)} aria-current={current === item.path ? 'page' : undefined} class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-700 hover:bg-white dark:border-[#30363d] dark:text-[#adbac7] dark:hover:bg-[#21262d]">{item.label}</a>{/each}
+    {#each links as item}
+      <a
+        href={`#${item.path}`}
+        on:click={() => selectWorkDate(date)}
+        aria-current={current === item.path ? 'page' : undefined}
+        class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 {current === item.path
+          ? 'border-indigo-200 bg-white text-indigo-700 shadow-sm dark:border-indigo-700/60 dark:bg-[#21262d] dark:text-indigo-300'
+          : 'border-slate-200 text-slate-700 hover:bg-white dark:border-[#30363d] dark:text-[#adbac7] dark:hover:bg-[#21262d]'}"
+      >
+        <GritIcon name={item.icon} sizeClass="h-3.5 w-3.5" />
+        <span>{item.label}</span>
+      </a>
+    {/each}
   </nav>
+
   {#if showProjects}
-    <div class="mt-4 border-t border-slate-200 pt-3 dark:border-[#30363d]">
-      <h3 class="font-semibold text-slate-800 dark:text-[#e6edf3]">Tidrapportens projektfördelning</h3>
-      <p class="mt-1 text-xs text-slate-500">Sparade rapportrader för denna dag. Registrerad aktivitet ovan är underlag; debiterbar tid fastställs vid granskningen.</p>
-      {#if context?.projects?.length}<div class="mt-3 flex flex-wrap gap-3">{#each context.projects as project}<a href="#/report" on:click={() => selectWorkDate(date)} class="rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-[#30363d] dark:bg-[#0d1117]"><span class="text-slate-700 dark:text-[#adbac7]">{project.name}</span> <strong class="ml-2 font-mono text-slate-900 dark:text-[#e6edf3]">{project.minutes} min</strong>{#if project.needs_review}<span class="ml-2 text-xs text-amber-600">Kräver granskning</span>{/if}</a>{/each}</div>
-      {:else}<p class="mt-2 text-sm text-slate-500">Ingen sparad projektfördelning ännu. Skapa och granska ett rapportutkast.</p>{/if}
+    <div class="mt-3.5 border-t border-slate-200 pt-3 dark:border-[#30363d]">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 class="text-xs font-semibold text-slate-800 dark:text-[#e6edf3]">Projekt i sparad rapport</h3>
+        <span class="text-[11px] text-slate-500 dark:text-[#8b949e]">Debiterbar tid fastställs vid granskning.</span>
+      </div>
+      {#if context?.projects?.length}
+        <div class="mt-2.5 flex flex-wrap gap-2">
+          {#each context.projects as project}
+            <a
+              href="#/report"
+              on:click={() => selectWorkDate(date)}
+              class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs transition hover:border-indigo-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:hover:border-indigo-700"
+            >
+              <span class="text-slate-700 dark:text-[#adbac7]">{project.name}</span>
+              <strong class="font-mono text-slate-900 dark:text-[#e6edf3]">{project.minutes} min</strong>
+              {#if project.needs_review}
+                <GritIcon name="alert" sizeClass="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+              {/if}
+            </a>
+          {/each}
+        </div>
+      {:else}
+        <p class="mt-1.5 text-xs text-slate-500 dark:text-[#8b949e]">Ingen sparad projektfördelning ännu.</p>
+      {/if}
     </div>
   {/if}
 </div>

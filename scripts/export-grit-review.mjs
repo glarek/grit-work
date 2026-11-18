@@ -56,8 +56,10 @@ await shot('05-bekraftelse',page.getByRole('dialog').locator(':scope > div').fir
 await page.getByRole('button',{name:'Avbryt',exact:true}).click();
 await page.getByRole('button',{name:'Inställningar',exact:true}).click();
 await page.getByLabel('Skärmar att samla in').selectOption('all');
+await page.locator('.grit-capture summary').filter({hasText:'Bildinställningar'}).click();
+await page.locator('.grit-capture summary').filter({hasText:'Skärmar och beräkning'}).click();
 await shot('03-insamling',page.locator('.grit-capture'));
-await shot('04-generering',page.locator('section').filter({has:page.getByRole('heading',{name:'Generering & Spiris-standarder',exact:true})}).last());
+await shot('04-generering',page.locator('section').filter({has:page.getByRole('heading',{name:'AI & rapportering',exact:true})}).last());
 await shot('04-spiris',page.locator('section').filter({has:page.getByRole('heading',{name:'Anslutning till Spiris',exact:true})}).last());
 await page.getByRole('button',{name:'Tidrapport',exact:true}).click();
 await page.evaluate(()=>document.documentElement.classList.add('dark'));

@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import CaptureSettings from './CaptureSettings.svelte';
+  import GritIcon from './GritIcon.svelte';
   import { notifyGritChanged } from './workflow.ts';
   import {
     applyProviderChange,
@@ -212,26 +213,27 @@
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-              Generering & Spiris-standarder
+              AI & rapportering
             </h2>
             <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-              Välj vilken lokal AI-CLI som skapar tidrapportutkast och vilka standardvärden som skickas till Spiris.
+              Välj AI-tjänst och standardvärden för Spiris.
             </p>
           </div>
           <button
             type="button"
             on:click={handleSyncSpiris}
             disabled={syncingSpiris}
-            class="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
+            class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
           >
-            {syncingSpiris ? 'Synkar...' : 'Synka Spiris'}
+            <GritIcon name="sync" sizeClass="h-3.5 w-3.5 {syncingSpiris ? 'animate-spin' : ''}" />
+            <span>{syncingSpiris ? 'Synkar...' : 'Synka Spiris'}</span>
           </button>
         </div>
 
         <div class="space-y-3">
           <div>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              AI-leverantör (lokal CLI)
+            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
+              AI-tjänst
               <select
                 value={settingsForm.provider}
                 on:change={(e) => {
@@ -240,16 +242,13 @@
                     handleProviderSelect(val);
                   }
                 }}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
               >
                 <option value="codex">Codex CLI (OpenAI)</option>
                 <option value="grok">Grok CLI (xAI)</option>
                 <option value="agy">Antigravity CLI (Google Gemini)</option>
               </select>
             </label>
-            <p class="mt-1.5 rounded-lg bg-slate-50 p-2.5 text-xs text-slate-600 dark:bg-[#0d1117] dark:text-[#8b949e]">
-              {providerInfo.description}
-            </p>
           </div>
 
           <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition {settingsForm.ai_consent
@@ -258,84 +257,27 @@
             <input
               type="checkbox"
               bind:checked={settingsForm.ai_consent}
-              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
             />
             <div>
-              <div class="text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
-                Informerat samtycke till AI-analys ({providerInfo.name})
+              <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
+                <GritIcon name="shield" sizeClass="h-3.5 w-3.5 {settingsForm.ai_consent ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}" />
+                <span>Informerat samtycke till AI-analys ({providerInfo.name})</span>
               </div>
               <p class="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">
-                Jag samtycker till att skärmbilder och aktivitetsloggar skickas till vald inloggad CLI-leverantör ({providerInfo.name} · {providerInfo.vendor}, utan separata API-nycklar). När samtycke är aktiverat kan Grit Work även förbereda rapportutkast i bakgrunden för väntande dagar.
+                Skärmbilder och aktivitetsloggar skickas till vald inloggad CLI-leverantör ({providerInfo.name} · {providerInfo.vendor}, utan separata API-nycklar). Medger även automatisk bakgrundsförberedelse av väntande dagar.
               </p>
             </div>
           </label>
 
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Modell
-              <input
-                type="text"
-                bind:value={settingsForm.model}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              />
-            </label>
-
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Timeout (sekunder)
-              <input
-                type="number"
-                min="30"
-                step="30"
-                bind:value={settingsForm.timeout_seconds}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              />
-            </label>
-          </div>
-
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div class="sm:col-span-2">
-              <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-                Arkivmapp (valfri)
-                <div class="mt-1 flex gap-2">
-                  <input
-                    type="text"
-                    bind:value={settingsForm.archive_dir}
-                    placeholder={status.local_dir || 'Lokal arbetsmapp'}
-                    class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-                  />
-                  <button
-                    type="button"
-                    on:click={handlePickArchiveDir}
-                    class="shrink-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9]"
-                  >
-                    Välj mapp
-                  </button>
-                </div>
-              </label>
-            </div>
-
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Arkivlagring (dagar)
-              <input
-                type="number"
-                min="1"
-                max="3650"
-                step="1"
-                bind:value={settingsForm.archive_retention_days}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              />
-              <span class="mt-1 block font-normal text-slate-500">Standard: 90 dagar. Ofärdiga rapporter och deras underlag sparas tills de har skickats eller hoppats över.</span>
-            </label>
-          </div>
-
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
+            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
               Spiris-användare (krävs)
               <select
                 value={settingsForm.user_id}
                 on:change={(e) =>
                   (settingsForm = { ...settingsForm, user_id: Number(e.currentTarget.value) || 0 })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
               >
                 <option value={0}>Välj användare...</option>
                 {#each status.users as user (user.id)}
@@ -344,7 +286,7 @@
               </select>
             </label>
 
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
+            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
               Tidskod (krävs)
               <select
                 value={settingsForm.time_code_id}
@@ -353,7 +295,7 @@
                     ...settingsForm,
                     time_code_id: Number(e.currentTarget.value) || 0,
                   })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
               >
                 <option value={0}>Välj tidskod...</option>
                 {#each status.time_codes as tc (tc.id)}
@@ -362,7 +304,7 @@
               </select>
             </label>
 
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
+            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
               Standardaktivitet
               <select
                 value={settingsForm.activity_id}
@@ -371,7 +313,7 @@
                     ...settingsForm,
                     activity_id: Number(e.currentTarget.value) || 0,
                   })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
               >
                 <option value={0}>Ingen standard</option>
                 {#each status.activities as act (act.id)}
@@ -380,7 +322,7 @@
               </select>
             </label>
 
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
+            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
               Standardartikel
               <select
                 value={settingsForm.article_id}
@@ -389,7 +331,7 @@
                     ...settingsForm,
                     article_id: Number(e.currentTarget.value) || 0,
                   })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
               >
                 <option value={0}>Ingen standard</option>
                 {#each status.articles as art (art.id)}
@@ -403,17 +345,96 @@
             <input
               type="checkbox"
               bind:checked={settingsForm.billable}
-              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
             />
             <div>
               <div class="text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
                 Debiterbar tid
               </div>
               <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-                Markera om den rapporterade tiden ska faktureras kunden.
+                Styr om rapporterad tid skickas som fakturerbar till Spiris.
               </p>
             </div>
           </label>
+
+          <div class="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5 dark:border-[#30363d] dark:bg-[#0d1117]">
+            <div class="mb-2.5 text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
+              Långtidsarkiv
+            </div>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div class="sm:col-span-2">
+                <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
+                  Arkivmapp (valfri)
+                  <div class="mt-1 flex gap-2">
+                    <input
+                      type="text"
+                      bind:value={settingsForm.archive_dir}
+                      placeholder={status.local_dir || 'Lokal arbetsmapp'}
+                      class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                    />
+                    <button
+                      type="button"
+                      on:click={handlePickArchiveDir}
+                      class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9]"
+                    >
+                      <GritIcon name="folder" sizeClass="h-3.5 w-3.5" />
+                      <span>Välj mapp</span>
+                    </button>
+                  </div>
+                </label>
+              </div>
+
+              <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
+                Arkivlagring (dagar)
+                <input
+                  type="number"
+                  min="1"
+                  max="3650"
+                  step="1"
+                  bind:value={settingsForm.archive_retention_days}
+                  class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                />
+                <span class="mt-1 block font-normal text-slate-500">Standard: 90 dagar. Ofärdiga rapporter och deras underlag sparas tills de har skickats eller hoppats över.</span>
+              </label>
+            </div>
+          </div>
+
+          <details class="group rounded-xl border border-slate-200/80 bg-slate-50/60 p-3 dark:border-[#30363d] dark:bg-[#0d1117]">
+            <summary class="flex cursor-pointer list-none items-center justify-between text-xs font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-[#c9d1d9]">
+              <span>Avancerade AI-inställningar</span>
+              <span class="font-mono text-[11px] font-normal text-slate-500 dark:text-[#8b949e]">
+                {settingsForm.model} · {settingsForm.timeout_seconds} s
+              </span>
+            </summary>
+
+            <div class="mt-3 space-y-3 border-t border-slate-200/70 pt-3 dark:border-[#30363d]">
+              <p class="rounded-lg bg-white p-2.5 text-xs text-slate-600 dark:bg-[#161b22] dark:text-[#8b949e]">
+                {providerInfo.description}
+              </p>
+
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
+                  Modell
+                  <input
+                    type="text"
+                    bind:value={settingsForm.model}
+                    class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                  />
+                </label>
+
+                <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
+                  Timeout (sekunder)
+                  <input
+                    type="number"
+                    min="30"
+                    step="30"
+                    bind:value={settingsForm.timeout_seconds}
+                    class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                  />
+                </label>
+              </div>
+            </div>
+          </details>
         </div>
 
         <div class="flex justify-end pt-2">
@@ -421,9 +442,10 @@
             type="button"
             on:click={handleSaveSettings}
             disabled={savingSettings}
-            class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+            class="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50"
           >
-            {savingSettings ? 'Sparar...' : 'Spara inställningar'}
+            <GritIcon name="check" sizeClass="h-3.5 w-3.5" />
+            <span>{savingSettings ? 'Sparar...' : 'Spara inställningar'}</span>
           </button>
         </div>
       </section>
@@ -435,7 +457,7 @@
             Anslutning till Spiris
           </h2>
           <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-            Dina uppgifter sparas skyddat i datorns nyckellager.
+            Uppgifter sparas skyddat i datorns nyckellager.
           </p>
         </div>
 

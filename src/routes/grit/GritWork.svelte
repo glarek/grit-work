@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import GritSettingsPanel from './GritSettings.svelte';
+  import GritIcon from './GritIcon.svelte';
   import { get } from 'svelte/store';
   import WorkflowBar from './WorkflowBar.svelte';
   import { workDate, selectWorkDate, notifyGritChanged } from './workflow.ts';
@@ -484,13 +485,10 @@
               ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
               : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'}"
           >
-            {status.credential_saved ? 'API-uppgifter sparade' : 'Spiris ej konfigurerad'}
+            {status.credential_saved ? 'Spiris konfigurerat' : 'Spiris ej konfigurerad'}
           </span>
         {/if}
       </div>
-      <p class="mt-1 text-sm text-slate-500 dark:text-[#8b949e]">
-        Granska aktivitetsbaserade tidrapporter och skicka godkända rader till Spiris.
-      </p>
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
@@ -498,38 +496,42 @@
         type="button"
         on:click={handleSyncSpiris}
         disabled={syncingSpiris || initialLoading}
-        class="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
+        class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
       >
-        {syncingSpiris ? 'Synkar Spiris...' : 'Synka Spiris'}
+        <GritIcon name="sync" sizeClass="h-3.5 w-3.5 {syncingSpiris ? 'animate-spin' : ''}" />
+        <span>{syncingSpiris ? 'Synkar Spiris...' : 'Synka Spiris'}</span>
       </button>
 
       <button
         type="button"
         on:click={handleArchive}
         disabled={archiving || initialLoading}
-        class="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
+        class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
       >
-        {archiving ? 'Arkiverar...' : 'Arkivera'}
+        <GritIcon name="archive" sizeClass="h-3.5 w-3.5" />
+        <span>{archiving ? 'Arkiverar...' : 'Arkivera'}</span>
       </button>
 
       <div class="ml-1 inline-flex rounded-xl border border-slate-200 bg-slate-100/80 p-1 dark:border-[#30363d] dark:bg-[#0d1117]">
         <button
           type="button"
           on:click={() => (activeTab = 'report')}
-          class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {activeTab === 'report'
+          class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 {activeTab === 'report'
             ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
             : 'text-slate-600 hover:text-slate-900 dark:text-[#8b949e] dark:hover:text-[#e6edf3]'}"
         >
-          Tidrapport
+          <GritIcon name="report" sizeClass="h-3.5 w-3.5" />
+          <span>Tidrapport</span>
         </button>
         <button
           type="button"
           on:click={() => (activeTab = 'settings')}
-          class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {activeTab === 'settings'
+          class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 {activeTab === 'settings'
             ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
             : 'text-slate-600 hover:text-slate-900 dark:text-[#8b949e] dark:hover:text-[#e6edf3]'}"
         >
-          Inställningar
+          <GritIcon name="settings" sizeClass="h-3.5 w-3.5" />
+          <span>Inställningar</span>
         </button>
       </div>
     </div>
@@ -599,26 +601,29 @@
         <button
           type="button"
           on:click={() => selectDate(shiftIsoDateString(selectedDate, -1))}
-          class="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
+          class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
           aria-label="Föregående dag"
+          title="Föregående dag"
         >
-          ←
+          <GritIcon name="chevron-left" sizeClass="h-4 w-4" />
         </button>
         <input
           type="date"
+          aria-label="Välj arbetsdag"
           max={shiftIsoDateString(yesterdayDate, 1)}
           bind:value={selectedDate}
           on:change={() => selectDate(selectedDate)}
-          class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+          class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-mono text-sm font-medium text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
         />
         <button
           type="button"
           on:click={() => selectDate(shiftIsoDateString(selectedDate, 1))}
-          class="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
+          class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-40 dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
           disabled={selectedDate >= shiftIsoDateString(yesterdayDate, 1)}
           aria-label="Nästa dag"
+          title="Nästa dag"
         >
-          →
+          <GritIcon name="chevron-right" sizeClass="h-4 w-4" />
         </button>
 
         {#if status && status.pending_dates.length > 0}
@@ -645,9 +650,10 @@
             type="button"
             on:click={handleCancel}
             disabled={canceling}
-            class="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50 dark:border-rose-800/60 dark:bg-rose-950/40 dark:text-rose-300"
+            class="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:opacity-50 dark:border-rose-800/60 dark:bg-rose-950/40 dark:text-rose-300"
           >
-            {canceling ? 'Avbryter...' : 'Avbryt generering'}
+            <GritIcon name="cancel" sizeClass="h-3.5 w-3.5" />
+            <span>{canceling ? 'Avbryter...' : 'Avbryt generering'}</span>
           </button>
         {:else if !report || editable}
           {#if !report || report.status === 'failed'}
@@ -655,18 +661,22 @@
               type="button"
               on:click={createManualReportAndRow}
               disabled={generating || reportLoading || selectedDate > shiftIsoDateString(yesterdayDate, 1)}
-              class="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#e6edf3]"
+              class="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#e6edf3]"
             >
-              Starta manuell rapport
+              <GritIcon name="plus" sizeClass="h-3.5 w-3.5" />
+              <span>Starta manuell rapport</span>
             </button>
           {/if}
           <button
             type="button"
             on:click={() => handleGenerate(selectedDate)}
             disabled={generating || reportLoading || selectedDate > yesterdayDate || !aiConsent}
-            class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+            class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 {report
+              ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]'
+              : 'bg-indigo-600 text-white hover:bg-indigo-700'}"
           >
-            {report ? 'Generera om utkast' : 'Generera tidrapport'}
+            <GritIcon name="sparkles" sizeClass="h-3.5 w-3.5" />
+            <span>{report ? 'Generera om utkast' : 'Generera tidrapport'}</span>
           </button>
         {/if}
       </div>
@@ -692,7 +702,6 @@
       </section>
     {/if}
 
-    {#if report && !["running", "uploading"].includes(report.status)}<div class="flex justify-end"><button on:click={exportReport} class="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 dark:border-[#30363d] dark:text-[#adbac7]">Exportera tidrapport (CSV)</button></div>{/if}
     <!-- Report body -->
     {#if reportLoading}
       <div class="rounded-xl border border-slate-200/80 bg-white/90 p-10 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
@@ -719,104 +728,82 @@
         {/if}
       </div>
     {:else}
-      <!-- Report status & totals card -->
+      <!-- Report status & compact overview strip -->
       <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div class="space-y-1">
-            <div class="flex flex-wrap items-center gap-2.5">
-              <span class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-                Rapport {report.date}
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/70 pb-3.5 dark:border-[#30363d]">
+          <div class="flex flex-wrap items-center gap-2.5">
+            <span
+              class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold {statusMeta.tone === 'success'
+                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                : statusMeta.tone === 'warning'
+                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                  : statusMeta.tone === 'danger'
+                    ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300'
+                    : statusMeta.tone === 'info'
+                      ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
+                      : 'bg-slate-100 text-slate-700 dark:bg-[#21262d] dark:text-[#c9d1d9]'}"
+            >
+              {statusMeta.label}
+            </span>
+            {#if dirtyDraft}
+              <span class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                Osparade ändringar
               </span>
-              <span
-                class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold {statusMeta.tone === 'success'
-                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
-                  : statusMeta.tone === 'warning'
-                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-                    : statusMeta.tone === 'danger'
-                      ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300'
-                      : statusMeta.tone === 'info'
-                        ? 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300'
-                        : 'bg-slate-100 text-slate-700 dark:bg-[#21262d] dark:text-[#c9d1d9]'}"
-              >
-                {statusMeta.label}
-              </span>
-              {#if dirtyDraft}
-                <span class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
-                  Osparade ändringar
-                </span>
-              {/if}
-            </div>
-            <p class="text-xs text-slate-500 dark:text-[#8b949e]">
-              {statusMeta.description}
-            </p>
+            {/if}
+            {#if report.status === 'failed' || reconcilable}
+              <span class="text-xs text-slate-500 dark:text-[#8b949e]">{statusMeta.description}</span>
+            {/if}
           </div>
 
-          <div class="flex flex-wrap items-center gap-4 rounded-xl border border-slate-200/80 bg-slate-50/80 px-4 py-2.5 dark:border-[#30363d] dark:bg-[#0d1117]">
+          <div class="flex flex-wrap items-center gap-5 text-xs">
             <div>
-              <div class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                Inspelad tid
-              </div>
-              <div class="grit-metric text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
-                {formatMinutesSwedish(totalMinutes)} <span class="text-xs font-normal text-slate-500">· {report.rows.length} {report.rows.length === 1 ? 'rad' : 'rader'}</span>
-              </div>
+              <span class="text-slate-500 dark:text-[#8b949e]">Inspelad tid </span>
+              <strong class="grit-metric font-mono text-slate-900 dark:text-[#e6edf3]">{formatMinutesSwedish(totalMinutes)}</strong>
+              <span class="text-slate-400"> · {report.rows.length} {report.rows.length === 1 ? 'rad' : 'rader'}</span>
             </div>
-            <div class="h-7 w-px bg-slate-200 dark:bg-[#30363d]"></div>
             <div>
-              <div class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                Avrundad tid (Spiris)
-              </div>
-              <div class="grit-metric text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
-                {formatMinutesSwedish(totalSubmittedMinutes)}
-                {#if totalPaddingMinutes > 0}
-                  <span class="ml-1 text-xs font-normal text-indigo-600 dark:text-indigo-400">
-                    (+{totalPaddingMinutes} min)
-                  </span>
-                {/if}
-              </div>
+              <span class="text-slate-500 dark:text-[#8b949e]">Avrundad tid (Spiris) </span>
+              <strong class="grit-metric font-mono text-slate-900 dark:text-[#e6edf3]">{formatMinutesSwedish(totalSubmittedMinutes)}</strong>
+              {#if totalPaddingMinutes > 0}
+                <span class="font-mono text-indigo-600 dark:text-indigo-400"> (+{totalPaddingMinutes} min)</span>
+              {/if}
             </div>
-            <div class="h-7 w-px bg-slate-200 dark:bg-[#30363d]"></div>
             <div>
-              <div class="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                Fakturerbar tid (Spiris)
-              </div>
-              <div class="grit-metric text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">
-                {formatSwedishHours(totalInvoiceableHours)}
-                <span class="ml-1 text-xs font-normal text-slate-500 dark:text-[#8b949e]">
-                  ({billableEnabled ? 'Debiterbar tid: På' : 'Debiterbar tid: Av → 0 h'})
-                </span>
-              </div>
+              <span class="text-slate-500 dark:text-[#8b949e]">Fakturerbar </span>
+              <strong class="grit-metric font-mono text-slate-900 dark:text-[#e6edf3]">{formatSwedishHours(totalInvoiceableHours)}</strong>
+              <span class="text-slate-400"> ({billableEnabled ? 'På' : 'Av'})</span>
             </div>
           </div>
         </div>
 
         {#if rounding && rounding.projectTotals.length > 0}
-          <div class="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5 dark:border-[#30363d] dark:bg-[#0d1117]">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <span class="text-xs font-semibold text-slate-800 dark:text-[#e6edf3]">
-                Summering per projekt (inspelad vs. avrundad tid)
-              </span>
-              <span class="text-[11px] text-slate-500 dark:text-[#8b949e]">
-                Varje projekt avrundas uppåt till närmaste 30 min per dag (påslag läggs på projektets sista rad, inte per enskilt pass).
-              </span>
+          <details class="rounded-lg border border-slate-200/70 bg-slate-50/60 px-3.5 py-2.5 text-xs dark:border-[#30363d] dark:bg-[#0d1117]">
+            <summary class="flex cursor-pointer list-none items-center justify-between font-medium text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-[#c9d1d9]">
+              <span>Projektfördelning & avrundning ({rounding.projectTotals.length} projekt · 30 min/projekt)</span>
+              <GritIcon name="chevron-down" sizeClass="h-3.5 w-3.5 text-slate-400" />
+            </summary>
+            <div class="mt-2.5 space-y-2 border-t border-slate-200/70 pt-2.5 dark:border-[#30363d]">
+              <p class="text-[11px] text-slate-500 dark:text-[#8b949e]">
+                Avrundas uppåt till närmaste 30 min per projekt och dag (påslag läggs på projektets sista rad, inte per pass).
+              </p>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {#each rounding.projectTotals as proj}
+                  <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-200/80 bg-white px-3 py-1.5 dark:border-[#30363d] dark:bg-[#161b22]">
+                    <span class="truncate font-medium text-slate-800 dark:text-[#e6edf3]">{proj.projectName}</span>
+                    <span class="shrink-0 font-mono text-slate-600 dark:text-[#adbac7]">
+                      {formatMinutesSwedish(proj.recordedMinutes)} → <strong class="text-slate-900 dark:text-[#e6edf3]">{formatMinutesSwedish(proj.submittedMinutes)}</strong>
+                    </span>
+                  </div>
+                {/each}
+              </div>
             </div>
-            <div class="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {#each rounding.projectTotals as proj}
-                <div class="flex items-center justify-between gap-3 rounded-lg border border-slate-200/80 bg-white px-3 py-2 text-xs dark:border-[#30363d] dark:bg-[#161b22]">
-                  <span class="truncate font-medium text-slate-800 dark:text-[#e6edf3]">{proj.projectName}</span>
-                  <span class="shrink-0 font-mono text-slate-600 dark:text-[#adbac7]">
-                    {formatMinutesSwedish(proj.recordedMinutes)} → <strong class="text-slate-900 dark:text-[#e6edf3]">{formatMinutesSwedish(proj.submittedMinutes)}</strong>
-                  </span>
-                </div>
-              {/each}
-            </div>
-          </div>
+          </details>
         {/if}
 
         {#if report.summary}
-          <div class="grit-summary rounded-xl bg-slate-50 p-3 text-sm text-slate-700 dark:bg-[#0d1117] dark:text-[#c9d1d9]">
-            <span class="font-semibold text-slate-900 dark:text-[#e6edf3]">Sammanfattning: </span>
-            <span>{report.summary}</span>
-          </div>
+          <p class="grit-summary text-sm leading-relaxed text-slate-600 dark:text-[#adbac7]">
+            {report.summary}
+          </p>
         {/if}
 
         {#if report.error}
@@ -904,14 +891,14 @@
                 <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
                   <!-- Project -->
                   <div class="md:col-span-4">
-                    <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
+                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
                       Projekt
                       <select
                         value={row.project_id}
                         disabled={!editable}
                         on:change={(e) =>
                           updateRow(index, { project_id: Number(e.currentTarget.value) || 0 })}
-                        class="mt-1 w-full rounded-lg border px-2.5 py-1.5 text-sm dark:bg-[#161b22] dark:text-[#e6edf3] {!knownProject
+                        class="mt-1 w-full rounded-lg border px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:bg-[#161b22] dark:text-[#e6edf3] {!knownProject
                           ? 'border-rose-400 bg-rose-50 text-rose-900 dark:border-rose-700 dark:bg-rose-950/30'
                           : 'border-slate-200 bg-white text-slate-900 dark:border-[#30363d]'}"
                       >
@@ -931,47 +918,35 @@
                     </label>
                   </div>
 
-                  <!-- Activity -->
-                  <div class="md:col-span-3">
-                    <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                      Aktivitet
-                      <select
-                        value={row.activity_id}
-                        disabled={!editable}
-                        on:change={(e) =>
-                          updateRow(index, { activity_id: Number(e.currentTarget.value) || 0 })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                      >
-                        <option value={0}>Ingen / standard</option>
-                        {#each status?.activities ?? [] as activity (activity.id)}
-                          <option value={activity.id}>{activity.name}</option>
-                        {/each}
-                      </select>
-                    </label>
-                  </div>
-
-                  <!-- Article -->
-                  <div class="md:col-span-3">
-                    <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                      Artikel
-                      <select
-                        value={row.article_id}
-                        disabled={!editable}
-                        on:change={(e) =>
-                          updateRow(index, { article_id: Number(e.currentTarget.value) || 0 })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                      >
-                        <option value={0}>Ingen / standard</option>
-                        {#each status?.articles ?? [] as article (article.id)}
-                          <option value={article.id}>{article.name}</option>
-                        {/each}
-                      </select>
-                    </label>
-                  </div>
-
-                  <!-- Minutes -->
+                  <!-- Start / End / Minutes -->
                   <div class="md:col-span-2">
-                    <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
+                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
+                      Start
+                      <input
+                        type="time"
+                        value={unixSecondsToTimeInput(row.start)}
+                        disabled={!editable}
+                        on:change={(e) => updateRowTime(index, 'start', e.currentTarget.value)}
+                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                      />
+                    </label>
+                  </div>
+
+                  <div class="md:col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
+                      Slut
+                      <input
+                        type="time"
+                        value={unixSecondsToTimeInput(row.end)}
+                        disabled={!editable}
+                        on:change={(e) => updateRowTime(index, 'end', e.currentTarget.value)}
+                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                      />
+                    </label>
+                  </div>
+
+                  <div class="md:col-span-2">
+                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
                       {row.manual ? 'Minuter (intervall)' : 'Inspelade min'}
                       <input
                         type="number"
@@ -983,41 +958,21 @@
                           updateRow(index, {
                             minutes: Math.max(0, Math.trunc(Number(e.currentTarget.value) || 0)),
                           })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 disabled:bg-slate-50 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3] dark:disabled:bg-[#0d1117]"
+                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:bg-slate-50 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3] dark:disabled:bg-[#0d1117]"
                       />
                     </label>
                   </div>
 
-                  <!-- Start / End -->
-                  <div class="md:col-span-2">
-                    <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                      Start
-                      <input
-                        type="time"
-                        value={unixSecondsToTimeInput(row.start)}
-                        disabled={!editable}
-                        on:change={(e) => updateRowTime(index, 'start', e.currentTarget.value)}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                      />
-                    </label>
-                  </div>
-
-                  <div class="md:col-span-2">
-                    <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
-                      Slut
-                      <input
-                        type="time"
-                        value={unixSecondsToTimeInput(row.end)}
-                        disabled={!editable}
-                        on:change={(e) => updateRowTime(index, 'end', e.currentTarget.value)}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                      />
-                    </label>
+                  <div class="flex items-end md:col-span-2">
+                    <div class="w-full rounded-lg border border-slate-200/80 bg-slate-50/70 px-2.5 py-1.5 text-xs dark:border-[#30363d] dark:bg-[#161b22]">
+                      <span class="block text-[11px] text-slate-500 dark:text-[#8b949e]">Fakturerbart</span>
+                      <span class="font-mono font-semibold text-slate-900 dark:text-[#e6edf3]">{formatSwedishHours(rowInvoiceable)}</span>
+                    </div>
                   </div>
 
                   <!-- Description -->
-                  <div class={row.manual ? 'md:col-span-4' : 'md:col-span-8'}>
-                    <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
+                  <div class={row.manual ? 'md:col-span-6' : 'md:col-span-12'}>
+                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
                       Beskrivning
                       <input
                         type="text"
@@ -1025,14 +980,14 @@
                         disabled={!editable}
                         placeholder="Vad gjordes under detta arbetspass?"
                         on:input={(e) => updateRow(index, { description: e.currentTarget.value })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
                       />
                     </label>
                   </div>
 
                   {#if row.manual}
-                    <div class="md:col-span-4">
-                      <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-[#8b949e]">
+                    <div class="md:col-span-6">
+                      <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
                         Orsak till manuell tid (krävs)
                         <input
                           type="text"
@@ -1040,7 +995,7 @@
                           disabled={!editable}
                           placeholder="T.ex. kundmöte, telefonsamtal, verkstad"
                           on:input={(e) => updateRow(index, { manual_reason: e.currentTarget.value })}
-                          class="mt-1 w-full rounded-lg border px-3 py-1.5 text-sm dark:bg-[#161b22] dark:text-[#e6edf3] {!row.manual_reason.trim()
+                          class="mt-1 w-full rounded-lg border px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:bg-[#161b22] dark:text-[#e6edf3] {!row.manual_reason.trim()
                             ? 'border-amber-400 bg-amber-50/60 text-slate-900 dark:border-amber-600'
                             : 'border-slate-200 bg-white text-slate-900 dark:border-[#30363d]'}"
                         />
@@ -1048,6 +1003,52 @@
                     </div>
                   {/if}
                 </div>
+
+                <!-- Progressive disclosure for Activity, Article & Evidence IDs -->
+                <details class="mt-3 rounded-lg border border-slate-200/70 bg-slate-50/60 px-3 py-2 text-xs dark:border-[#30363d] dark:bg-[#161b22]/60">
+                  <summary class="flex cursor-pointer list-none items-center justify-between font-medium text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-[#8b949e]">
+                    <span>Aktivitet, artikel & underlag ({row.evidence_ids.length} poster)</span>
+                    <GritIcon name="chevron-down" sizeClass="h-3.5 w-3.5" />
+                  </summary>
+                  <div class="mt-2.5 grid grid-cols-1 gap-3 border-t border-slate-200/70 pt-2.5 sm:grid-cols-2 dark:border-[#30363d]">
+                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
+                      Aktivitet
+                      <select
+                        value={row.activity_id}
+                        disabled={!editable}
+                        on:change={(e) =>
+                          updateRow(index, { activity_id: Number(e.currentTarget.value) || 0 })}
+                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                      >
+                        <option value={0}>Ingen / standard</option>
+                        {#each status?.activities ?? [] as activity (activity.id)}
+                          <option value={activity.id}>{activity.name}</option>
+                        {/each}
+                      </select>
+                    </label>
+
+                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
+                      Artikel
+                      <select
+                        value={row.article_id}
+                        disabled={!editable}
+                        on:change={(e) =>
+                          updateRow(index, { article_id: Number(e.currentTarget.value) || 0 })}
+                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                      >
+                        <option value={0}>Ingen / standard</option>
+                        {#each status?.articles ?? [] as article (article.id)}
+                          <option value={article.id}>{article.name}</option>
+                        {/each}
+                      </select>
+                    </label>
+                  </div>
+                  {#if row.evidence_ids.length > 0}
+                    <p class="mt-2 font-mono text-[11px] text-slate-500 dark:text-[#8b949e]">
+                      Underlag: {row.evidence_ids.map((id) => `#${id}`).join(', ')}
+                    </p>
+                  {/if}
+                </details>
 
                 <div class="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 pt-2.5 text-xs dark:border-[#30363d]">
                   <div class="flex flex-wrap items-center gap-3">
@@ -1058,14 +1059,10 @@
                         disabled={!editable}
                         on:change={(e) =>
                           updateRow(index, { needs_review: e.currentTarget.checked })}
-                        class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                       />
                       {row.manual ? 'Bekräfta manuell rad (avmarkera när klar)' : 'Kräver granskning'}
                     </label>
-
-                    <span class="text-slate-500 dark:text-[#8b949e]">
-                      Fakturerbart: {formatSwedishHours(rowInvoiceable)}
-                    </span>
 
                     {#if rowPaddingMinutes > 0}
                       <span class="rounded bg-indigo-100 px-2 py-0.5 font-mono font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">
@@ -1073,14 +1070,8 @@
                       </span>
                     {/if}
 
-                    {#if row.evidence_ids.length > 0}
-                      <span class="text-slate-500 dark:text-[#8b949e]">
-                        Underlag: {row.evidence_ids.map((id) => `#${id}`).join(', ')}
-                      </span>
-                    {/if}
-
                     {#if row.remote_id !== null}
-                      <span class="rounded bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+                      <span class="rounded bg-emerald-100 px-2 py-0.5 font-mono font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
                         Spiris-ID #{row.remote_id}
                       </span>
                     {/if}
@@ -1090,9 +1081,10 @@
                     <button
                       type="button"
                       on:click={() => removeRow(index)}
-                      class="font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400"
+                      class="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-rose-600 hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:text-rose-400 dark:hover:bg-rose-950/30"
                     >
-                      Ta bort rad
+                      <GritIcon name="trash" sizeClass="h-3.5 w-3.5" />
+                      <span>Ta bort</span>
                     </button>
                   {/if}
                 </div>
@@ -1128,12 +1120,22 @@
         {/if}
 
         <div class="flex flex-wrap items-center justify-end gap-3 border-t border-slate-200/80 pt-4 dark:border-[#30363d]">
+    {#if !["running", "uploading"].includes(report.status)}
+        <button
+          type="button"
+          on:click={exportReport}
+          class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:text-[#adbac7] dark:hover:bg-[#21262d]"
+        >
+          <GritIcon name="download" sizeClass="h-3.5 w-3.5" />
+          <span>Exportera CSV</span>
+        </button>
+    {/if}
           {#if editable}
             <button
               type="button"
               on:click={handleSaveDraft}
               disabled={savingDraft}
-              class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#e6edf3]"
+              class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#e6edf3]"
             >
               {savingDraft ? 'Sparar utkast...' : 'Spara utkast'}
             </button>
@@ -1142,9 +1144,10 @@
               type="button"
               on:click={() => (confirmSubmitOpen = true)}
               disabled={!submitValidation.canSubmit || submitting || savingDraft}
-              class="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              class="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Godkänn & skicka till Spiris
+              <GritIcon name="check" sizeClass="h-3.5 w-3.5" />
+              <span>Godkänn & skicka till Spiris</span>
             </button>
           {/if}
         </div>

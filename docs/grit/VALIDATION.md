@@ -3,13 +3,20 @@
 ## Windows requirements integration
 
 - Confirmed interview decisions implemented: per-project/day upward half-hour totals with raw evidence retained, manual gap entries, automatic completed-day draft preparation, explicit overall Spiris approval, retention setting (90 days), and per-installation AI transfer consent.
-- Local full workspace Rust run: **830 passed**, one real-display test ignored. A pre-existing HTTP retry fixture intermittently accepted unrelated loopback probes as its retry. The fixture now checks a unique request target and handles idle/stray connections separately; a regression test covers both. Original timeout budgets and production request code are unchanged. The first retention run exposed an absolute-path check after tombstone rename; this was fixed before the passing run.
+- Local full workspace Rust run: **831 passed**, one real-display test ignored. A pre-existing HTTP retry fixture intermittently accepted unrelated loopback probes as its retry. The fixture now checks a unique request target and handles idle/stray connections separately; a regression test covers both. Original timeout budgets and production request code are unchanged. The first retention run exposed an absolute-path check after tombstone rename; this was fixed before the passing run.
 - Frontend: **784 passed**, Svelte zero errors/warnings, production Vite build passed. Chromium report confirmation and shared-workflow tests passed with no page errors. Updated nine-page synthetic interface PDF generated and report view inspected.
 - Rust all-target Clippy with warnings denied passed. Windows capture checks and native/npm CLI resolver have synthetic tests; these are not evidence of real multi-monitor capture or logged-in Windows CLI execution.
 - Windows NSIS hooks install current-user silent autostart by default, preserve explicit opt-out on upgrade, and remove the owned Run value on uninstall. New Windows CI workflow builds an NSIS review artifact; native outcome recorded separately below when available.
 - Privacy checks cover all visible Windows windows before and after memory-only GDI capture. Unknown browser URL with configured domain exclusions blocks the image; privacy skips do not permanently pause recording. Localhost screenshot requests use the same guard.
 - Retention preserves unfinished report evidence, verifies an archive before expiry, deletes payload before its manifest, and resumes interrupted cleanup without deleting unexpected files. Reports and submission receipts remain.
+- Native Windows validation found and fixed read-only file handles used for archive flushing, rooted-without-drive screenshot paths, open SQLite handles during test cleanup, and platform-dependent path assertions. Archive flush errors still propagate and prevent cleanup.
 - Windows VM SSH and installed Rust were inspected read-only. A Visual Studio installation was not discovered by vswhere. No real Spiris time was posted.
+
+## Interface polish
+
+- Applied the frontend-design skill with the requested Figtree/JetBrains Mono fonts and existing palette. Added labelled SVG actions, clearer recording state, compact report totals, and shorter Swedish labels.
+- Capture interval, screens, storage estimates, archive folder, retention and consent remain visible. Optional image settings, model settings, project-rounding details and evidence metadata use disclosures. The report approval step remains explicit.
+- Chromium confirmation and shared-workflow checks pass after the layout changes. The 800 × 600 minimum window was visually checked with no horizontal page overflow or page errors. Refreshed nine-page interface PDF uses synthetic data.
 
 ## Earlier integrated preview checks
 

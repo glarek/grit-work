@@ -54,29 +54,75 @@
   onMount(() => { void load(); void pollJob(); poll = setInterval(pollJob,3000); });
   onDestroy(() => { disposed = true; request++; clearInterval(poll); });
 </script>
-<div class="grit-work mx-auto max-w-6xl space-y-5 px-6 py-6">
-  <header class="grit-header"><h1 class="text-slate-900 dark:text-[#e6edf3]">Tidsanalys</h1><p class="mt-2 text-sm text-slate-500 dark:text-[#8b949e]">Undersök arbetet bakom tidrapporten med dagens bilder, aktivitetsloggar och Spiris-projekt.</p></header>
-  <label class="block text-sm text-slate-600 dark:text-[#adbac7]">Arbetsdag <input aria-label="Arbetsdag för analys" type="date" bind:value={date} max={today} disabled={busy} on:change={load} class="ml-3 rounded-lg border border-slate-200 bg-transparent px-3 py-2 font-mono dark:border-[#30363d]" /></label>
+<div class="grit-work analysis-view mx-auto max-w-6xl space-y-5 px-4 py-5 sm:px-6 sm:py-6">
+  <header class="grit-header flex flex-wrap items-end justify-between gap-4">
+    <div><h1 class="text-slate-900 dark:text-[#e6edf3]">Tidsanalys</h1><p class="mt-1 text-sm text-slate-500 dark:text-[#8b949e]">Förstå arbetet bakom tidrapporten.</p></div>
+    <label class="flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-[#adbac7]">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>
+      Arbetsdag <input aria-label="Arbetsdag för analys" type="date" bind:value={date} max={today} disabled={busy} on:change={load} class="min-w-0 rounded-lg border border-slate-200 bg-transparent px-3 py-2 font-mono dark:border-[#30363d]" />
+    </label>
+  </header>
   <WorkflowBar {date} current="/ask" />
-  <section class="rounded-xl border border-slate-200 bg-white p-5 dark:border-[#30363d] dark:bg-[#161b22]">
-    <p class="mb-3 text-sm text-slate-500 dark:text-[#8b949e]">{provider} · <span class="font-mono">{model}</span> · <a class="underline" href="#/settings">Gemensamma inställningar</a></p>
-    <p class="mb-4 text-sm text-slate-600 dark:text-[#adbac7]">När du startar analysen skickas valt underlag till din valda AI-leverantör via dess inloggade CLI. Analysen ändrar ingen tidrapport och skickar ingen tid till Spiris. Kontrollera slutsatser mot tidslinjen.</p>
+  <section class="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-[#30363d] dark:bg-[#161b22]" aria-label="Analysera arbetsdagen">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+      <span class="inline-flex items-center gap-2 font-semibold text-slate-700 dark:text-[#adbac7]">
+        <svg class="h-4 w-4 text-indigo-600 dark:text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 19h16M6 15v-4m6 4V5m6 10V8" stroke-linecap="round"/></svg>
+        {provider || 'Vald AI-leverantör'}
+      </span>
+      <a class="text-slate-500 underline underline-offset-4 dark:text-[#8b949e]" href="#/settings" title="Ändra AI-leverantör, modell och samtycke">AI-inställningar</a>
+    </div>
     {#if !aiConsent}
-      <p class="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200">
-        Informerat samtycke krävs innan analys kan köras. Aktivera samtycke under <a class="font-semibold underline" href="#/settings">Inställningar</a>.
+      <p class="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200">
+        Godkänn delning av underlag under <a class="font-semibold underline" href="#/settings">Inställningar</a> för att starta analysen.
       </p>
     {/if}
-    <div class="mb-3 flex flex-wrap gap-2">{#each ['Vilket arbete hör till respektive projekt?', 'Var finns luckor eller osäker tid?', 'Sammanfatta underlaget inför min tidrapport.'] as prompt}<button disabled={busy} on:click={() => question=prompt} class="rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 dark:border-[#30363d] dark:text-[#adbac7]">{prompt}</button>{/each}</div>
-    <label class="block text-sm font-semibold text-slate-700 dark:text-[#adbac7]">Fråga om arbetsdagen<textarea bind:value={question} maxlength="4000" disabled={busy} rows="3" class="mt-2 w-full rounded-lg border border-slate-200 bg-transparent p-3 font-normal dark:border-[#30363d]" /></label>
-    <div class="mt-3 flex gap-3"><button disabled={busy || !question.trim() || !aiConsent} on:click={analyze} class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{busy ? 'Analyserar i bakgrunden…' : 'Starta analys'}</button>{#if busy}<button on:click={cancel} class="rounded-lg border px-4 py-2 text-sm dark:text-[#adbac7]">Avbryt analys</button>{/if}</div>
-    {#if runningDate}<p class="mt-3 text-sm text-slate-500">Bakgrundsanalys pågår för {runningDate}. Du kan gå till andra vyer medan den körs.</p>{/if}
-    {#if error}<p role="alert" class="mt-3 text-sm text-rose-600">{error}</p>{/if}
+    <label class="block text-sm font-semibold text-slate-700 dark:text-[#adbac7]">Fråga om arbetsdagen<textarea bind:value={question} maxlength="4000" disabled={busy} rows="3" placeholder="Vad vill du veta om dagens arbete?" aria-describedby="analysis-sharing" class="mt-2 w-full resize-y rounded-lg border border-slate-200 bg-transparent p-3 font-normal leading-relaxed dark:border-[#30363d]" /></label>
+    <div class="mt-2 flex flex-wrap gap-2" aria-label="Förslag på frågor">
+      {#each [
+        {label:'Projektfördelning', prompt:'Vilket arbete hör till respektive projekt?', path:'M3 7h7l2 2h9v11H3zM3 7V4h7l2 3'},
+        {label:'Luckor och osäker tid', prompt:'Var finns luckor eller osäker tid?', path:'M12 8v5m0 3h.01M12 3 2 21h20L12 3Z'},
+        {label:'Sammanfatta', prompt:'Sammanfatta underlaget inför min tidrapport.', path:'M5 3h14v18H5zM8 8h8M8 12h8M8 16h5'}
+      ] as suggestion}
+        <button disabled={busy} on:click={() => question=suggestion.prompt} title={suggestion.prompt} aria-label={suggestion.prompt} class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-[#30363d] dark:text-[#adbac7] dark:hover:bg-[#21262d]">
+          <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d={suggestion.path}/></svg>{suggestion.label}
+        </button>
+      {/each}
+    </div>
+    <p id="analysis-sharing" class="mt-4 max-w-prose text-xs leading-relaxed text-slate-500 dark:text-[#8b949e]">När du startar skickas dagens bilder, aktivitetsloggar och projektunderlag till {provider || 'vald AI-leverantör'}. Ingen tidrapport ändras och ingen tid skickas till Spiris.</p>
+    <div class="mt-4 flex flex-wrap items-center gap-3">
+      <button disabled={busy || !question.trim() || !aiConsent} on:click={analyze} class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 3 15 9-15 9V3Z" stroke-linejoin="round"/></svg>
+        {busy ? 'Analyserar i bakgrunden…' : 'Starta analys'}
+      </button>
+      {#if busy}<button on:click={cancel} class="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm dark:border-[#30363d] dark:text-[#adbac7]"><svg class="h-3 w-3" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>Avbryt analys</button>{/if}
+    </div>
+    {#if runningDate}<p role="status" class="mt-3 text-sm text-slate-500 dark:text-[#8b949e]">Bakgrundsanalys pågår för {runningDate}. Du kan lämna vyn.</p>{/if}
+    {#if error}<p role="alert" class="mt-3 text-sm text-rose-600 dark:text-rose-400">{error}</p>{/if}
+    <details class="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-500 dark:border-[#30363d] dark:text-[#8b949e]">
+      <summary class="cursor-pointer py-1">Om analysen</summary>
+      <p class="mt-2 max-w-prose leading-relaxed">Modell: <span class="break-all font-mono">{model || 'Inte vald'}</span>. Analysen körs via leverantörens inloggade CLI. Kontrollera slutsatser mot tidslinjen.</p>
+    </details>
   </section>
-  {#each [...history].reverse() as entry}
-    <article class="rounded-xl border border-slate-200 bg-white p-5 dark:border-[#30363d] dark:bg-[#161b22]">
-      <h2 class="font-semibold text-slate-900 dark:text-[#e6edf3]">{entry.question}</h2>
-      <p class="mt-1 font-mono text-xs text-slate-500">{entry.provider} · {entry.model} · {new Date(entry.created_at*1000).toLocaleString('sv-SE')}</p>
-      <p class="mt-4 whitespace-pre-wrap text-sm leading-7 text-slate-700 dark:text-[#adbac7]">{entry.answer}</p>
-    </article>
-  {/each}
+  {#if history.length}
+    <section aria-labelledby="analysis-history" class="space-y-3">
+      <h2 id="analysis-history" class="text-sm font-semibold text-slate-600 dark:text-[#adbac7]">Tidigare analyser <span class="ml-1 font-mono text-xs font-normal text-slate-500">{history.length}</span></h2>
+      {#each [...history].reverse() as entry}
+        <article class="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-[#30363d] dark:bg-[#161b22]">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 class="font-semibold text-slate-900 dark:text-[#e6edf3]">{entry.question}</h3>
+            <time datetime={new Date(entry.created_at*1000).toISOString()} class="font-mono text-xs text-slate-500 dark:text-[#8b949e]">{new Date(entry.created_at*1000).toLocaleString('sv-SE')}</time>
+          </div>
+          <p class="mt-3 max-w-prose whitespace-pre-wrap break-words text-sm leading-7 text-slate-700 dark:text-[#adbac7]">{entry.answer}</p>
+          <details class="mt-3 text-xs text-slate-500 dark:text-[#8b949e]"><summary class="cursor-pointer py-1">AI-modell</summary><p class="mt-1 break-all">{entry.provider}: <span class="font-mono">{entry.model}</span></p></details>
+        </article>
+      {/each}
+    </section>
+  {/if}
 </div>
+
+<style>
+  .analysis-view :is(button, a, input, textarea, summary):focus-visible {
+    outline: 2px solid #6366f1;
+    outline-offset: 3px;
+  }
+</style>

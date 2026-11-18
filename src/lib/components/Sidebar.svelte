@@ -147,14 +147,13 @@
         <div class="sidebar-recording-copy flex items-center gap-2 min-w-0">
           <span class="relative flex h-2.5 w-2.5">
             {#if isRecording && !isPaused}
-              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
             {:else}
               <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-slate-300 dark:bg-[#484f58]"></span>
             {/if}
           </span>
-          <span class="text-xs font-semibold tracking-[0.08em] text-slate-500 dark:text-[#7d8590]">
-            {translate('sidebar.recordingStatus')}
+          <span class="text-xs font-medium text-slate-500 dark:text-[#7d8590]" role="status">
+            {isPaused ? 'Pausad' : isRecording ? 'Samlar in' : 'Inaktiv'}
           </span>
         </div>
         <button
@@ -185,12 +184,13 @@
 
   <div class="sidebar-main">
     <!-- 导航菜单 -->
-    <nav class="sidebar-nav sidebar-nav-section">
+    <nav class="sidebar-nav sidebar-nav-section" aria-label="Huvudmeny">
       <ul class="sidebar-nav-list">
         {#each navItems as item}
           <li>
             <a href={item.path} use:link
               aria-label={translate(item.labelKey)}
+              title={translate(item.labelKey)}
               aria-current={activeStates[item.path] ? 'page' : undefined}
               class="group sidebar-nav-item
                 {activeStates[item.path]
@@ -199,14 +199,14 @@
 
               <div class="sidebar-nav-main">
                 <!-- SVG 图标 -->
-                <div class="sidebar-nav-icon {activeStates[item.path] ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 group-hover:text-slate-500 dark:group-hover:text-slate-400'}">
+                <div aria-hidden="true" class="sidebar-nav-icon {activeStates[item.path] ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 group-hover:text-slate-500 dark:group-hover:text-slate-400'}">
                   {#if item.icon === 'grit'}
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                     </svg>
                   {:else if item.icon === 'home'}
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" />
                     </svg>
                   {:else if item.icon === 'timeline'}
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -218,7 +218,7 @@
                     </svg>
                   {:else if item.icon === 'ask'}
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h8M8 14h4m-6 6h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 19h16M6 15v-4m6 4V5m6 10V8" />
                     </svg>
                   {:else if item.icon === 'settings'}
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -287,16 +287,24 @@
 
         <button on:click={cycleTheme}
           class="sidebar-footer-action"
+          aria-label={theme === 'system' ? translate('sidebar.themeTitle.system') : theme === 'light' ? translate('sidebar.themeTitle.light') : translate('sidebar.themeTitle.dark')}
           title="{theme === 'system' ? translate('sidebar.themeTitle.system') : theme === 'light' ? translate('sidebar.themeTitle.light') : translate('sidebar.themeTitle.dark')}">
           {#if theme === 'system'}
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+            <svg aria-hidden="true" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
           {:else if theme === 'light'}
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+            <svg aria-hidden="true" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
           {:else}
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
+            <svg aria-hidden="true" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
           {/if}
         </button>
       </div>
     </div>
   </div>
 </div>
+
+<style>
+  .sidebar-editorial-shell :is(a, button):focus-visible {
+    outline: 2px solid #6366f1;
+    outline-offset: 3px;
+  }
+</style>

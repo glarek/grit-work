@@ -72,6 +72,7 @@ await page.getByRole('heading',{name:'Kontrollera luckorna i underlaget.',exact:
 await page.locator('a[href="#/settings"]').first().click();
 await page.waitForTimeout(500);
 await page.getByRole('heading',{name:'Skärmbilder & lagring',exact:true}).waitFor();
+await page.locator('details').filter({has:page.getByRole('textbox',{name:'Modell',exact:true,includeHidden:true})}).locator('summary').first().click();
 await page.getByRole('textbox',{name:'Modell',exact:true}).fill('custom-model-draft');
 await page.getByRole('spinbutton',{name:'Skärmbildsintervall i sekunder'}).fill('90');
 await page.getByRole('button',{name:'Spara insamling',exact:true}).click();
