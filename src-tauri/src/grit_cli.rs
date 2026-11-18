@@ -242,18 +242,90 @@ fn extract_report(v: &Value) -> Option<Value> {
     }
     None
 }
+// Compare decoded full paths, never serialized JSON or filename substrings.
+fn normalized_evidence_path(path: &str) -> Option<String> {
+    let mut path = path.replace('\\', "/");
+    if let Some(rest) = path.strip_prefix("//?/") {
+        path = if rest
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("UNC/"))
+        {
+            format!("//{}", &rest[4..])
+        } else {
+            rest.to_string()
+        };
+    }
+    let windows_path = path.starts_with("//")
+        || (path.as_bytes().get(1) == Some(&b':')
+            && path.as_bytes().get(2) == Some(&b'/')
+            && path.as_bytes()[0].is_ascii_alphabetic());
+    if !windows_path && !path.starts_with('/') {
+        return None;
+    }
+    if windows_path {
+        path.make_ascii_lowercase();
+    }
+    Some(path)
+}
+
+/// Bound both nesting and work, including providers that JSON-encode arguments.
+fn decoded_value_matches(
+    value: &Value,
+    expected: &str,
+    depth: usize,
+    budget: &mut usize,
+    inside_read_file: bool,
+) -> bool {
+    if depth > 12 || *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    match value {
+        Value::Object(object) => {
+            let read_file = inside_read_file
+                || ["name", "tool", "tool_name"]
+                    .iter()
+                    .any(|key| object.get(*key).and_then(Value::as_str) == Some("read_file"));
+            object
+                .values()
+                .any(|child| decoded_value_matches(child, expected, depth + 1, budget, read_file))
+        }
+        Value::Array(values) => values.iter().any(|child| {
+            decoded_value_matches(child, expected, depth + 1, budget, inside_read_file)
+        }),
+        Value::String(text) => {
+            if inside_read_file && normalized_evidence_path(text).as_deref() == Some(expected) {
+                return true;
+            }
+            if text.len() <= 64 * 1024 {
+                if let Ok(decoded) = serde_json::from_str::<Value>(text) {
+                    return decoded_value_matches(
+                        &decoded,
+                        expected,
+                        depth + 1,
+                        budget,
+                        inside_read_file,
+                    );
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 fn verify_grok_image_reads(stream: &str, images: &[PathBuf]) -> Result<(), String> {
     let events = stream
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .collect::<Vec<_>>();
     for image in images {
-        let path = image.to_string_lossy();
-        let read = events.iter().any(|e| {
-            let kind = e["type"].as_str().unwrap_or("");
-            kind.contains("tool")
-                && e.to_string().contains("read_file")
-                && e.to_string().contains(path.as_ref())
+        let expected = normalized_evidence_path(&image.to_string_lossy());
+        let read = expected.as_deref().is_some_and(|expected| {
+            events.iter().any(|event| {
+                let kind = event["type"].as_str().unwrap_or("");
+                kind.contains("tool") && decoded_value_matches(event, expected, 0, &mut 4096, false)
+            })
         });
         if !read {
             return Err("Grok läste inte alla underlagsbilder. Förslaget har stoppats; välj annan modell eller försök igen.".into());
@@ -853,5 +925,96 @@ mod windows_resolver_tests {
             resolve_windows_cli("grok", &roots).unwrap().executable,
             native
         );
+    }
+}
+
+#[cfg(test)]
+mod grok_image_path_tests {
+    use super::*;
+    fn verify(event: Value, expected: &str) -> bool {
+        verify_grok_image_reads(&event.to_string(), &[PathBuf::from(expected)]).is_ok()
+    }
+    #[test]
+    fn grok_image_paths_decode_linux_windows_and_encoded_arguments() {
+        for (expected, actual) in [
+            ("/job/evidence-0.jpg", "/job/evidence-0.jpg"),
+            (
+                r"C:\Work Space\evidence-0.jpg",
+                r"C:\Work Space\evidence-0.jpg",
+            ),
+            (
+                r"C:\Work Space\evidence-0.jpg",
+                "c:/Work Space/evidence-0.jpg",
+            ),
+            (
+                r"C:\Work Space\evidence-0.jpg",
+                r"\\?\C:\Work Space\evidence-0.jpg",
+            ),
+            (
+                r"\\server\share\evidence-0.jpg",
+                r"\\?\UNC\server\share\evidence-0.jpg",
+            ),
+        ] {
+            let args = json!({"path":actual});
+            for arguments in [
+                args.clone(),
+                json!(args.to_string()),
+                json!(json!(args.to_string()).to_string()),
+            ] {
+                assert!(verify(
+                    json!({"type":"tool_call","function":{"name":"read_file","arguments":arguments}}),
+                    expected
+                ));
+            }
+        }
+    }
+    #[test]
+    fn grok_image_paths_reject_substrings_wrong_paths_and_unrelated_tools() {
+        let expected = "C:/work/evidence-0.jpg";
+        for actual in [
+            "evidence-0.jpg",
+            "D:/work/evidence-0.jpg",
+            "C:/other/evidence-0.jpg",
+            "C:/work/evidence-0.jpg.bak",
+            "Read C:/work/evidence-0.jpg",
+        ] {
+            assert!(!verify(
+                json!({"type":"tool_call","name":"read_file","arguments":{"path":actual}}),
+                expected
+            ));
+        }
+        assert!(!verify(
+            json!({"type":"text","name":"read_file","arguments":{"path":expected}}),
+            expected
+        ));
+        assert!(!verify(
+            json!({"type":"tool_call","name":"write_file","arguments":{"path":expected},"description":"read_file"}),
+            expected
+        ));
+        assert!(!verify(
+            json!({"type":"tool_call","calls":[{"name":"read_file","arguments":{"path":"C:/wrong.jpg"}},{"name":"write_file","arguments":{"path":expected}}]}),
+            expected
+        ));
+        assert!(!verify(
+            json!({"type":"tool_call","name":"read_file","arguments":{"path":"/JOB/evidence-0.jpg"}}),
+            "/job/evidence-0.jpg"
+        ));
+        let stream = format!(
+            "{}\n{}",
+            json!({"type":"tool_call","name":"read_file","arguments":{"path":"C:/wrong.jpg"}}),
+            json!({"type":"tool_call","name":"write_file","arguments":{"path":expected}})
+        );
+        assert!(verify_grok_image_reads(&stream, &[PathBuf::from(expected)]).is_err());
+    }
+    #[test]
+    fn grok_image_paths_bound_nested_argument_decoding() {
+        let mut arguments = json!({"path":"/job/evidence-0.jpg"});
+        for _ in 0..20 {
+            arguments = json!({"nested":arguments});
+        }
+        assert!(!verify(
+            json!({"type":"tool_call","name":"read_file","arguments":arguments}),
+            "/job/evidence-0.jpg"
+        ));
     }
 }
