@@ -559,20 +559,20 @@
       <section class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-indigo-200 bg-indigo-50/90 p-4 dark:border-indigo-800/60 dark:bg-indigo-950/30">
         <div>
           <h2 class="text-sm font-semibold text-indigo-950 dark:text-indigo-200">
-            Gårdagens tidrapport ({yesterdayDate}) saknas
+            Gårdagens tidrapport ({yesterdayDate}) {status?.report?.status === 'draft' ? 'är redo för granskning' : status?.report?.status === 'running' ? 'förbereds i bakgrunden' : status?.report?.status === 'failed' ? 'behöver åtgärdas' : 'står i kö'}
           </h2>
           <p class="mt-0.5 text-xs text-indigo-800/80 dark:text-indigo-300/80">
-            Vill du generera ett utkast från gårdagens insamlade aktivitet?
+            {aiConsent ? 'Appen förbereder förslaget automatiskt. Granska osäkerheter och komplettera luckor innan du godkänner.' : 'Aktivera AI-samtycke i inställningarna för automatisk förberedelse, eller komplettera dagen manuellt.'}
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            on:click={() => handleGenerate(yesterdayDate)}
-            disabled={generating || !aiConsent}
+            on:click={() => selectDate(yesterdayDate)}
+            disabled={generating}
             class="rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
           >
-            Skapa rapport
+            {status?.report?.status === 'draft' ? 'Granska rapport' : 'Öppna arbetsdagen'}
           </button>
           <button
             type="button"
