@@ -56,9 +56,9 @@ pub fn archive_day(
         }
         return Ok(());
     }
-    guard.armed.set(false);
+    guard.disarm();
     if let Err(e) = fs::rename(&guard.path, &plan.day_dir) {
-        guard.armed.set(true);
+        guard.arm();
         return Err(format!("rename archive: {e}"));
     }
     let manifest = verify_day(&plan.day_dir, date)?;
@@ -105,11 +105,16 @@ pub fn clean_archived_day(
         if entry.archived != shot.archived_str {
             return Err(format!("archive source mismatch: {}", entry.source));
         }
-        if !shot.sha256.is_empty() && entry.sha256 != shot.sha256 {
-            return Err(format!(
-                "source image does not match archive: {}",
-                entry.source
-            ));
+        // A previous clean may already have removed the local file. Compare
+        // bytes only when the source is still present; the manifest hash was
+        // verified against the archived image.
+        if let Some(present) = &shot.sha256 {
+            if present != &entry.sha256 {
+                return Err(format!(
+                    "source image does not match archive: {}",
+                    entry.source
+                ));
+            }
         }
     }
     let mut removed = 0;
@@ -151,7 +156,8 @@ struct PlannedShot {
     source_str: String,
     archived_rel: PathBuf,
     archived_str: String,
-    sha256: String,
+    /// `None` when the local source is already gone. Never an empty stand-in hash.
+    sha256: Option<String>,
 }
 
 struct ArchivePlan {
@@ -164,6 +170,16 @@ struct ArchivePlan {
 struct StageDir {
     path: PathBuf,
     armed: std::cell::Cell<bool>,
+}
+
+impl StageDir {
+    fn disarm(&self) {
+        self.armed.set(false);
+    }
+
+    fn arm(&self) {
+        self.armed.set(true);
+    }
 }
 
 impl Drop for StageDir {
@@ -251,22 +267,28 @@ fn prepare(
     })
 }
 
-fn hash_source_if_present(source: &Path) -> Result<String, String> {
+fn hash_source_if_present(source: &Path) -> Result<Option<String>, String> {
     match fs::symlink_metadata(source) {
         Ok(meta) if meta.file_type().is_symlink() => {
             Err(format!("symlink prohibited: {}", source.display()))
         }
-        Ok(meta) if meta.is_file() => sha256_file(source),
-        Ok(_) => Err(format!("screenshot is not a regular file: {}", source.display())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Ok(meta) if meta.is_file() => Ok(Some(sha256_file(source)?)),
+        Ok(_) => Err(format!(
+            "screenshot is not a regular file: {}",
+            source.display()
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("stat {}: {e}", source.display())),
     }
 }
 
 fn stage_archive(plan: &ArchivePlan) -> Result<StageDir, String> {
     for shot in &plan.shots {
-        if shot.sha256.is_empty() {
-            return Err(format!("missing source screenshot: {}", shot.source.display()));
+        if shot.sha256.is_none() {
+            return Err(format!(
+                "missing source screenshot: {}",
+                shot.source.display()
+            ));
         }
     }
     let parent = plan
@@ -297,18 +319,33 @@ fn stage_archive(plan: &ArchivePlan) -> Result<StageDir, String> {
         }
         fs::copy(&shot.source, &dest).map_err(|e| format!("copy screenshot: {e}"))?;
         let copied = sha256_file(&dest)?;
-        if copied != shot.sha256 {
-            return Err(format!("copied screenshot hash mismatch: {}", dest.display()));
+        let expected = shot
+            .sha256
+            .as_deref()
+            .ok_or_else(|| format!("missing source screenshot: {}", shot.source.display()))?;
+        if copied != expected {
+            return Err(format!(
+                "copied screenshot hash mismatch: {}",
+                dest.display()
+            ));
         }
         files.insert(rel_key(&shot.archived_rel), copied);
     }
-    let activities_bytes =
-        serde_json::to_vec_pretty(&plan.rewritten).map_err(|e| e.to_string())?;
+    let activities_bytes = serde_json::to_vec_pretty(&plan.rewritten).map_err(|e| e.to_string())?;
     write_new(&staging.join(ACTIVITIES_FILE), &activities_bytes)?;
-    files.insert(
-        ACTIVITIES_FILE.into(),
-        sha256_bytes(&activities_bytes),
-    );
+    files.insert(ACTIVITIES_FILE.into(), sha256_bytes(&activities_bytes));
+    let mut sources = Vec::with_capacity(plan.shots.len());
+    for shot in &plan.shots {
+        let sha256 = shot
+            .sha256
+            .clone()
+            .ok_or_else(|| format!("missing source screenshot: {}", shot.source.display()))?;
+        sources.push(SourceEntry {
+            source: shot.source_str.clone(),
+            archived: shot.archived_str.clone(),
+            sha256,
+        });
+    }
     let manifest = ArchiveManifest {
         date: plan
             .day_dir
@@ -318,15 +355,7 @@ fn stage_archive(plan: &ArchivePlan) -> Result<StageDir, String> {
             .to_string(),
         original_activities_sha256: plan.original_hash.clone(),
         files,
-        sources: plan
-            .shots
-            .iter()
-            .map(|shot| SourceEntry {
-                source: shot.source_str.clone(),
-                archived: shot.archived_str.clone(),
-                sha256: shot.sha256.clone(),
-            })
-            .collect(),
+        sources,
     };
     let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
     write_new(&staging.join(MANIFEST_FILE), &manifest_bytes)?;
@@ -340,7 +369,8 @@ fn readback_stage(
     manifest_bytes: &[u8],
     rewritten: &Value,
 ) -> Result<(), String> {
-    let reread = fs::read(staging.join(MANIFEST_FILE)).map_err(|e| format!("readback manifest: {e}"))?;
+    let reread =
+        fs::read(staging.join(MANIFEST_FILE)).map_err(|e| format!("readback manifest: {e}"))?;
     if reread != manifest_bytes {
         return Err("manifest readback mismatch".into());
     }
@@ -355,7 +385,8 @@ fn readback_stage(
             return Err(format!("readback hash mismatch: {rel}"));
         }
     }
-    let activities = fs::read(staging.join(ACTIVITIES_FILE)).map_err(|e| format!("readback activities: {e}"))?;
+    let activities =
+        fs::read(staging.join(ACTIVITIES_FILE)).map_err(|e| format!("readback activities: {e}"))?;
     let value: Value = serde_json::from_slice(&activities).map_err(|e| e.to_string())?;
     if &value != rewritten {
         return Err("activities readback mismatch".into());
@@ -389,7 +420,11 @@ fn verify_day(day_dir: &Path, date: &str) -> Result<ArchiveManifest, String> {
         return Err("archive contents do not match manifest".into());
     }
     for (rel, expected_hash) in &manifest.files {
-        if rel == MANIFEST_FILE || rel.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
+        if rel == MANIFEST_FILE
+            || rel
+                .split('/')
+                .any(|p| p.is_empty() || p == "." || p == "..")
+        {
             return Err(format!("illegal archived path: {rel}"));
         }
         let path = day_dir.join(rel);
@@ -411,7 +446,8 @@ fn read_activities(day_dir: &Path, manifest: &ArchiveManifest) -> Result<Value, 
         .files
         .get(ACTIVITIES_FILE)
         .ok_or("manifest missing activities.json")?;
-    let bytes = fs::read(day_dir.join(ACTIVITIES_FILE)).map_err(|e| format!("read activities: {e}"))?;
+    let bytes =
+        fs::read(day_dir.join(ACTIVITIES_FILE)).map_err(|e| format!("read activities: {e}"))?;
     if &sha256_bytes(&bytes) != expected {
         return Err("activities.json hash mismatch".into());
     }
@@ -421,7 +457,9 @@ fn read_activities(day_dir: &Path, manifest: &ArchiveManifest) -> Result<Value, 
         .ok_or("archived activities must be an array")?;
     let mut referenced = BTreeSet::new();
     for row in rows {
-        let obj = row.as_object().ok_or("archived activity must be an object")?;
+        let obj = row
+            .as_object()
+            .ok_or("archived activity must be an object")?;
         let path = obj
             .get("screenshot_path")
             .and_then(Value::as_str)
@@ -465,9 +503,11 @@ fn parse_past_day(date: &str) -> Result<NaiveDate, String> {
     if bytes[4] != b'-' || bytes[7] != b'-' {
         return Err("date must be YYYY-MM-DD".into());
     }
-    if !bytes.iter().enumerate().all(|(i, b)| {
-        i == 4 || i == 7 || b.is_ascii_digit()
-    }) {
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+    {
         return Err("date must be YYYY-MM-DD".into());
     }
     let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| "invalid date")?;
@@ -568,7 +608,10 @@ fn ensure_regular_file(path: &Path) -> Result<(), String> {
     reject_symlink_chain(path, false)?;
     let meta = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err(format!("screenshot is not a regular file: {}", path.display()));
+        return Err(format!(
+            "screenshot is not a regular file: {}",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -698,14 +741,26 @@ mod tests {
         assert_eq!(fs::read(archived_a).unwrap(), b"png-a");
         assert!(Path::new(archived_a).starts_with(archive.join("grit-work").join(DAY)));
         assert_eq!(fs::read(data.join("shots/a.png")).unwrap(), b"png-a");
-        assert_eq!(fs::read(data.join("shots/a.png.ocr.log")).unwrap(), b"sidecar");
-        assert_eq!(clean_archived_day(&data, &archive, DAY, &activities).unwrap(), 2);
+        assert_eq!(
+            fs::read(data.join("shots/a.png.ocr.log")).unwrap(),
+            b"sidecar"
+        );
+        assert_eq!(
+            clean_archived_day(&data, &archive, DAY, &activities).unwrap(),
+            2
+        );
         assert!(!data.join("shots/a.png").exists());
         assert!(!absolute.exists());
-        assert_eq!(fs::read(data.join("shots/a.png.ocr.log")).unwrap(), b"sidecar");
+        assert_eq!(
+            fs::read(data.join("shots/a.png.ocr.log")).unwrap(),
+            b"sidecar"
+        );
         assert_eq!(fs::read(archived_a).unwrap(), b"png-a");
         archive_day(&data, &archive, DAY, &activities).unwrap();
-        assert_eq!(clean_archived_day(&data, &archive, DAY, &activities).unwrap(), 0);
+        assert_eq!(
+            clean_archived_day(&data, &archive, DAY, &activities).unwrap(),
+            0
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
