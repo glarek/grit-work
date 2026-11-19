@@ -4,6 +4,10 @@ export function installReviewFixture() {
  const d=new Date();d.setDate(d.getDate()-1);d.setHours(9,0,0,0);const start=Math.floor(d.getTime()/1000);const date=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
  const settings={archive_dir:'Z:\\GRIT Work Arkiv',provider:'codex',model:'gpt-6.2-sol',user_id:1,article_id:3,activity_id:2,time_code_id:4,billable:false,timeout_seconds:600,archive_retention_days:90,ai_consent:!location.search.includes('onboarding'),use_report_history:false,image_interpretation:{mode:'off',interval_seconds:300,provider:'codex',model:'gpt-6.2-sol'}};
  let report={date,revision:'review-1',status:'draft',summary:'Arbetade med ORBIT: förbättrade återförsök vid uppladdning och verifierade felhanteringen.',rows:[{id:'row-1',project_id:42,article_id:0,activity_id:0,time_code_id:0,start,end:start+3600,minutes:60,description:'SAPPHIRE-729: förbättrade återförsök och verifierade felhantering.',evidence_ids:[1,2,3],needs_review:false,remote_id:null}],error:null};
+ if(location.search.includes('midnight')) {
+  const endDay=new Date(d);endDay.setDate(endDay.getDate()+1);endDay.setHours(0,0,0,0);
+  const end=endDay.getTime()/1000;report.rows=[{...report.rows[0],start:end-1815,end,minutes:30}];
+ }
  const status={capture:{interval_seconds:300,display_mode:'active_window',jpeg_quality:85,max_image_width:0,width_mode:'fixed'},monitors:[{name:'Skärm 1',width:2560,height:1440,x:0,y:0,scale_factor:1},{name:'Skärm 2',width:1920,height:1080,x:2560,y:0,scale_factor:1}],settings,local_dir:'C:\\Users\\Example\\AppData\\Local\\grit-work',yesterday:date,pending_dates:[],projects:[{id:42,name:'ORBIT',number:'42',active:true}],users:[{id:1,name:'Testanvändare'}],articles:[{id:3,name:'Arbetstid'}],activities:[{id:2,name:'Utveckling'}],time_codes:[{id:4,name:'Normal arbetstid'}],credential_saved:!location.search.includes('onboarding'),report,last_error:null};
  if(location.search.includes('review')) {
   status.projects.push({id:43,name:'LINDEN',number:'1043',active:true},{id:44,name:'Interntid',number:'9000',active:true});

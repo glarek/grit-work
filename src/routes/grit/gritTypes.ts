@@ -768,6 +768,20 @@ export function unixSecondsToTimeInput(unixSeconds: number): string {
   return `${hours}:${minutes}`;
 }
 
+/** End-exclusive calendar boundary. Start fields still reject 24:00. */
+export function dayEndInputToUnixSeconds(date: string, time: string): number {
+  if (time.trim() === '24:00') {
+    if (!timeInputToUnixSeconds(date, '12:00')) return 0;
+    return timeInputToUnixSeconds(shiftIsoDateString(date, 1), '00:00');
+  }
+  return timeInputToUnixSeconds(date, time);
+}
+
+export function unixSecondsToDayEndInput(date: string, end: number): string {
+  return end > 0 && end === dayEndInputToUnixSeconds(date, '24:00')
+    ? '24:00' : unixSecondsToTimeInput(end);
+}
+
 export function timeInputToUnixSeconds(isoDate: string, timeStr: string): number {
   const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate.trim());
   const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(timeStr.trim());

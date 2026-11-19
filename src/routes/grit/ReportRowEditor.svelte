@@ -4,7 +4,7 @@
   import UiDialog from '../../lib/components/ui/UiDialog.svelte';
   import UiSelect from '../../lib/components/ui/UiSelect.svelte';
   import HelpTip from '../../lib/components/ui/HelpTip.svelte';
-  import { timeInputToUnixSeconds, unixSecondsToTimeInput, type GritRow, type GritStatus } from './gritTypes';
+  import { dayEndInputToUnixSeconds, unixSecondsToDayEndInput, timeInputToUnixSeconds, unixSecondsToTimeInput, type GritRow, type GritStatus } from './gritTypes';
   export let open=true;
   export let row:GritRow;
   export let rowIndex:number;
@@ -14,26 +14,31 @@
   const dispatch=createEventDispatcher<{save:{index:number;row:GritRow};delete:{index:number};close:void}>();
   let draft:GritRow={...row,evidence_ids:[...row.evidence_ids],time_code_id:row.time_code_id ?? 0};
   let startTime=unixSecondsToTimeInput(row.start);
-  let endTime=unixSecondsToTimeInput(row.end);
+  let endTime=unixSecondsToDayEndInput(date,row.end);
   let hours=row.minutes/60;
   let error='';
   $: if(!open) dispatch('close');
   $: projectOptions=status.projects.map(p=>({value:String(p.id),label:`${p.number ? p.number+' · ' : ''}${p.name}`,disabled:!p.active}));
   const choices=(values:{id:number;name:string}[])=>values.map(c=>({value:String(c.id),label:c.name}));
   function projectChanged(value:string){draft={...draft,project_id:Number(value),activity_id:0,time_code_id:0,article_id:0};}
+  // Retain seconds and the original DST occurrence when only text/hours are edited.
+  function interval(){return {
+    start:startTime===unixSecondsToTimeInput(row.start)?row.start:timeInputToUnixSeconds(date,startTime),
+    end:endTime===unixSecondsToDayEndInput(date,row.end)?row.end:dayEndInputToUnixSeconds(date,endTime),
+  };}
   function timeChanged(){
-    const start=timeInputToUnixSeconds(date,startTime),end=timeInputToUnixSeconds(date,endTime);
+    const {start,end}=interval();
     if(start>0 && end>start){draft={...draft,start,end,minutes:Math.floor((end-start)/60)};hours=draft.minutes/60;}
   }
   function hoursChanged(){
     if(Number.isFinite(hours)&&hours>0){
       const minutes=Math.round(hours*60);
       draft={...draft,minutes};
-      if(draft.manual){draft.end=draft.start+minutes*60;endTime=unixSecondsToTimeInput(draft.end);}
+      if(draft.manual){draft.end=draft.start+minutes*60;endTime=unixSecondsToDayEndInput(date,draft.end);}
     }
   }
   function save(){
-    const start=timeInputToUnixSeconds(date,startTime),end=timeInputToUnixSeconds(date,endTime);
+    const {start,end}=interval();
     if(!start||end<=start){error='Ange ett giltigt tidsintervall (HH:mm).';return;}
     if(!Number.isFinite(hours)||hours<=0||Math.round(hours*60)>(end-start)/60){error='Tiden måste vara positiv och rymmas inom intervallet.';return;}
     if(!draft.description.trim()){error='Skriv en dagboksanteckning.';return;}

@@ -265,3 +265,16 @@ test('image_interpretation defaults, normalization, and interval clamping (30..3
   assert.doesNotMatch(sidebarSource, /Tidsanalys|\/ask/);
   assert.doesNotMatch(workflowSource, /Analysera|\/ask/);
 });
+
+
+test('report intervals round-trip an exclusive midnight without accepting a next-day minute', async () => {
+  const { dayEndInputToUnixSeconds, unixSecondsToDayEndInput, timeInputToUnixSeconds } = await import('./gritTypes.ts');
+  for (const day of ['2026-01-12', '2026-03-29', '2026-10-25']) {
+    const end = dayEndInputToUnixSeconds(day, '24:00');
+    assert.ok(end > timeInputToUnixSeconds(day, '23:30'));
+    assert.equal(unixSecondsToDayEndInput(day, end), '24:00');
+    assert.equal(timeInputToUnixSeconds(day, '24:00'), 0);
+    assert.equal(dayEndInputToUnixSeconds(day, '24:01'), 0);
+  }
+  assert.equal(dayEndInputToUnixSeconds('2026-02-31', '24:00'), 0);
+});

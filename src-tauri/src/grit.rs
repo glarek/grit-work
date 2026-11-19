@@ -1544,7 +1544,9 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
             .single()
             .ok_or("Ogiltig sluttid")?;
         if start.date_naive() != d
-            || end.date_naive() != d
+            || (end.date_naive() != d
+                && !(Some(end.date_naive()) == d.succ_opt()
+                    && end.time() == chrono::NaiveTime::MIN))
             || row.end <= row.start
             || row.minutes <= 0
             || row.minutes > 1500
@@ -3186,6 +3188,24 @@ mod tests {
         report.date = today.succ_opt().unwrap().to_string();
         assert!(validate_report(&report, &cat, &ev, false).is_err());
     }
+    #[test]
+    fn report_day_end_is_exclusive_and_allows_exact_next_midnight_only() {
+        let (mut r, cat, mut ev) = fixture();
+        let midnight = Local
+            .with_ymd_and_hms(2026, 1, 13, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        r.rows[0].start = midnight - 1800;
+        r.rows[0].end = midnight;
+        r.rows[0].minutes = 30;
+        ev[0]["timestamp"] = json!(midnight);
+        ev[0]["duration"] = json!(1800);
+        assert!(validate_report(&r, &cat, &ev, false).is_ok());
+        assert!(validate_report(&r, &cat, &ev, true).is_ok());
+        r.rows[0].end += 1;
+        assert!(validate_report(&r, &cat, &ev, false).is_err());
+    }
+
     #[test]
     fn missing_evidence_distinguishes_images_from_logged_time() {
         assert!(insufficient_evidence_message("2026-11-19", 0, 49).contains("49 bildposter"));
