@@ -98,7 +98,7 @@ pub(crate) fn build_windows_window_icon() -> Option<tauri::image::Image<'static>
     ) {
         Ok(decoded) => {
             let decoded = if decoded.width() > 256 || decoded.height() > 256 {
-                decoded.resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+                decoded.resize_exact(256, 256, image::imageops::FilterType::Nearest)
             } else {
                 decoded
             };
