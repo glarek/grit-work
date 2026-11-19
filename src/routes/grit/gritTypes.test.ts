@@ -254,6 +254,12 @@ test('image_interpretation defaults, normalization, and interval clamping (30..3
   assert.match(imageInterpSource, /Tolka nu/);
   assert.match(imageInterpSource, /Försök igen/);
   assert.match(imageInterpSource, /Spara bildtolkning/);
+  assert.match(sidebarSource, /LoaderCircle/);
+  assert.match(sidebarSource, /Sammanställer bilddata/);
+  assert.match(sidebarSource, /Bildtolkning av/);
+  assert.match(sidebarSource, /Samtycke saknas/);
+  assert.match(sidebarSource, /Väntar på bearbetning/);
+  assert.match(sidebarSource, /grit_interpretation_status/);
   assert.doesNotMatch(sidebarSource, /Tidsanalys|\/ask/);
   assert.doesNotMatch(workflowSource, /Analysera|\/ask/);
 });

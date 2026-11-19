@@ -160,6 +160,9 @@ pub struct InterpretationStatus {
     pub skipped: usize,
     pub running: bool,
     pub last_error: Option<String>,
+    pub mode: Mode,
+    pub next_run_at: Option<i64>,
+    pub requires_consent: bool,
 }
 pub fn file_path(root: &Path, date: &str) -> Result<PathBuf, String> {
     let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
@@ -630,6 +633,11 @@ pub fn status(
         skipped: 0,
         running,
         last_error: None,
+        mode: day
+            .map(|d| d.configuration.mode.clone())
+            .unwrap_or_default(),
+        next_run_at: None,
+        requires_consent: false,
     };
     if let Some(day) = day {
         for entry in &day.entries {

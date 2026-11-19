@@ -28,6 +28,7 @@ mod grit_engine;
 mod idle_detector;
 mod image_interpretation;
 mod image_ocr;
+mod image_schedule;
 mod linux_session;
 mod localhost_api;
 mod monitor;

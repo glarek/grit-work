@@ -26,6 +26,9 @@ const API: &str = "https://publicapi.tid.vismaspcs.se/v1";
 static BUSY: AtomicBool = AtomicBool::new(false);
 static CANCEL: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 static IMAGE_DAY: Mutex<Option<String>> = Mutex::new(None);
+static IMAGE_SCHEDULE: Mutex<crate::image_schedule::ImageSchedule> =
+    Mutex::new(crate::image_schedule::ImageSchedule::new());
+static IMAGE_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 struct ImageLease;
 impl Drop for ImageLease {
     fn drop(&mut self) {
@@ -1104,7 +1107,14 @@ pub async fn grit_save_settings(
         }
     }
     invalidate_draft_revisions(&database)?;
-    put(&database, "settings", &settings)
+    put(&database, "settings", &settings)?;
+    IMAGE_SCHEDULE.lock().map_err(error)?.configure(
+        &settings.image_interpretation,
+        settings.ai_consent,
+        Local::now().timestamp(),
+    );
+    IMAGE_WAKE.notify_one();
+    Ok(())
 }
 #[tauri::command]
 pub async fn grit_save_credentials(
@@ -2343,7 +2353,20 @@ pub async fn grit_interpretation_status(
     let day = image_interpretation::load(&dir, Path::new(&settings.archive_dir), &date)?;
     let day = day.filter(|day| day.configuration == settings.image_interpretation);
     let running = IMAGE_DAY.lock().map_err(error)?.is_some();
-    image_interpretation::status(&dir, &date, day.as_ref(), running)
+    interpretation_status(&dir, &date, day.as_ref(), running, &settings)
+}
+fn interpretation_status(
+    dir: &Path,
+    date: &str,
+    day: Option<&DayFile>,
+    running: bool,
+    settings: &Settings,
+) -> Result<InterpretationStatus, String> {
+    let mut status = image_interpretation::status(dir, date, day, running)?;
+    status.mode = settings.image_interpretation.mode.clone();
+    status.requires_consent = status.mode == Mode::Ai && !settings.ai_consent;
+    status.next_run_at = IMAGE_SCHEDULE.lock().map_err(error)?.next_run_at;
+    Ok(status)
 }
 #[tauri::command]
 pub async fn grit_interpret_images(
@@ -2368,31 +2391,66 @@ pub async fn grit_interpret_images(
         retry_failed,
         usize::MAX,
         cancel,
-        operation,
+        operation.clone(),
     )
     .await?;
-    image_interpretation::status(&dir, &date, Some(&day), false)
+    interpretation_status(&dir, &date, Some(&day), false, &settings)
 }
-/// Current-day interpretation is incremental; an error is persisted and needs an explicit retry.
+async fn wait_image_schedule(seconds: u64) {
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(seconds)) => {},
+        _ = IMAGE_WAKE.notified() => {},
+    }
+}
+/// Actual processing deadlines are shared with the UI; settings changes wake this loop.
 pub async fn image_interpretation_task(state: Arc<Mutex<AppState>>) {
+    let mut maintenance_at = Local::now().timestamp() + 30;
     loop {
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        let Ok(operation) = Operation::start() else {
-            continue;
+        let now = Local::now().timestamp();
+        let operation = match Operation::start() {
+            Ok(op) => Arc::new(op),
+            Err(_) => {
+                if let Ok(mut schedule) = IMAGE_SCHEDULE.lock() {
+                    schedule.defer_if_due(now);
+                }
+                wait_image_schedule(5).await;
+                continue;
+            }
         };
-        let operation = Arc::new(operation);
         let dir = match state.lock() {
             Ok(s) => s.data_dir.clone(),
             Err(_) => return,
         };
+        let settings = match db(&dir)
+            .and_then(|db| get::<Settings>(&db, "settings").map(|s| s.unwrap_or_default()))
+        {
+            Ok(settings) => settings,
+            Err(_) => {
+                drop(operation);
+                wait_image_schedule(30).await;
+                continue;
+            }
+        };
+        let next = {
+            let Ok(mut schedule) = IMAGE_SCHEDULE.lock() else {
+                return;
+            };
+            schedule.configure(&settings.image_interpretation, settings.ai_consent, now);
+            schedule.next_run_at
+        };
+        let due_at = next.unwrap_or(maintenance_at);
+        if due_at > now {
+            drop(operation);
+            wait_image_schedule((due_at - now).clamp(1, 30) as u64).await;
+            continue;
+        }
+        if let Ok(mut schedule) = IMAGE_SCHEDULE.lock() {
+            schedule.started(now);
+        }
+        maintenance_at = now + 30;
         let date = Local::now().date_naive().to_string();
-        let prepared = (|| {
-            let settings: Settings = get(&db(&dir)?, "settings")?.unwrap_or_default();
-            let ev = evidence(&state, &dir, &date)?;
-            Ok::<_, String>((settings, ev))
-        })();
-        let (settings, ev) = match prepared {
-            Ok(v) => v,
+        let ev = match evidence(&state, &dir, &date) {
+            Ok(ev) => ev,
             Err(e) => {
                 if let Ok(database) = db(&dir) {
                     let _ = put(&database, "last_error", &Some(e));
@@ -2404,8 +2462,13 @@ pub async fn image_interpretation_task(state: Arc<Mutex<AppState>>) {
             .get_or_init(|| Arc::new(AtomicBool::new(false)))
             .clone();
         cancel.store(false, Ordering::SeqCst);
-        if let Err(e) =
-            interpret_day(&dir, &date, &ev, &settings, false, 1, cancel, operation).await
+        // Selected screenshots are interpreted sequentially, with the existing
+        // whole-job deadline and a finite batch. Disabled modes only update JSON.
+        let max_images = if next.is_some() { 32 } else { 0 };
+        if let Err(e) = interpret_day(
+            &dir, &date, &ev, &settings, false, max_images, cancel, operation,
+        )
+        .await
         {
             if let Ok(database) = db(&dir) {
                 let _ = put(&database, "last_error", &Some(e));

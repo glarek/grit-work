@@ -45,7 +45,7 @@ Arkivplatsen låses efter första arkiverade dygnet; flytt av befintligt arkiv s
 
 ## Bildtolkning
 
-Bildtagning och bildtolkning har separata intervall (30–3 600 sekunder, standard 300). En utvald bild behandlas per bakgrundspass; färdiga tolkningar återanvänds. **Tolka nu** bearbetar valt dygn, och rapportgenerering färdigställer dess återstående underlag. Fel visas och kräver manuellt omförsök. Ändrad metod, AI-modell eller bild gör tidigare tolkning ogiltig.
+Bildtagning och bildtolkning har separata intervall (30–3 600 sekunder, standard 300). Bakgrundsjobbet startar enligt valt tolkningsintervall och behandlar utvalda bilder en i taget i begränsade omgångar; färdiga tolkningar återanvänds. Vänstermenyn visar en grön spinner vid aktiv insamling, nedräkning till nästa OCR/AI-jobb och en gul spinner med ”Sammanställer bilddata…” medan bearbetning pågår. **Tolka nu** bearbetar valt dygn, och rapportgenerering färdigställer dess återstående underlag. Fel visas och kräver manuellt omförsök. Ändrad metod, AI-modell eller bild gör tidigare tolkning ogiltig.
 
 - **Av:** inga bildfiler läses av OCR eller AI. Datafilen anger `disabled` och tomt bildinnehåll. Program-, fönster-, URL- och tidsloggar används fortfarande i rapporten.
 - **Lokal OCR:** Rust anropar Windows.Media.Ocr, i första hand svenska, annars engelska eller installerat användarspråk. Text och ordpositioner sparas. Stora bilder delas i begränsade delar utan ytterligare förminskning. Saknat språk eller OCR-fel visas; ett fel behandlas aldrig som en lyckad tom tolkning.
@@ -83,7 +83,7 @@ På Arch/Omarchy kan den färdigbyggda binären paketeras med `cd packaging/arch
 
 Kör `node scripts/with-grit-preview.mjs scripts/test-grit-ui.mjs` för webbläsartestet med syntetiskt underlag. `CHROMIUM_PATH` och `GRIT_TEST_URL` kan sättas. Testet kontrollerar att Spiris-anropet inte sker före bekräftelsen och tar bilder i systemets temporärkatalog.
 
-Pixelikonen är gemensam för gränssnitt, systemfält och Windows-installation; storlekar byggs med nearest-neighbor och transparent utfyllnad. Typsnitten Figtree och JetBrains Mono följer med appen och fungerar utan nätanslutning. `node scripts/with-grit-preview.mjs scripts/export-grit-review.mjs` skapar en elvasidig gransknings-PDF och separata gränssnittsurklipp i `all-artifacts/interface-review/`, enbart med syntetisk testdata.
+Pixelikonen är gemensam för gränssnitt, systemfält och Windows-installation; storlekar byggs med nearest-neighbor och transparent utfyllnad. Typsnitten Figtree och JetBrains Mono följer med appen och fungerar utan nätanslutning. `node scripts/with-grit-preview.mjs scripts/export-grit-review.mjs` skapar en tolvsidig gransknings-PDF och separata gränssnittsurklipp i `all-artifacts/interface-review/`, enbart med syntetisk testdata.
 
 `node scripts/with-grit-preview.mjs scripts/test-grit-workflow.mjs` verifierar datumöverföring mellan vyer, gemensamma skärmbildsinställningar de tre tolkningslägena, sparkrav före körning och frånvaro av automatisk Spiris-överföring.
 

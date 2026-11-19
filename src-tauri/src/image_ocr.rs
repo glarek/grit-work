@@ -332,7 +332,10 @@ fn engine_for_tag(tag: &str) -> Result<Option<(windows::Media::Ocr::OcrEngine, S
         return Ok(None);
     }
     match OcrEngine::TryCreateFromLanguage(&language) {
-        Ok(engine) => Ok(Some((engine, recognizer_tag(&engine)?))),
+        Ok(engine) => {
+            let tag = recognizer_tag(&engine)?;
+            Ok(Some((engine, tag)))
+        }
         Err(_) => Ok(None),
     }
 }

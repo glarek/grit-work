@@ -19,6 +19,9 @@ export interface GritImageInterpretationStatus {
   disabled: number;
   skipped: number;
   running: boolean;
+  mode: GritImageInterpretationMode;
+  next_run_at: number | null;
+  requires_consent: boolean;
   last_error: string | null;
 }
 

@@ -34,8 +34,11 @@ await shot('08-insamling','Insamling och lagring','Intervall, skärmar och utrym
 await page.getByRole('combobox',{name:'Tolkningsläge',exact:true}).click();await page.getByRole('option',{name:'AI-bildtolkning',exact:true}).click();await page.locator('#grit-image-interp-mode').scrollIntoViewIfNeeded();
 await shot('09-bildtolkning','Bildtolkning','Välj mellan Av, Lokal OCR (Windows) eller AI-bildtolkning med eget intervall. Tolkningar sparas lokalt i image-interpretations/YYYY-MM-DD.json.',page.getByRole('heading',{name:'Bildtolkning',exact:true}).locator('xpath=ancestor::section[1]'));
 await shot('10-arkiv','Långtidsarkiv och lokal mapp','Gemensam baslinje för arkivmapp, mappval och lagringstid. Lokal rensning sker först efter verifierat arkiv.',page.getByRole('heading',{name:'Långtidsarkiv & lokal mapp',exact:true}).locator('xpath=ancestor::section[1]'));
+await page.evaluate(()=>window.testInterpretationStatus={mode:'ai',running:true,requires_consent:false,next_run_at:Math.floor(Date.now()/1000)+300});
+await page.locator('.capture-state').getByText('Sammanställer bilddata…',{exact:true}).waitFor();
+await shot('11-bearbetning','Insamling och bildbearbetning','Grön spinner markerar aktiv insamling. Gul spinner och tydlig status visas medan bilddata sammanställs. Mellan jobben visas tiden till nästa OCR- eller AI-bearbetning.',page.locator('.grit-sidebar'));
 await page.goto(base+'?onboarding');await page.evaluate(()=>localStorage.removeItem('grit-onboarding-v1'));await page.reload();await page.getByText('Kom igång med GRIT Work').waitFor();
-await shot('11-onboarding','Första starten','Ange Spiris-uppgifter och ta ställning till AI-samtycke, eller välj uttryckligen Avvakta.',page.getByRole('dialog'));
+await shot('12-onboarding','Första starten','Ange Spiris-uppgifter och ta ställning till AI-samtycke, eller välj uttryckligen Avvakta.',page.getByRole('dialog'));
 if(errors.length)throw Error(errors.join('\n'));
 if(await page.evaluate(()=>window.testCalls.includes('grit_submit')))throw Error('Unexpected submission');
 const image=path=>'data:image/png;base64,'+readFileSync(path).toString('base64');

@@ -12,10 +12,15 @@ export function installReviewFixture() {
  }
  const interpretationStatusByDate={};
  function getInterpStatus(targetDate){
+  const mode=settings.image_interpretation?.mode||'off';
+  const interval=settings.image_interpretation?.interval_seconds||300;
+  const requiresConsent=mode==='ai' && !settings.ai_consent;
   if(!interpretationStatusByDate[targetDate]){
-   interpretationStatusByDate[targetDate]={date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:2,failed:0,disabled:0,skipped:0,running:false,last_error:null};
+   interpretationStatusByDate[targetDate]={date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:2,failed:0,disabled:0,skipped:0,running:false,mode,next_run_at:mode==='off'||requiresConsent?null:Math.floor(Date.now()/1000)+interval,requires_consent:requiresConsent,last_error:null};
   }
-  return {...interpretationStatusByDate[targetDate]};
+  const base={...interpretationStatusByDate[targetDate],mode,requires_consent:requiresConsent};
+  const override=typeof window.testInterpretationStatus==='function'?window.testInterpretationStatus(targetDate,base):window.testInterpretationStatus;
+  return override && typeof override==='object'?{...base,...override}:base;
  }
  window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:()=>{}};
  window.testCalls=[]; window.testCallArgs=[];
@@ -26,14 +31,15 @@ export function installReviewFixture() {
   if(cmd==='grit_interpret_images'){
    const targetDate=args.date;
    const mode=settings.image_interpretation?.mode||'off';
+   const interval=settings.image_interpretation?.interval_seconds||300;
    if(mode==='ai' && !settings.ai_consent){
     const err='AI-samtycke krävs innan AI-bildtolkning körs.';
-    interpretationStatusByDate[targetDate]={date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:0,failed:2,disabled:0,skipped:0,running:false,last_error:err};
+    interpretationStatusByDate[targetDate]={date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:0,failed:2,disabled:0,skipped:0,running:false,mode,next_run_at:null,requires_consent:true,last_error:err};
     throw new Error(err);
    }
    interpretationStatusByDate[targetDate]=mode==='off'
-    ? {date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:0,failed:0,disabled:2,skipped:0,running:false,last_error:null}
-    : {date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:2,pending:0,failed:0,disabled:0,skipped:0,running:false,last_error:null};
+    ? {date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:0,failed:0,disabled:2,skipped:0,running:false,mode,next_run_at:null,requires_consent:false,last_error:null}
+    : {date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:2,pending:0,failed:0,disabled:0,skipped:0,running:false,mode,next_run_at:Math.floor(Date.now()/1000)+interval,requires_consent:false,last_error:null};
    return getInterpStatus(targetDate);
   }
   if(cmd==='grit_cancel')return null;
