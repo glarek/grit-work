@@ -270,6 +270,31 @@
             </div>
           </label>
 
+          <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 dark:border-[#30363d] dark:bg-[#0d1117]">
+            <input
+              type="checkbox"
+              bind:checked={settingsForm.use_report_history}
+              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            />
+            <div>
+              <div class="text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
+                Använd min skrivstil från Spiris
+              </div>
+              <p class="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">
+                Läser vald Spiris-användares tidigare rapporter 90 dagar före rapportdagen och skickar ett begränsat urval exempeltexter till {providerInfo.name} för språk, längd och detaljnivå. Används aldrig som bevis för nytt arbete.
+              </p>
+              {#if settingsForm.use_report_history && !settingsForm.ai_consent}
+                <p class="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                  Kräver även att AI-samtycke ovan är aktiverat (ditt val sparas).
+                </p>
+              {:else if settingsForm.use_report_history && settingsForm.user_id <= 0}
+                <p class="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                  Välj en Spiris-användare nedan för att hämta skrivstil.
+                </p>
+              {/if}
+            </div>
+          </label>
+
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
               Spiris-användare (krävs)

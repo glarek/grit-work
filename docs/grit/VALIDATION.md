@@ -1,4 +1,13 @@
-# Validation — 2026-11-18
+# Validation — 2026-11-19
+
+## Personal report writing style
+
+- Optional `use_report_history` defaults off, including migrated settings. AI consent and a valid selected Spiris user are required. Disabled mode makes no history request.
+- Reads comments within the 90 days strictly before the report date. Every row is checked against the selected owner and date range. Pagination, response size, request time, total time and example text are bounded. Empty history remains usable; request failures give an actionable error.
+- Up to 12 deduplicated examples (600 characters each, 6,000 total) are isolated in `STYLE_REFERENCE`, outside project registry and current evidence. Prompt rules limit use to writing style and forbid treating historical claims as current work. History is excluded from read-only analysis prompts.
+- Local workspace: **839 Rust tests passed**, one real-display test ignored; all-target Clippy with warnings denied passed. Frontend: **784 passed**, Svelte zero errors/warnings and production build passed. Browser workflow verifies default opt-out, saving the option, and preserving it across settings routes and capture saves. Updated synthetic interface PDF generated.
+- A read-only Spiris history query verified the live API structure. Real report content and credentials are absent from fixtures and source. No time entries were posted. Native Windows verification for this change is recorded after packaging.
+
 
 ## Windows requirements integration
 

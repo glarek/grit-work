@@ -61,6 +61,7 @@ pub struct Settings {
     pub timeout_seconds: u64,
     pub archive_retention_days: u32,
     pub ai_consent: bool,
+    pub use_report_history: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -76,6 +77,7 @@ impl Default for Settings {
             timeout_seconds: 600,
             archive_retention_days: 90,
             ai_consent: false,
+            use_report_history: false,
         }
     }
 }
@@ -1060,6 +1062,223 @@ fn require_ai_consent(settings: &Settings) -> Result<(), String> {
     }
     Ok(())
 }
+
+const STYLE_MAX_PAGES: u64 = 20;
+const STYLE_PAGE_SIZE: usize = 100;
+const STYLE_RESPONSE_BYTES: usize = 1024 * 1024;
+const STYLE_MAX_EXAMPLES: usize = 12;
+const STYLE_EXAMPLE_CHARS: usize = 600;
+const STYLE_TOTAL_CHARS: usize = 6000;
+const STYLE_HISTORY_ERROR: &str = "Kunde inte läsa din rapporthistorik från Spiris. Kontrollera anslutning och behörigheter och försök igen, eller stäng av rapporthistorik i inställningarna.";
+
+#[derive(Clone, Copy)]
+struct StyleHistoryScope {
+    user: i64,
+    from: NaiveDate,
+    to: NaiveDate,
+}
+impl StyleHistoryScope {
+    fn query(self, page: u64) -> Vec<(&'static str, String)> {
+        vec![
+            ("filter.from", format!("{} 00:00:00", self.from)),
+            ("filter.to", format!("{} 23:59:59", self.to)),
+            ("filter.userIds", self.user.to_string()),
+            ("page", page.to_string()),
+            ("pageSize", STYLE_PAGE_SIZE.to_string()),
+        ]
+    }
+}
+fn style_history_scope(
+    settings: &Settings,
+    cat: &Catalog,
+    target: &str,
+) -> Result<Option<StyleHistoryScope>, String> {
+    // This gate precedes date/user validation, keyring access and all network work.
+    if !settings.use_report_history {
+        return Ok(None);
+    }
+    require_ai_consent(settings)?;
+    if settings.user_id <= 0 || !cat.users.iter().any(|user| user.id == settings.user_id) {
+        return Err("Välj en giltig Spiris-användare från det synkroniserade registret, eller stäng av rapporthistorik.".into());
+    }
+    let target = NaiveDate::parse_from_str(target, "%Y-%m-%d").map_err(|_| STYLE_HISTORY_ERROR)?;
+    Ok(Some(StyleHistoryScope {
+        user: settings.user_id,
+        from: target
+            .checked_sub_days(chrono::Days::new(90))
+            .ok_or(STYLE_HISTORY_ERROR)?,
+        to: target.pred_opt().ok_or(STYLE_HISTORY_ERROR)?,
+    }))
+}
+fn style_row_date(value: &str) -> Option<NaiveDate> {
+    if value.len() == 10 {
+        let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
+        return (date.to_string() == value).then_some(date);
+    }
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|date| date.date_naive())
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+                .map(|date| date.date())
+                .ok()
+        })
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+                .map(|date| date.date())
+                .ok()
+        })
+}
+/// Project only validated comment text; never retain API rows or other fields.
+fn style_comment(row: &Value, scope: StyleHistoryScope) -> Option<(NaiveDate, String)> {
+    if row["user"]["id"].as_i64()? != scope.user {
+        return None;
+    }
+    let date = style_row_date(row["date"].as_str()?)?;
+    if date < scope.from || date > scope.to {
+        return None;
+    }
+    let text = row["comment"]
+        .as_str()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = text
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(STYLE_EXAMPLE_CHARS)
+        .collect::<String>();
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some((date, text))
+}
+fn style_reference(mut comments: Vec<(NaiveDate, String)>, scope: StyleHistoryScope) -> Value {
+    // Newest duplicate wins. Date and source identifiers never reach the agent.
+    comments.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    let mut seen = HashSet::new();
+    comments.retain(|(_, text)| seen.insert(text.clone()));
+    let mut words = comments
+        .iter()
+        .map(|(_, text)| text.split_whitespace().count())
+        .collect::<Vec<_>>();
+    words.sort_unstable();
+    let median = if words.is_empty() {
+        0
+    } else {
+        (words[(words.len() - 1) / 2] + words[words.len() / 2]) / 2
+    };
+    // Reserve room for the newest short and long examples, then fill by recency.
+    let short = comments
+        .iter()
+        .position(|(_, text)| text.split_whitespace().count() <= median);
+    let long = comments
+        .iter()
+        .position(|(_, text)| text.split_whitespace().count() > median);
+    let order = short.into_iter().chain(long).chain(0..comments.len());
+    let mut selected = Vec::new();
+    let mut used = HashSet::new();
+    let mut chars = 0;
+    for index in order {
+        if selected.len() >= STYLE_MAX_EXAMPLES {
+            break;
+        }
+        if !used.insert(index) {
+            continue;
+        }
+        let text = &comments[index].1;
+        if chars + text.chars().count() > STYLE_TOTAL_CHARS {
+            continue;
+        }
+        chars += text.chars().count();
+        selected.push(index);
+    }
+    selected.sort_unstable();
+    let examples = selected
+        .iter()
+        .map(|&index| comments[index].1.clone())
+        .collect::<Vec<_>>();
+    json!({"sample_count":examples.len(), "median_words":median, "examples":examples,
+        "scope":{"source":"own_time_report_comments", "owner":"selected_user", "from":scope.from.to_string(),
+            "to":scope.to.to_string(), "days":90, "usage":"style_only_not_evidence"}})
+}
+fn style_page(value: &Value, page: u64) -> Result<(&[Value], u64), String> {
+    let items = value["items"].as_array().ok_or(STYLE_HISTORY_ERROR)?;
+    let pages = value["totalPages"].as_u64().ok_or(STYLE_HISTORY_ERROR)?;
+    if page == 0
+        || pages > STYLE_MAX_PAGES
+        || items.len() > STYLE_PAGE_SIZE
+        || (pages == 0 && (!items.is_empty() || page != 1))
+        || (pages > 0 && page > pages)
+        || (page < pages && items.is_empty())
+    {
+        return Err(STYLE_HISTORY_ERROR.into());
+    }
+    Ok((items, pages))
+}
+async fn fetch_style_history(scope: StyleHistoryScope) -> Result<Value, String> {
+    // One deadline covers authentication, every page, throttling and response bodies.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let c = client().map_err(|_| STYLE_HISTORY_ERROR)?;
+        let t = token(&c).await.map_err(|_| STYLE_HISTORY_ERROR)?;
+        let mut comments = Vec::new();
+        let mut expected_pages = None;
+        for page in 1..=STYLE_MAX_PAGES {
+            if page > 1 {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            let mut response = c
+                .get(format!("{API}/Core/TimeReports"))
+                .bearer_auth(&t)
+                .query(&scope.query(page))
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|_| STYLE_HISTORY_ERROR)?;
+            if !response.status().is_success()
+                || response
+                    .content_length()
+                    .is_some_and(|n| n > STYLE_RESPONSE_BYTES as u64)
+            {
+                return Err(STYLE_HISTORY_ERROR.to_string());
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|_| STYLE_HISTORY_ERROR)? {
+                if chunk.len() > STYLE_RESPONSE_BYTES.saturating_sub(bytes.len()) {
+                    return Err(STYLE_HISTORY_ERROR.to_string());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let value: Value = serde_json::from_slice(&bytes).map_err(|_| STYLE_HISTORY_ERROR)?;
+            let (items, pages) = style_page(&value, page)?;
+            if expected_pages.is_some_and(|expected| expected != pages) {
+                return Err(STYLE_HISTORY_ERROR.to_string());
+            }
+            expected_pages = Some(pages);
+            comments.extend(items.iter().filter_map(|row| style_comment(row, scope)));
+            if page >= pages {
+                return Ok(style_reference(comments, scope));
+            }
+        }
+        Err(STYLE_HISTORY_ERROR.to_string())
+    })
+    .await
+    .map_err(|_| STYLE_HISTORY_ERROR.to_string())?
+}
+async fn writing_style_with<F, Fut>(
+    settings: &Settings,
+    cat: &Catalog,
+    target: &str,
+    fetch: F,
+) -> Result<Option<Value>, String>
+where
+    F: FnOnce(StyleHistoryScope) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    match style_history_scope(settings, cat, target)? {
+        None => Ok(None),
+        Some(scope) => fetch(scope).await.map(Some),
+    }
+}
+
 async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Report, String> {
     let op = Arc::new(Operation::start()?);
     past_date(&date)?;
@@ -1090,7 +1309,11 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         .get_or_init(|| Arc::new(AtomicBool::new(false)))
         .clone();
     cancel.store(false, Ordering::SeqCst);
-    let project_data = json!({"projects":cat.projects,"activities":cat.activities,"articles":cat.articles,"default_activity_id":settings.activity_id,"default_article_id":settings.article_id});
+    let writing_style = writing_style_with(&settings, &cat, &date, fetch_style_history).await?;
+    let mut project_data = json!({"projects":cat.projects,"activities":cat.activities,"articles":cat.articles,"default_activity_id":settings.activity_id,"default_article_id":settings.article_id});
+    if let Some(writing_style) = writing_style {
+        project_data["writing_style"] = writing_style;
+    }
     let ev_copy = evidence_for_cli(&ev, &dir, &settings)?;
     let workspace = dir.join("jobs").join(Uuid::new_v4().to_string());
     std::fs::create_dir_all(&workspace).map_err(error)?;
@@ -1913,5 +2136,194 @@ mod tests {
     fn dates_reject_path_traversal_and_unfinished_days() {
         assert!(past_date("../../etc/passwd").is_err());
         assert!(past_date(&Local::now().date_naive().to_string()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod style_history_tests {
+    use super::*;
+    fn settings() -> Settings {
+        Settings {
+            user_id: 7,
+            ai_consent: true,
+            use_report_history: true,
+            ..Settings::default()
+        }
+    }
+    fn catalog_fixture() -> Catalog {
+        Catalog {
+            users: vec![Choice {
+                id: 7,
+                name: "Synthetic user".into(),
+            }],
+            ..Catalog::default()
+        }
+    }
+    fn scope() -> StyleHistoryScope {
+        style_history_scope(&settings(), &catalog_fixture(), "2026-04-01")
+            .unwrap()
+            .unwrap()
+    }
+    #[tokio::test]
+    async fn style_history_optout_defaults_never_fetch_and_optin_requires_consent_and_owner() {
+        for settings in [
+            Settings::default(),
+            serde_json::from_value::<Settings>(json!({"provider":"codex"})).unwrap(),
+        ] {
+            assert!(!settings.use_report_history);
+            let result =
+                writing_style_with(&settings, &Catalog::default(), "not-a-date", |_| async {
+                    panic!("optout must not access credentials or network")
+                })
+                .await
+                .unwrap();
+            assert!(result.is_none());
+        }
+        let enabled = settings();
+        assert!(style_history_scope(&enabled, &Catalog::default(), "2026-04-01").is_err());
+        assert!(style_history_scope(
+            &Settings {
+                ai_consent: false,
+                ..enabled.clone()
+            },
+            &catalog_fixture(),
+            "2026-04-01"
+        )
+        .is_err());
+        assert!(style_history_scope(
+            &Settings {
+                user_id: 0,
+                ..enabled
+            },
+            &catalog_fixture(),
+            "2026-04-01"
+        )
+        .is_err());
+    }
+    #[test]
+    fn style_history_filters_cover_exact_prior_ninety_days() {
+        let scope = scope();
+        assert_eq!((scope.to - scope.from).num_days(), 89);
+        assert_eq!(scope.from.to_string(), "2026-01-01");
+        assert_eq!(scope.to.to_string(), "2026-03-31");
+        assert_eq!(
+            scope.query(2),
+            vec![
+                ("filter.from", "2026-01-01 00:00:00".into()),
+                ("filter.to", "2026-03-31 23:59:59".into()),
+                ("filter.userIds", "7".into()),
+                ("page", "2".into()),
+                ("pageSize", "100".into())
+            ]
+        );
+        let leap = style_history_scope(&settings(), &catalog_fixture(), "2024-03-01")
+            .unwrap()
+            .unwrap();
+        assert_eq!(leap.to.to_string(), "2024-02-29");
+        assert_eq!((leap.to - leap.from).num_days(), 89);
+    }
+    #[test]
+    fn style_history_rejects_wrong_owner_dates_missing_and_blank_comments() {
+        let scope = scope();
+        for row in [
+            json!({"user":{"id":8},"date":"2026-03-01","comment":"foreign"}),
+            json!({"userId":7,"date":"2026-03-01","comment":"unverified owner"}),
+            json!({"user":{"id":7},"date":"2025-12-31","comment":"old"}),
+            json!({"user":{"id":7},"date":"2026-04-01T00:00:00Z","comment":"target"}),
+            json!({"user":{"id":7},"date":"2026-04-02","comment":"future"}),
+            json!({"user":{"id":7},"date":"2026-03-01not-a-date","comment":"malformed"}),
+            json!({"user":{"id":7},"date":"2026-03-01","comment":" \n\t "}),
+            json!({"user":{"id":7},"date":"2026-03-01","internalComment":"not public comment"}),
+        ] {
+            assert!(style_comment(&row, scope).is_none());
+        }
+        for date in [
+            "2026-01-01",
+            "2026-03-31T23:59:59.123Z",
+            "2026-03-31T23:59:59",
+            "2026-03-31 23:59:59",
+        ] {
+            let row = json!({"user":{"id":7},"date":date,"comment":"  Clear\n task  ","internalComment":"never include","project":{"name":"never include"},"hours":8});
+            assert_eq!(style_comment(&row, scope).unwrap().1, "Clear task");
+        }
+    }
+    #[test]
+    fn style_history_deduplicates_bounds_unicode_and_keeps_short_and_long_examples() {
+        let scope = scope();
+        let mut comments = Vec::new();
+        for day in 1..=25 {
+            let row = json!({"user":{"id":7},"date":format!("2026-03-{day:02}"),"comment":format!("{day} {}", "å".repeat(800))});
+            comments.push(style_comment(&row, scope).unwrap());
+        }
+        comments.push((scope.to, "Short task".into()));
+        comments.push((scope.from, "Short task".into()));
+        comments.push((
+            scope.to,
+            "A longer representative description with several distinct words".into(),
+        ));
+        let output = style_reference(comments, scope);
+        let examples = output["examples"].as_array().unwrap();
+        assert!(examples.len() <= STYLE_MAX_EXAMPLES);
+        assert_eq!(
+            output["sample_count"].as_u64().unwrap() as usize,
+            examples.len()
+        );
+        assert_eq!(examples.iter().filter(|v| **v == "Short task").count(), 1);
+        assert!(examples
+            .iter()
+            .any(|v| v == "A longer representative description with several distinct words"));
+        assert!(examples
+            .iter()
+            .all(|v| v.as_str().unwrap().chars().count() <= STYLE_EXAMPLE_CHARS));
+        assert!(
+            examples
+                .iter()
+                .map(|v| v.as_str().unwrap().chars().count())
+                .sum::<usize>()
+                <= STYLE_TOTAL_CHARS
+        );
+        let keys = output
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            keys,
+            HashSet::from(["sample_count", "median_words", "examples", "scope"])
+        );
+        assert_eq!(output["median_words"], 2);
+        assert_eq!(output["scope"]["usage"], "style_only_not_evidence");
+    }
+    #[test]
+    fn style_history_rejects_oversized_or_incomplete_page_metadata() {
+        assert!(style_page(&json!({"items":[],"totalPages":0}), 1).is_ok());
+        assert!(style_page(&json!({"items":[],"totalPages":21}), 1).is_err());
+        assert!(style_page(&json!({"items":[],"totalPages":2}), 1).is_err());
+        assert!(style_page(&json!({"items":[]}), 1).is_err());
+        assert!(style_page(&json!({"items":vec![json!({});101],"totalPages":1}), 1).is_err());
+        assert!(style_page(&json!({"items":[{}],"totalPages":0}), 1).is_err());
+    }
+    #[tokio::test]
+    async fn style_history_empty_is_valid_but_fetch_failure_never_claims_a_style() {
+        let value = writing_style_with(
+            &settings(),
+            &catalog_fixture(),
+            "2026-04-01",
+            |scope| async move { Ok(style_reference(vec![], scope)) },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(value["sample_count"], 0);
+        assert_eq!(value["median_words"], 0);
+        assert_eq!(value["examples"], json!([]));
+        let error = writing_style_with(&settings(), &catalog_fixture(), "2026-04-01", |_| async {
+            Err(STYLE_HISTORY_ERROR.into())
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("försök igen"));
+        assert!(error.contains("stäng av rapporthistorik"));
     }
 }

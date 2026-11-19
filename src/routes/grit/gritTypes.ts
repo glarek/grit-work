@@ -14,6 +14,7 @@ export interface GritSettings {
   archive_dir: string;
   archive_retention_days: number;
   ai_consent: boolean;
+  use_report_history: boolean;
   provider: GritProvider;
   model: string;
   user_id: number;
@@ -128,6 +129,7 @@ export function createDefaultSettings(): GritSettings {
     archive_dir: '',
     archive_retention_days: 90,
     ai_consent: false,
+    use_report_history: false,
     provider: 'codex',
     model: PROVIDER_DEFAULT_MODELS.codex,
     user_id: 0,
@@ -188,6 +190,10 @@ export function normalizeGritSettings(raw: unknown): GritSettings {
       Math.trunc(toFiniteNumber(raw.archive_retention_days, defaults.archive_retention_days)),
     ),
     ai_consent: typeof raw.ai_consent === 'boolean' ? raw.ai_consent : defaults.ai_consent,
+    use_report_history:
+      typeof raw.use_report_history === 'boolean'
+        ? raw.use_report_history
+        : defaults.use_report_history,
     provider,
     model,
     user_id: Math.trunc(toFiniteNumber(raw.user_id, defaults.user_id)),

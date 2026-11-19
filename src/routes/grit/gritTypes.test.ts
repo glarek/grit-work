@@ -38,22 +38,26 @@ const PROJECTS: GritProject[] = [
   { id: 2, name: 'Projekt Beta', number: '1002', active: true },
 ];
 
-test('createDefaultSettings and normalizeGritSettings default archive_retention_days=90 and ai_consent=false', () => {
+test('createDefaultSettings and normalizeGritSettings default archive_retention_days=90, ai_consent=false, use_report_history=false', () => {
   const defaults = createDefaultSettings();
   assert.equal(defaults.archive_retention_days, 90);
   assert.equal(defaults.ai_consent, false);
+  assert.equal(defaults.use_report_history, false);
 
   const normalizedEmpty = normalizeGritSettings({});
   assert.equal(normalizedEmpty.archive_retention_days, 90);
   assert.equal(normalizedEmpty.ai_consent, false);
+  assert.equal(normalizedEmpty.use_report_history, false);
 
   const normalizedCustom = normalizeGritSettings({
     archive_retention_days: 180,
     ai_consent: true,
+    use_report_history: true,
     provider: 'agy',
   });
   assert.equal(normalizedCustom.archive_retention_days, 180);
   assert.equal(normalizedCustom.ai_consent, true);
+  assert.equal(normalizedCustom.use_report_history, true);
 });
 
 test('computeProjectRounding rounds per project/day to ceil 30 min and assigns padding to last row', () => {
@@ -148,6 +152,8 @@ test('GritSettings and GritWork UI expose consent gating, retention=90, manual g
   ]);
 
   assert.match(settingsSource, /settingsForm\.ai_consent/);
+  assert.match(settingsSource, /settingsForm\.use_report_history/);
+  assert.match(settingsSource, /Använd min skrivstil från Spiris/);
   assert.match(settingsSource, /settingsForm\.archive_retention_days/);
   assert.match(settingsSource, /Informerat samtycke/);
 
