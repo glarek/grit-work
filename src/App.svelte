@@ -2,6 +2,7 @@
   import { onMount, tick, type ComponentType } from 'svelte';
   import Router, { push } from 'svelte-spa-router';
   import { wrap } from 'svelte-spa-router/wrap';
+  import Onboarding from './routes/grit/Onboarding.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
   import Toast from './lib/components/Toast.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
@@ -172,7 +173,7 @@
   async function getRuntimeConfig(): Promise<RuntimeConfig> {
     const payload = await invoke<unknown>('get_config');
     if (!isRuntimeConfig(payload)) {
-      throw new TypeError('配置载荷格式无效');
+      throw new TypeError('Inställningarna har ett ogiltigt format.');
     }
     return payload;
   }
@@ -345,7 +346,9 @@
     '/about': wrap({ asyncComponent: () => import('./routes/about/About.svelte') }),
   };
 
-  let theme: Theme = 'system';
+  let onboardingOpen = localStorage.getItem('grit-onboarding-v1') === null;
+  function finishOnboarding(choice: string) { localStorage.setItem('grit-onboarding-v1', choice); onboardingOpen = false; }
+  let theme: Theme = 'light';
   let isDark = false;
   let isRecording = true;
   let isPaused = false;
@@ -354,7 +357,7 @@
   let backgroundOpacity = 0.25;
   let backgroundBlur = 1;
   let runtimeConfig: RuntimeConfig | null = null;
-  let uiVisualStyle: UiVisualStyle = 'c';
+  let uiVisualStyle: UiVisualStyle = 'a';
   let unsubscribeLocale: () => void = () => {};
   $: currentLocale = $locale;
 
@@ -363,68 +366,23 @@
   }
 
   function applyTheme(newTheme: Theme): void {
-    theme = newTheme;
-    isDark = theme === 'system' ? detectSystemTheme() : theme === 'dark';
-    
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    theme = 'light';
+    isDark = false;
+    document.documentElement.classList.remove('dark');
   }
 
   function normalizeUiVisualStyle(value: unknown): UiVisualStyle {
     const nextStyle = typeof value === 'string' ? value.trim().toLowerCase() : '';
-    return isUiVisualStyle(nextStyle) ? nextStyle : 'c';
+    return 'a';
   }
 
   function applyUiVisualStyle(value: unknown): void {
-    uiVisualStyle = normalizeUiVisualStyle(value);
+    uiVisualStyle = 'a';
     document.documentElement.dataset.uiVisualStyle = uiVisualStyle;
   }
 
-  async function handleThemeChange(event: CustomEvent<Theme>): Promise<void> {
-    const newTheme = event.detail;
-    applyTheme(newTheme);
-
-    try {
-      const config = await getRuntimeConfig();
-      config.theme = newTheme;
-      await invoke('save_config', { config });
-      cache.setConfig(config);
-    } catch (e) {
-      console.error('保存主题配置失败:', e);
-    }
-  }
-
-  async function loadBackground() {
-    try {
-      const config = await getRuntimeConfig();
-      backgroundOpacity = config.background_opacity ?? 0.25;
-      backgroundBlur = config.background_blur ?? 1;
-      if (config.background_image) {
-        const b64 = await invoke<string | null>('get_background_image');
-        if (b64) {
-          backgroundImage = `data:image/jpeg;base64,${b64}`;
-        }
-      } else {
-        backgroundImage = null;
-      }
-    } catch (e) {
-      console.warn('加载背景图失败:', e);
-    }
-  }
-
-  // 实时响应设置页的背景参数变更（不需要保存即可生效）
-  function handleBackgroundChanged(e: Event): void {
-    if (!(e instanceof CustomEvent)) return;
-    const d: BackgroundChangeDetail = e.detail;
-    if (d) {
-      if (d.image !== undefined) backgroundImage = d.image;
-      if (d.opacity !== undefined) backgroundOpacity = d.opacity;
-      if (d.blur !== undefined) backgroundBlur = d.blur;
-    }
-  }
+  async function loadBackground() { backgroundImage = null; }
+  function handleBackgroundChanged(_event: Event): void { backgroundImage = null; }
 
   function syncMainWindowVisibility(visible: boolean): void {
     document.body.classList.toggle('app-window-hidden', visible === false);
@@ -817,7 +775,7 @@
     <!-- 左侧边栏 -->
     <aside class="app-shell-sidebar-frame min-h-0">
       <div class="app-shell-sidebar h-full flex flex-col overflow-hidden">
-        <Sidebar {isRecording} {isPaused} {theme} on:themeChange={handleThemeChange} />
+        <Sidebar {isRecording} {isPaused} />
       </div>
     </aside>
 
@@ -829,6 +787,7 @@
             <Router {routes} />
           {/key}
         </main>
+        {#if onboardingOpen}<Onboarding on:complete={() => finishOnboarding('complete')} on:defer={() => finishOnboarding('deferred')} />{/if}
         <Toast />
         <ConfirmDialog />
       </div>

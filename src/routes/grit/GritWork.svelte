@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import GritSettingsPanel from './GritSettings.svelte';
+  import ReportingDialog from './ReportingDialog.svelte';
+  import ReportRowEditor from './ReportRowEditor.svelte';
+  import LocalizedDatePicker from '../../lib/components/LocalizedDatePicker.svelte';
   import GritIcon from './GritIcon.svelte';
   import { get } from 'svelte/store';
   import WorkflowBar from './WorkflowBar.svelte';
@@ -34,9 +36,6 @@
     type UnassignedGap,
   } from './gritTypes.ts';
 
-  type ActiveTab = 'report' | 'settings';
-
-  let activeTab: ActiveTab = 'report';
   let status: GritStatus | null = null;
   let settingsForm: GritSettings = createDefaultSettings();
   let selectedDate = get(workDate);
@@ -58,6 +57,7 @@
 
   let laterDismissedDates = new Set<string>();
   let confirmSubmitOpen = false;
+  let editingRowIndex: number | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let dayTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -118,7 +118,7 @@
       }
       syncPollingState();
     } catch (err) {
-      console.warn('Pollningsfel i Grit Work:', err);
+      console.warn('Pollningsfel i GRIT Work:', err);
     }
   }
 
@@ -180,7 +180,6 @@
     }
     selectedDate = targetDate;
     generating = true;
-    activeTab = 'report';
     try {
       const rawReport = await invoke<unknown>('grit_generate', { date: targetDate });
       const nextReport = normalizeGritReport(rawReport);
@@ -242,6 +241,21 @@
     } finally {
       savingDraft = false;
     }
+  }
+
+  async function openReporting(): Promise<void> {
+    if (!report || !submitValidation.canSubmit || savingDraft) return;
+    clearFeedback();
+    savingDraft = true;
+    try {
+      const saved = normalizeGritReport(await invoke('grit_save_draft', { report }));
+      if (!saved) throw new Error('Utkastet kunde inte sparas. Försök igen.');
+      report = saved;
+      dirtyDraft = false;
+      notifyGritChanged();
+      confirmSubmitOpen = true;
+    } catch (err) { errorMessage = formatError(err); }
+    finally { savingDraft = false; }
   }
 
   async function handleConfirmSubmit(): Promise<void> {
@@ -392,8 +406,9 @@
     const newRow: GritRow = {
       id: `manual-${Date.now()}`,
       project_id: status.projects[0]?.id ?? 0,
-      activity_id: status.settings.activity_id || status.activities[0]?.id || 0,
-      article_id: status.settings.article_id || status.articles[0]?.id || 0,
+      activity_id: 0,
+      article_id: 0,
+      time_code_id: 0,
       start: startSec,
       end: endSec,
       minutes: mins,
@@ -407,6 +422,7 @@
     };
     report = { ...report, rows: [...report.rows, newRow] };
     dirtyDraft = true;
+    editingRowIndex = report.rows.length - 1;
   }
 
   async function createManualReportAndRow(): Promise<void> {
@@ -432,6 +448,25 @@
       rows: report.rows.filter((_, idx) => idx !== index),
     };
     dirtyDraft = true;
+  }
+
+  function openRowEditor(index: number): void {
+    if (!report || !report.rows[index]) return;
+    editingRowIndex = index;
+  }
+
+  function closeRowEditor(): void {
+    editingRowIndex = null;
+  }
+
+  function handleRowEditorSave(e: CustomEvent<{ index: number; row: GritRow }>): void {
+    updateRow(e.detail.index, e.detail.row);
+    closeRowEditor();
+  }
+
+  function handleRowEditorDelete(e: CustomEvent<{ index: number }>): void {
+    removeRow(e.detail.index);
+    closeRowEditor();
   }
 
   onMount(() => {
@@ -512,28 +547,7 @@
         <span>{archiving ? 'Arkiverar...' : 'Arkivera'}</span>
       </button>
 
-      <div class="ml-1 inline-flex rounded-xl border border-slate-200 bg-slate-100/80 p-1 dark:border-[#30363d] dark:bg-[#0d1117]">
-        <button
-          type="button"
-          on:click={() => (activeTab = 'report')}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 {activeTab === 'report'
-            ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
-            : 'text-slate-600 hover:text-slate-900 dark:text-[#8b949e] dark:hover:text-[#e6edf3]'}"
-        >
-          <GritIcon name="report" sizeClass="h-3.5 w-3.5" />
-          <span>Tidrapport</span>
-        </button>
-        <button
-          type="button"
-          on:click={() => (activeTab = 'settings')}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 {activeTab === 'settings'
-            ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
-            : 'text-slate-600 hover:text-slate-900 dark:text-[#8b949e] dark:hover:text-[#e6edf3]'}"
-        >
-          <GritIcon name="settings" sizeClass="h-3.5 w-3.5" />
-          <span>Inställningar</span>
-        </button>
-      </div>
+
     </div>
   </header>
 
@@ -553,9 +567,9 @@
 
   {#if initialLoading}
     <div class="rounded-xl border border-slate-200/80 bg-white/90 p-10 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
-      Laddar Grit Work...
+      Laddar GRIT Work...
     </div>
-  {:else if activeTab === 'report'}
+  {:else}
     <!-- Yesterday prompt -->
     {#if showYesterdayPrompt}
       <section class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-indigo-200 bg-indigo-50/90 p-4 dark:border-indigo-800/60 dark:bg-indigo-950/30">
@@ -607,14 +621,7 @@
         >
           <GritIcon name="chevron-left" sizeClass="h-4 w-4" />
         </button>
-        <input
-          type="date"
-          aria-label="Välj arbetsdag"
-          max={shiftIsoDateString(yesterdayDate, 1)}
-          bind:value={selectedDate}
-          on:change={() => selectDate(selectedDate)}
-          class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-mono text-sm font-medium text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-        />
+        <LocalizedDatePicker bind:value={selectedDate} max={shiftIsoDateString(yesterdayDate, 1)} label="Välj arbetsdag" on:change={() => selectDate(selectedDate)} />
         <button
           type="button"
           on:click={() => selectDate(shiftIsoDateString(selectedDate, 1))}
@@ -694,7 +701,7 @@
         </div>
         <button
           type="button"
-          on:click={() => (activeTab = 'settings')}
+          on:click={() => { window.location.hash = '/settings'; }}
           class="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-amber-700"
         >
           Öppna inställningar
@@ -801,9 +808,15 @@
         {/if}
 
         {#if report.summary}
-          <p class="grit-summary text-sm leading-relaxed text-slate-600 dark:text-[#adbac7]">
-            {report.summary}
-          </p>
+          <details class="rounded-lg border border-slate-200/70 bg-slate-50/40 px-3.5 py-2 text-xs dark:border-[#30363d] dark:bg-[#0d1117]/60">
+            <summary class="flex cursor-pointer list-none items-center justify-between font-medium text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-[#c9d1d9]">
+              <span>Dagssammanfattning</span>
+              <GritIcon name="chevron-down" sizeClass="h-3.5 w-3.5 text-slate-400" />
+            </summary>
+            <p class="grit-summary mt-2 border-t border-slate-200/70 pt-2 text-xs leading-relaxed text-slate-600 dark:border-[#30363d] dark:text-[#adbac7]">
+              {report.summary}
+            </p>
+          </details>
         {/if}
 
         {#if report.error}
@@ -863,232 +876,40 @@
           </div>
         {/if}
 
-        <!-- Rows table / cards -->
-        <div class="space-y-3">
+        <div class="grit-list-grid px-3.5 text-xs text-slate-500" aria-hidden="true"><span>Projekt</span><span>Timmar</span><span>Dagbok</span><span></span></div>
+        <!-- Compact rows list -->
+        <div class="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white dark:divide-[#30363d] dark:border-[#30363d] dark:bg-[#0d1117]/60">
           {#if report.rows.length === 0}
-            <div class="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-500 dark:border-[#30363d] dark:text-[#8b949e]">
+            <div class="p-6 text-center text-sm text-slate-500 dark:text-[#8b949e]">
               Inga tidrader i denna rapport.
             </div>
           {:else}
             {#each report.rows as row, index (row.id)}
               {@const knownProject = isKnownProjectId(row.project_id, status?.projects ?? [])}
+              {@const projectObj = (status?.projects ?? []).find((p) => p.id === row.project_id)}
+              {@const projectLabel = projectObj ? `${projectObj.number ? projectObj.number + ' · ' : ''}${projectObj.name}` : row.project_id > 0 ? `Okänt projekt (#${row.project_id})` : 'Välj projekt'}
               {@const rowSubmittedMinutes = rounding?.rowSubmittedMinutes[index] ?? row.minutes}
               {@const rowPaddingMinutes = rounding?.rowPaddingMinutes[index] ?? 0}
-              {@const rowInvoiceable = computeInvoiceableHours(rowSubmittedMinutes, billableEnabled)}
-              <div class="grit-row rounded-xl border p-4 transition {row.needs_review
-                ? 'border-amber-300 bg-amber-50/40 dark:border-amber-700/60 dark:bg-amber-950/15'
-                : 'border-slate-200 bg-white dark:border-[#30363d] dark:bg-[#0d1117]/60'}">
-                {#if row.manual}
-                  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <span class="inline-flex items-center rounded-full bg-indigo-100 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">
-                      Manuell lucka (utanför datorn)
-                    </span>
-                    <span class="text-[11px] text-slate-500 dark:text-[#8b949e]">
-                      Minuter beräknas automatiskt från start- och sluttid.
-                    </span>
-                  </div>
-                {/if}
-                <div class="grid grid-cols-1 gap-3 md:grid-cols-12">
-                  <!-- Project -->
-                  <div class="md:col-span-4">
-                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                      Projekt
-                      <select
-                        value={row.project_id}
-                        disabled={!editable}
-                        on:change={(e) =>
-                          updateRow(index, { project_id: Number(e.currentTarget.value) || 0 })}
-                        class="mt-1 w-full rounded-lg border px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:bg-[#161b22] dark:text-[#e6edf3] {!knownProject
-                          ? 'border-rose-400 bg-rose-50 text-rose-900 dark:border-rose-700 dark:bg-rose-950/30'
-                          : 'border-slate-200 bg-white text-slate-900 dark:border-[#30363d]'}"
-                      >
-                        {#if !knownProject}
-                          <option value={row.project_id}>
-                            {row.project_id > 0
-                              ? `Okänt projekt-ID (${row.project_id}) — välj giltigt`
-                              : 'Välj projekt...'}
-                          </option>
-                        {/if}
-                        {#each status?.projects ?? [] as project (project.id)}
-                          <option value={project.id}>
-                            {project.number ? `${project.number} · ` : ''}{project.name}{project.active ? '' : ' (inaktiv)'}
-                          </option>
-                        {/each}
-                      </select>
-                    </label>
-                  </div>
-
-                  <!-- Start / End / Minutes -->
-                  <div class="md:col-span-2">
-                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                      Start
-                      <input
-                        type="time"
-                        value={unixSecondsToTimeInput(row.start)}
-                        disabled={!editable}
-                        on:change={(e) => updateRowTime(index, 'start', e.currentTarget.value)}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                      />
-                    </label>
-                  </div>
-
-                  <div class="md:col-span-2">
-                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                      Slut
-                      <input
-                        type="time"
-                        value={unixSecondsToTimeInput(row.end)}
-                        disabled={!editable}
-                        on:change={(e) => updateRowTime(index, 'end', e.currentTarget.value)}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                      />
-                    </label>
-                  </div>
-
-                  <div class="md:col-span-2">
-                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                      {row.manual ? 'Minuter (intervall)' : 'Inspelade min'}
-                      <input
-                        type="number"
-                        min="0"
-                        step="5"
-                        value={row.minutes}
-                        disabled={!editable || row.manual}
-                        on:input={(e) =>
-                          updateRow(index, {
-                            minutes: Math.max(0, Math.trunc(Number(e.currentTarget.value) || 0)),
-                          })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:bg-slate-50 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3] dark:disabled:bg-[#0d1117]"
-                      />
-                    </label>
-                  </div>
-
-                  <div class="flex items-end md:col-span-2">
-                    <div class="w-full rounded-lg border border-slate-200/80 bg-slate-50/70 px-2.5 py-1.5 text-xs dark:border-[#30363d] dark:bg-[#161b22]">
-                      <span class="block text-[11px] text-slate-500 dark:text-[#8b949e]">Fakturerbart</span>
-                      <span class="font-mono font-semibold text-slate-900 dark:text-[#e6edf3]">{formatSwedishHours(rowInvoiceable)}</span>
-                    </div>
-                  </div>
-
-                  <!-- Description -->
-                  <div class={row.manual ? 'md:col-span-6' : 'md:col-span-12'}>
-                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                      Beskrivning
-                      <input
-                        type="text"
-                        value={row.description}
-                        disabled={!editable}
-                        placeholder="Vad gjordes under detta arbetspass?"
-                        on:input={(e) => updateRow(index, { description: e.currentTarget.value })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                      />
-                    </label>
-                  </div>
-
-                  {#if row.manual}
-                    <div class="md:col-span-6">
-                      <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                        Orsak till manuell tid (krävs)
-                        <input
-                          type="text"
-                          value={row.manual_reason}
-                          disabled={!editable}
-                          placeholder="T.ex. kundmöte, telefonsamtal, verkstad"
-                          on:input={(e) => updateRow(index, { manual_reason: e.currentTarget.value })}
-                          class="mt-1 w-full rounded-lg border px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:bg-[#161b22] dark:text-[#e6edf3] {!row.manual_reason.trim()
-                            ? 'border-amber-400 bg-amber-50/60 text-slate-900 dark:border-amber-600'
-                            : 'border-slate-200 bg-white text-slate-900 dark:border-[#30363d]'}"
-                        />
-                      </label>
-                    </div>
-                  {/if}
-                </div>
-
-                <!-- Progressive disclosure for Activity, Article & Evidence IDs -->
-                <details class="mt-3 rounded-lg border border-slate-200/70 bg-slate-50/60 px-3 py-2 text-xs dark:border-[#30363d] dark:bg-[#161b22]/60">
-                  <summary class="flex cursor-pointer list-none items-center justify-between font-medium text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-[#8b949e]">
-                    <span>Aktivitet, artikel & underlag ({row.evidence_ids.length} poster)</span>
-                    <GritIcon name="chevron-down" sizeClass="h-3.5 w-3.5" />
-                  </summary>
-                  <div class="mt-2.5 grid grid-cols-1 gap-3 border-t border-slate-200/70 pt-2.5 sm:grid-cols-2 dark:border-[#30363d]">
-                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                      Aktivitet
-                      <select
-                        value={row.activity_id}
-                        disabled={!editable}
-                        on:change={(e) =>
-                          updateRow(index, { activity_id: Number(e.currentTarget.value) || 0 })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-                      >
-                        <option value={0}>Ingen / standard</option>
-                        {#each status?.activities ?? [] as activity (activity.id)}
-                          <option value={activity.id}>{activity.name}</option>
-                        {/each}
-                      </select>
-                    </label>
-
-                    <label class="block text-xs font-medium text-slate-600 dark:text-[#8b949e]">
-                      Artikel
-                      <select
-                        value={row.article_id}
-                        disabled={!editable}
-                        on:change={(e) =>
-                          updateRow(index, { article_id: Number(e.currentTarget.value) || 0 })}
-                        class="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-                      >
-                        <option value={0}>Ingen / standard</option>
-                        {#each status?.articles ?? [] as article (article.id)}
-                          <option value={article.id}>{article.name}</option>
-                        {/each}
-                      </select>
-                    </label>
-                  </div>
-                  {#if row.evidence_ids.length > 0}
-                    <p class="mt-2 font-mono text-[11px] text-slate-500 dark:text-[#8b949e]">
-                      Underlag: {row.evidence_ids.map((id) => `#${id}`).join(', ')}
-                    </p>
-                  {/if}
-                </details>
-
-                <div class="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 pt-2.5 text-xs dark:border-[#30363d]">
-                  <div class="flex flex-wrap items-center gap-3">
-                    <label class="inline-flex cursor-pointer items-center gap-2 font-medium text-slate-700 dark:text-[#c9d1d9]">
-                      <input
-                        type="checkbox"
-                        checked={row.needs_review}
-                        disabled={!editable}
-                        on:change={(e) =>
-                          updateRow(index, { needs_review: e.currentTarget.checked })}
-                        class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-                      />
-                      {row.manual ? 'Bekräfta manuell rad (avmarkera när klar)' : 'Kräver granskning'}
-                    </label>
-
-                    {#if rowPaddingMinutes > 0}
-                      <span class="rounded bg-indigo-100 px-2 py-0.5 font-mono font-medium text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">
-                        +{rowPaddingMinutes} min projektavrundning → {rowSubmittedMinutes} min till Spiris
-                      </span>
-                    {/if}
-
-                    {#if row.remote_id !== null}
-                      <span class="rounded bg-emerald-100 px-2 py-0.5 font-mono font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
-                        Spiris-ID #{row.remote_id}
-                      </span>
-                    {/if}
-                  </div>
-
-                  {#if editable}
-                    <button
-                      type="button"
-                      on:click={() => removeRow(index)}
-                      class="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-rose-600 hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:text-rose-400 dark:hover:bg-rose-950/30"
-                    >
-                      <GritIcon name="trash" sizeClass="h-3.5 w-3.5" />
-                      <span>Ta bort</span>
-                    </button>
-                  {/if}
-                </div>
-              </div>
+              {@const startLabel = unixSecondsToTimeInput(row.start)}
+              {@const endLabel = unixSecondsToTimeInput(row.end)}
+              <button
+                type="button"
+                on:click={() => openRowEditor(index)}
+                title={`${startLabel}–${endLabel} · ${row.needs_review ? 'Behöver granskas' : 'Granskad'}`}
+                class="grit-row grit-list-grid w-full items-center gap-3 px-3.5 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 {editable ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-[#161b22]' : 'cursor-default'} {row.needs_review
+                  ? 'bg-amber-50/50 dark:bg-amber-950/15'
+                  : ''}"
+              >
+                <span class="grit-list-project truncate text-sm font-medium {knownProject ? 'text-slate-900' : 'text-amber-700'}">{projectLabel}</span>
+                <span class="grit-list-time font-mono text-sm whitespace-nowrap">{formatSwedishHours(rowSubmittedMinutes / 60)}</span>
+                <span class="grit-list-diary truncate text-sm text-slate-600">{row.description || 'Skriv en dagboksanteckning…'}</span>
+                <span class="inline-flex items-center justify-end gap-2">
+                  {#if row.needs_review}<span title="Behöver granskas"><GritIcon name="alert" sizeClass="h-4 w-4 text-amber-600" /></span>{/if}
+                  {#if row.manual}<span title="Manuell tid"><GritIcon name="plus" sizeClass="h-3.5 w-3.5 text-indigo-500" /></span>{/if}
+                  {#if row.remote_id !== null}<span title={`Rapporterad, Spiris-ID ${row.remote_id}`}><GritIcon name="check" sizeClass="h-4 w-4 text-emerald-600" /></span>{/if}
+                  {#if editable}<GritIcon name="chevron-right" sizeClass="h-4 w-4 text-slate-400" />{/if}
+                </span>
+              </button>
             {/each}
           {/if}
         </div>
@@ -1142,103 +963,35 @@
 
             <button
               type="button"
-              on:click={() => (confirmSubmitOpen = true)}
+              on:click={openReporting}
               disabled={!submitValidation.canSubmit || submitting || savingDraft}
               class="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <GritIcon name="check" sizeClass="h-3.5 w-3.5" />
-              <span>Godkänn & skicka till Spiris</span>
+              <span>Rapportera till Spiris</span>
             </button>
           {/if}
         </div>
       </section>
     {/if}
-  {:else}
-    <GritSettingsPanel initialStatus={status} on:statusUpdated={(event) => { status = event.detail; settingsForm = { ...event.detail.settings }; }} on:saved={refreshStatusOnly} />
   {/if}
 </div>
 
-<!-- Explicit confirmation modal before submit -->
-{#if confirmSubmitOpen && report}
-  <div
-    class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="grit-confirm-title"
-  >
-    <div class="w-full max-w-md space-y-4 rounded-xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-[#30363d] dark:bg-[#161b22]">
-      <div>
-        <h3 id="grit-confirm-title" class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-          Bekräfta överföring till Spiris
-        </h3>
-        <p class="mt-1 text-sm text-slate-600 dark:text-[#8b949e]">
-          Efter att tidrapporten skickats låses den mot vidare redigering.
-        </p>
-      </div>
+{#if editingRowIndex !== null && report && report.rows[editingRowIndex] && status}
+  <ReportRowEditor
+    open={true}
+    row={report.rows[editingRowIndex]}
+    readonly={!editable}
+    rowIndex={editingRowIndex}
+    date={report.date}
+    {status}
+    on:save={handleRowEditorSave}
+    on:delete={handleRowEditorDelete}
+    on:close={closeRowEditor}
+  />
+{/if}
 
-      <dl class="space-y-2 rounded-xl bg-slate-50 p-3.5 text-sm dark:bg-[#0d1117]">
-        <div class="flex justify-between">
-          <dt class="text-slate-500 dark:text-[#8b949e]">Datum</dt>
-          <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">{report.date}</dd>
-        </div>
-        <div class="flex justify-between">
-          <dt class="text-slate-500 dark:text-[#8b949e]">Antal rader</dt>
-          <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">{report.rows.length}</dd>
-        </div>
-        <div class="flex justify-between">
-          <dt class="text-slate-500 dark:text-[#8b949e]">Inspelad tid</dt>
-          <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">{formatMinutesSwedish(totalMinutes)}</dd>
-        </div>
-        <div class="flex justify-between">
-          <dt class="text-slate-500 dark:text-[#8b949e]">Avrundad tid till Spiris</dt>
-          <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">
-            {formatMinutesSwedish(totalSubmittedMinutes)}
-            {#if totalPaddingMinutes > 0}
-              <span class="ml-1 text-xs font-normal text-indigo-600 dark:text-indigo-400">(+{totalPaddingMinutes} min)</span>
-            {/if}
-          </dd>
-        </div>
-        <div class="flex justify-between">
-          <dt class="text-slate-500 dark:text-[#8b949e]">Fakturerbar tid</dt>
-          <dd class="font-semibold text-slate-900 dark:text-[#e6edf3]">
-            {formatSwedishHours(totalInvoiceableHours)}
-          </dd>
-        </div>
-      </dl>
-
-      {#if rounding && rounding.projectTotals.length > 0}
-        <div class="space-y-1.5 rounded-xl border border-slate-200/80 p-3 text-xs dark:border-[#30363d]">
-          <div class="font-semibold text-slate-800 dark:text-[#e6edf3]">Projekt (inspelad → avrundad)</div>
-          {#each rounding.projectTotals as proj}
-            <div class="flex justify-between gap-2 text-slate-600 dark:text-[#adbac7]">
-              <span class="truncate">{proj.projectName}</span>
-              <span class="shrink-0 font-mono">{formatMinutesSwedish(proj.recordedMinutes)} → {formatMinutesSwedish(proj.submittedMinutes)}</span>
-            </div>
-          {/each}
-          <p class="pt-1 text-[11px] text-slate-500 dark:text-[#8b949e]">
-            Avrundning sker per projekt och dygn uppåt till närmaste 30 min (påslag på projektets sista rad).
-          </p>
-        </div>
-      {/if}
-
-      <div class="flex justify-end gap-2.5 pt-1">
-        <button
-          type="button"
-          on:click={() => (confirmSubmitOpen = false)}
-          disabled={submitting}
-          class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9]"
-        >
-          Avbryt
-        </button>
-        <button
-          type="button"
-          on:click={handleConfirmSubmit}
-          disabled={submitting}
-          class="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
-        >
-          {submitting ? 'Skickar...' : 'Bekräfta & skicka'}
-        </button>
-      </div>
-    </div>
-  </div>
+{#if confirmSubmitOpen && report && status}
+  <ReportingDialog bind:open={confirmSubmitOpen} {report} {status} {submitting}
+    on:change={(e) => { report = e.detail; dirtyDraft = true; }} on:submit={handleConfirmSubmit} />
 {/if}

@@ -12,7 +12,7 @@ Var GritUserDisabled
   StrCpy $GritExistingRun ""
   StrCpy $GritUserDisabled 0
   ReadRegStr $GritPrevInstall SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}" "DisplayVersion"
-  ReadRegStr $GritExistingRun HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Grit Work"
+  ReadRegStr $GritExistingRun HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GRIT Work"
   ClearErrors
   ReadRegDWORD $GritUserDisabled HKCU "Software\se.grit.work" "AutostartUserDisabled"
   IfErrors 0 +2
@@ -22,7 +22,7 @@ Var GritUserDisabled
 !macro NSIS_HOOK_POSTINSTALL
   ; Explicit opt-out wins over a fresh install and over an upgrade.
   ${If} $GritUserDisabled = 1
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Grit Work"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GRIT Work"
   ${ElseIf} $GritExistingRun != ""
     ; Upgrade or reinstall while autostart is on: point at the new EXE.
     ; Keep --hidden only when the previous command already had it.
@@ -39,19 +39,19 @@ Var GritUserDisabled
       ${EndIf}
     ${EndIf}
     ClearErrors
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Grit Work" "$0"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GRIT Work" "$0"
   ${ElseIf} $GritPrevInstall != ""
     ; Installed before, and the Run value is absent: user disabled it.
   ${Else}
     ; First install. Silent current-user startup is the default.
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Grit Work" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --autostart --hidden"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GRIT Work" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --autostart --hidden"
   ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
   ; /UPDATE uninstall must leave the Run value and the opt-out marker.
   ${If} $UpdateMode <> 1
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Grit Work"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GRIT Work"
     DeleteRegValue HKCU "Software\se.grit.work" "AutostartUserDisabled"
     DeleteRegKey /ifempty HKCU "Software\se.grit.work"
   ${EndIf}

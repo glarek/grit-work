@@ -1,5 +1,13 @@
 # Validation — 2026-11-19
 
+## Swedish interface and compact reporting
+
+- Light Quiet Pro only, Swedish catalogue and ISO dates, Monday-first shared calendar, bundled Figtree/JetBrains Mono. First-run onboarding requires completion or explicit deferral; AI consent remains opt-in. Shared Bits/Melt primitives implement the Svelte 4-compatible shadcn-style controls. Switch geometry is checked in both states (44 × 24 px, centered 20 px thumb with 2 px inset).
+- One-line report rows show project, hours and diary preview. A dialog edits a local draft with cancel/save; uploaded rows are read-only. Final approval uses fresh Spiris choices and shows prior entries without creating new rows from history.
+- Read-only connection checks report authentication and six read resources independently. They explicitly leave submission permission untested. Spiris does not expose per-project option restriction lists: choices come from active registries after checking project status/membership. All three per-row metadata IDs are revalidated immediately before every POST.
+- Local workspace: **845 Rust tests passed**, one real-display test ignored; all-target Clippy with warnings denied and formatting passed. Frontend: **785 tests passed**, Svelte check zero errors/warnings, production build passed. Chromium checks cover compact row geometry, edit/cancel, metadata persistence, approval/duplicate/membership guards, onboarding, Monday calendar, centered switches, shared dates/settings and 800 × 600 layout. Only synthetic report fixtures are used; no live time is posted.
+- Native Windows packaging and VM upgrade for this change are pending. Older runs below apply only to their listed commits.
+
 ## Personal report writing style
 
 - Optional `use_report_history` defaults off, including migrated settings. AI consent and a valid selected Spiris user are required. Disabled mode makes no history request.

@@ -45,7 +45,7 @@ test('自启动后端应避免强制依赖 Windows 自定义状态并为未初�
   );
 
   assert.match(source, /#\[cfg\(windows\)\]\s*const AUTOSTART_LAUNCH_ARG/);
-  assert.match(source, /开机自启动服务未初始化/);
+  assert.match(source, /Autostart är inte initierad/);
   assert.match(source, /try_state::<AutoLaunchConfig>/);
   assert.match(source, /tauri_plugin_autostart::ManagerExt/);
   assert.doesNotMatch(source, /tauri::State<'_,\s*AutoLaunch(Manager|Config)>/);
@@ -169,8 +169,8 @@ test('基本设置的开关和数值输入应提供本地化可访问名称', as
     'utf8'
   );
 
-  assert.equal((source.match(/role="switch"/g) || []).length, 4);
-  assert.equal((source.match(/aria-checked=\{/g) || []).length, 4);
+  assert.equal((source.match(/<UiSwitch/g) || []).length, 4);
+  assert.match(source, /bind:checked=\{autoStartEnabled\}/);
   for (const key of [
     'workTime',
     'standardWorkHours',
@@ -181,7 +181,7 @@ test('基本设置的开关和数值输入应提供本地化可访问名称', as
     'hideDockIcon',
     'lightweightMode',
   ]) {
-    assert.match(source, new RegExp(`aria-label=\\{t\\('settingsGeneral\\.${key}'\\)\\}`));
+    assert.match(source, new RegExp(`(?:aria-label|label)=\\{t\\('settingsGeneral\\.${key}'\\)\\}`));
   }
   assert.match(source, /aria-label=\{`\$\{t\('settingsGeneral\.segmentLabel'/);
   assert.match(source, /\$\{t\('settingsGeneral\.from'\)\}`\}/);

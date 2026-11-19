@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { ChevronDown } from "lucide-svelte";
+  import { slide } from "svelte/transition";
+  const reducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   export let title = '';
   export let subtitle = '';
   export let storageKey = '';
@@ -29,17 +32,10 @@
       <p class="settings-card-title">{title}</p>
       {#if subtitle}<p class="settings-card-desc">{subtitle}</p>{/if}
     </div>
-    <svg
-      class="h-4 w-4 shrink-0 text-slate-400 dark:text-[#7d8590] transition-transform duration-200 {open ? 'rotate-180' : ''}"
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-    </svg>
+    <ChevronDown size={16} class="shrink-0 text-slate-400 transition-transform duration-200 {open ? 'rotate-180' : ''}" />
   </button>
   {#if open}
-    <div class="mt-3 settings-block">
+    <div transition:slide={{duration:reducedMotion ? 0 : 160}} class="mt-3 settings-block">
       <slot />
     </div>
   {/if}

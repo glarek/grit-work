@@ -6,7 +6,9 @@ test('设置页已精简为 Grit Work 同步设置，不再挂载节点 Beta 标
   const source = await readFile(new URL('./Settings.svelte', import.meta.url), 'utf8');
 
   assert.match(source, /import GritSettings from '\.\.\/grit\/GritSettings\.svelte'/);
-  assert.match(source, /id:\s*'grit'/);
+  assert.match(source, /id:\s*'ai'/);
+  assert.match(source, /id:\s*'spiris'/);
+  assert.match(source, /id:\s*'capture'/);
   assert.doesNotMatch(source, /id:\s*'node'/);
   assert.doesNotMatch(source, /<SettingsNodeGateway/);
 });

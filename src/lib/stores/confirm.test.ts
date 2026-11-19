@@ -1,5 +1,5 @@
 import { setLocale } from '../i18n/index.ts';
-setLocale('zh-CN');
+setLocale('sv-SE');
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -23,7 +23,7 @@ afterEach(() => {
   assert.equal(snapshot(), null);
 });
 
-test('confirm 应使用默认中文文案并返回取消结果', async () => {
+test('confirm 应使用默认瑞典语文案并返回取消结果', async () => {
   const pending = confirm();
   const state = snapshot();
   assert.ok(state);
@@ -37,10 +37,10 @@ test('confirm 应使用默认中文文案并返回取消结果', async () => {
       tone: state.tone,
     },
     {
-      title: '提示',
+      title: 'Meddelande',
       message: '',
-      confirmText: '确定',
-      cancelText: '取消',
+      confirmText: 'Bekräfta',
+      cancelText: 'Avbryt',
       tone: 'info',
     },
   );

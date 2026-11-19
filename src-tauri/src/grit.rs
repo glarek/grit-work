@@ -108,6 +108,8 @@ pub struct Row {
     pub project_id: i64,
     pub activity_id: i64,
     pub article_id: i64,
+    #[serde(default)]
+    pub time_code_id: i64,
     pub start: i64,
     pub end: i64,
     pub minutes: i64,
@@ -355,63 +357,537 @@ async fn list(
     path: &str,
     filters: &[(&str, String)],
 ) -> Result<Vec<Value>, String> {
-    let mut result = vec![];
-    for page in 1..=1000 {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let mut query = vec![("page", page.to_string()), ("pageSize", "100".into())];
-        query.extend_from_slice(filters);
-        let mut attempts = 0;
-        let v: Value = loop {
-            let r = client
-                .get(format!("{API}/{path}"))
-                .bearer_auth(token)
-                .query(&query)
-                .send()
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let mut result = vec![];
+        let mut expected_pages = None;
+        for page in 1..=50 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let mut query = vec![("page", page.to_string()), ("pageSize", "100".into())];
+            query.extend_from_slice(filters);
+            let value = reporting_get(client, token, path, &query)
                 .await
-                .map_err(|_| format!("Spiris: nätverksfel vid läsning av {path}."))?;
-            if r.status().as_u16() == 429 && attempts < 3 {
-                let wait = r
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|h| h.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(2)
-                    .clamp(1, 60);
-                tokio::time::sleep(Duration::from_secs(wait)).await;
-                attempts += 1;
-                continue;
+                .map_err(|e| e.message)?;
+            let items = value["items"]
+                .as_array()
+                .ok_or("Spiris-svaret saknar listformat.")?;
+            let pages = value["totalPages"]
+                .as_u64()
+                .ok_or("Spiris-svaret saknar sidinformation.")?;
+            if pages > 50
+                || items.len() > 100
+                || (pages == 0 && !items.is_empty())
+                || (page < pages && items.is_empty())
+                || expected_pages.is_some_and(|old| old != pages)
+            {
+                return Err(
+                    "Spiris-listan ändrades eller överskrider säker gräns. Läs in den igen.".into(),
+                );
             }
-            if !r.status().is_success() {
-                return Err(format!(
-                    "Spiris {path}: HTTP {}. Kontrollera API-behörigheter.",
-                    r.status().as_u16()
-                ));
+            expected_pages = Some(pages);
+            result.extend(items.iter().cloned());
+            if page >= pages {
+                return Ok(result);
             }
-            break r
-                .json()
-                .await
-                .map_err(|_| format!("Spiris {path}: ogiltigt JSON-svar."))?;
-        };
-        let items = v["items"]
-            .as_array()
-            .ok_or_else(|| format!("Spiris {path}: listformat saknas."))?;
-        result.extend(items.iter().cloned());
-        let pages = v["totalPages"]
-            .as_u64()
-            .ok_or("Spiris saknar sidinformation.")?;
-        if page >= pages {
-            return Ok(result);
+        }
+        Err("Spiris-listan överskrider säker sidgräns.".into())
+    })
+    .await
+    .map_err(|_| "Spiris-läsningen tog för lång tid. Försök igen.".to_string())?
+}
+
+// A read check proves only that GET worked, never authorization to submit time.
+#[derive(Debug, Serialize)]
+pub struct PermissionCheck {
+    resource: String,
+    ok: bool,
+    tested: bool,
+    http_status: Option<u16>,
+    count: Option<usize>,
+    message: String,
+}
+#[derive(Serialize)]
+pub struct ConnectionTest {
+    checked_at: i64,
+    authentication: PermissionCheck,
+    reads: Vec<PermissionCheck>,
+    submission_permission: &'static str,
+}
+#[derive(Debug, Serialize)]
+pub struct ProjectReportingChoices {
+    project_id: i64,
+    member: bool,
+    active: bool,
+    activities: Vec<Choice>,
+    time_codes: Vec<Choice>,
+    articles: Vec<Choice>,
+    restriction_source: &'static str,
+}
+#[derive(Debug, Serialize)]
+pub struct ExistingReportRow {
+    id: i64,
+    date: String,
+    project: Option<Choice>,
+    activity: Option<Choice>,
+    time_code: Option<Choice>,
+    article: Option<Choice>,
+    hours: f64,
+    comment: String,
+}
+#[derive(Serialize)]
+pub struct ReportingContext {
+    date: String,
+    user: Choice,
+    checked_at: i64,
+    projects: Vec<ProjectReportingChoices>,
+    existing_rows: Vec<ExistingReportRow>,
+    previous_rows: Vec<ExistingReportRow>,
+}
+struct ReportingReadError {
+    status: Option<u16>,
+    message: String,
+}
+impl ReportingReadError {
+    fn new(status: Option<u16>, message: &str) -> Self {
+        Self {
+            status,
+            message: message.into(),
         }
     }
-    Err("Spiris-listan överskrider säker sidgräns. Inget ofullständigt register används.".into())
 }
+async fn reporting_get(
+    client: &reqwest::Client,
+    token: &str,
+    path: &str,
+    query: &[(&str, String)],
+) -> Result<Value, ReportingReadError> {
+    let mut response = client
+        .get(format!("{API}/{path}"))
+        .bearer_auth(token)
+        .query(query)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|_| {
+            ReportingReadError::new(
+                None,
+                "Spiris kunde inte nås. Kontrollera anslutningen och försök igen.",
+            )
+        })?;
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        return Err(ReportingReadError::new(
+            Some(status),
+            match status {
+                401 => "Spiris nekade inloggningen. Kontrollera sparade API-uppgifter.",
+                403 => {
+                    "Spiris nekade läsningen. Kontrollera läsbehörighet och tillåtna IP-adresser."
+                }
+                429 => "Spiris begränsar anropen. Vänta och försök igen.",
+                _ => "Spiris kunde inte läsa resursen. Försök igen.",
+            },
+        ));
+    }
+    const MAX_BYTES: usize = 2 * 1024 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_BYTES as u64)
+    {
+        return Err(ReportingReadError::new(
+            Some(status),
+            "Spiris-svaret överskrider säker storleksgräns.",
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
+        ReportingReadError::new(Some(status), "Spiris-svaret kunde inte läsas färdigt.")
+    })? {
+        if chunk.len() > MAX_BYTES.saturating_sub(bytes.len()) {
+            return Err(ReportingReadError::new(
+                Some(status),
+                "Spiris-svaret överskrider säker storleksgräns.",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| ReportingReadError::new(Some(status), "Spiris returnerade ett ogiltigt svar."))
+}
+fn untested_permission(resource: &str, message: &str) -> PermissionCheck {
+    PermissionCheck {
+        resource: resource.into(),
+        ok: false,
+        tested: false,
+        http_status: None,
+        count: None,
+        message: message.into(),
+    }
+}
+fn permission_result(resource: &str, result: Result<Value, ReportingReadError>) -> PermissionCheck {
+    match result {
+        Ok(value) if value["items"].is_array() => PermissionCheck {
+            resource: resource.into(),
+            ok: true,
+            tested: true,
+            http_status: Some(200),
+            count: value["totalItemCount"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok()),
+            message: "Läsning verifierad. Detta bevisar inte rätt att skicka tid.".into(),
+        },
+        Ok(_) => PermissionCheck {
+            resource: resource.into(),
+            ok: false,
+            tested: true,
+            http_status: Some(200),
+            count: None,
+            message: "Spiris svarade men listformatet kunde inte verifieras.".into(),
+        },
+        Err(error) => PermissionCheck {
+            resource: resource.into(),
+            ok: false,
+            tested: true,
+            http_status: error.status,
+            count: None,
+            message: error.message,
+        },
+    }
+}
+#[tauri::command]
+pub async fn grit_test_connection(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<ConnectionTest, String> {
+    let database = db(&local_dir(&state)?)?;
+    let settings: Settings = get(&database, "settings")?.unwrap_or_default();
+    let resources = [
+        "Core/Projects",
+        "Admin/Users",
+        "Admin/Activities",
+        "Admin/TimeCodes",
+        "Admin/Articles",
+        "Core/TimeReports",
+    ];
+    let c = client()?;
+    let token_result = tokio::time::timeout(Duration::from_secs(30), token(&c)).await;
+    let t = match token_result {
+        Ok(Ok(t)) => t,
+        _ => return Ok(ConnectionTest {
+            checked_at: Local::now().timestamp(),
+            authentication: PermissionCheck { resource: "authentication".into(), ok: false, tested: true, http_status: None, count: None, message: "Spiris-inloggningen kunde inte verifieras. Kontrollera sparade uppgifter, nyckellager och anslutning.".into() },
+            reads: resources.iter().map(|path| untested_permission(path, "Inte testad: inloggning krävs.")).collect(),
+            submission_permission: "not_tested",
+        }),
+    };
+    let mut reads = Vec::new();
+    for path in resources {
+        let mut query = vec![("page", "1".into()), ("pageSize", "1".into())];
+        if path == "Admin/Articles" {
+            query.push(("type", "time".into()));
+        }
+        if path == "Core/TimeReports" {
+            if settings.user_id <= 0 {
+                reads.push(untested_permission(
+                    path,
+                    "Välj Spiris-användare för att testa läsning av dennes tidrapporter.",
+                ));
+                continue;
+            }
+            let today = Local::now().date_naive();
+            query.extend([
+                ("filter.userIds", settings.user_id.to_string()),
+                ("filter.from", format!("{today} 00:00:00")),
+                ("filter.to", format!("{today} 23:59:59")),
+            ]);
+        }
+        let result = reporting_get(&c, &t, path, &query).await;
+        reads.push(permission_result(path, result));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let authenticated = reads.iter().any(|check| check.ok);
+    Ok(ConnectionTest {
+        checked_at: Local::now().timestamp(),
+        authentication: PermissionCheck {
+            resource: "authentication".into(),
+            ok: authenticated,
+            tested: true,
+            http_status: None,
+            count: None,
+            message: if authenticated {
+                "Inloggningen verifierades genom ett lyckat läsanrop."
+            } else {
+                "Ingen läsning lyckades; anslutningen kunde inte verifieras."
+            }
+            .into(),
+        },
+        reads,
+        submission_permission: "not_tested",
+    })
+}
+fn project_reporting_choices(
+    id: i64,
+    value: &Value,
+    user: i64,
+    cat: &Catalog,
+) -> Result<ProjectReportingChoices, String> {
+    if id <= 0 || value["id"].as_i64() != Some(id) {
+        return Err("Projektets identitet kunde inte verifieras i Spiris.".into());
+    }
+    let active = !value["status"]["isCompletedStatus"]
+        .as_bool()
+        .ok_or("Projektstatus saknas i Spiris-svaret.")?;
+    let member = match value["allIsMember"].as_bool() {
+        Some(true) => true,
+        Some(false) => value["members"]
+            .as_array()
+            .ok_or("Projektets medlemslista saknas.")?
+            .iter()
+            .any(|m| m["id"].as_i64() == Some(user)),
+        None => return Err("Projektets medlemsbehörighet kunde inte verifieras.".into()),
+    };
+    // Documented API and read-only live inspection: no project-specific option
+    // restrictions are exposed. Activity preferences must not be called restrictions.
+    let available = active && member;
+    Ok(ProjectReportingChoices {
+        project_id: id,
+        member,
+        active,
+        activities: if available {
+            cat.activities.clone()
+        } else {
+            vec![]
+        },
+        time_codes: if available {
+            cat.time_codes.clone()
+        } else {
+            vec![]
+        },
+        articles: if available {
+            cat.articles.clone()
+        } else {
+            vec![]
+        },
+        restriction_source: "active_registries_no_project_restrictions_exposed",
+    })
+}
+async fn fresh_project_choices(
+    c: &reqwest::Client,
+    t: &str,
+    id: i64,
+    user: i64,
+    cat: &Catalog,
+) -> Result<ProjectReportingChoices, String> {
+    let value = reporting_get(c, t, &format!("Core/Projects/{id}"), &[])
+        .await
+        .map_err(|e| e.message)?;
+    project_reporting_choices(id, &value, user, cat)
+}
+fn validate_reporting_selection(
+    row: &Row,
+    project: &ProjectReportingChoices,
+) -> Result<(), String> {
+    if project.project_id != row.project_id || !project.active || !project.member {
+        return Err("Projektet måste vara aktivt och vald användare måste vara medlem.".into());
+    }
+    for (id, choices, label) in [
+        (row.activity_id, &project.activities, "aktivitet"),
+        (row.time_code_id, &project.time_codes, "tidskod"),
+        (row.article_id, &project.articles, "tidsartikel"),
+    ] {
+        if id <= 0 || !choices.iter().any(|choice| choice.id == id) {
+            return Err(format!(
+                "Välj en aktiv {label} för varje projektrad innan du skickar."
+            ));
+        }
+    }
+    Ok(())
+}
+fn checked_remote_rows(rows: Vec<Value>, date: &str, user: i64) -> Result<Vec<Value>, String> {
+    let expected =
+        NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| "Ogiltigt rapportdatum.")?;
+    if user <= 0
+        || rows.iter().any(|row| {
+            row["user"]["id"].as_i64() != Some(user)
+                || row["date"].as_str().and_then(style_row_date) != Some(expected)
+        })
+    {
+        return Err(
+            "Spiris-svaret stämmer inte med vald användare och dag. Ingen överföring kan göras."
+                .into(),
+        );
+    }
+    Ok(rows)
+}
+fn remote_choice(value: &Value) -> Option<Choice> {
+    let id = value["id"].as_i64().filter(|id| *id > 0)?;
+    Some(Choice {
+        id,
+        name: value["name"]
+            .as_str()
+            .unwrap_or("Namnlös")
+            .chars()
+            .take(500)
+            .collect(),
+    })
+}
+fn existing_report_row(value: &Value, date: &str) -> Result<ExistingReportRow, String> {
+    let id = value["id"]
+        .as_i64()
+        .filter(|id| *id > 0)
+        .ok_or("Spiris-raden saknar giltigt ID.")?;
+    let hours = value["hours"]
+        .as_f64()
+        .filter(|n| n.is_finite())
+        .ok_or("Spiris-raden saknar giltig tid.")?;
+    Ok(ExistingReportRow {
+        id,
+        date: date.into(),
+        project: remote_choice(&value["project"]),
+        activity: remote_choice(&value["activity"]),
+        time_code: remote_choice(&value["timeCode"]),
+        article: remote_choice(&value["timeArticle"]),
+        hours,
+        comment: value["comment"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(2000)
+            .collect(),
+    })
+}
+fn prior_project_row(
+    value: &Value,
+    from: NaiveDate,
+    before: NaiveDate,
+    user: i64,
+    project: i64,
+) -> Result<ExistingReportRow, String> {
+    let date = value["date"]
+        .as_str()
+        .and_then(style_row_date)
+        .ok_or("Tidrapporten saknar giltigt datum.")?;
+    if value["user"]["id"].as_i64() != Some(user)
+        || value["project"]["id"].as_i64() != Some(project)
+        || date < from
+        || date >= before
+    {
+        return Err(
+            "Spiris-historiken stämmer inte med vald användare, projekt och period.".into(),
+        );
+    }
+    existing_report_row(value, &date.to_string())
+}
+fn limit_previous_rows(rows: &mut Vec<ExistingReportRow>) {
+    rows.sort_by(|left, right| {
+        right
+            .date
+            .cmp(&left.date)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let mut seen = HashSet::new();
+    rows.retain(|row| seen.insert(row.id));
+    rows.truncate(30);
+}
+async fn previous_reporting_rows(
+    c: &reqwest::Client,
+    t: &str,
+    date: &str,
+    user: i64,
+    projects: &[i64],
+) -> Result<Vec<ExistingReportRow>, String> {
+    let before = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| "Ogiltigt datum.")?;
+    let from = before
+        .checked_sub_days(chrono::Days::new(90))
+        .ok_or("Ogiltig historikperiod.")?;
+    let to = before.pred_opt().ok_or("Ogiltig historikperiod.")?;
+    let mut history = Vec::new();
+    for &project in projects {
+        let rows = list(
+            c,
+            t,
+            "Core/TimeReports",
+            &[
+                ("filter.from", format!("{from} 00:00:00")),
+                ("filter.to", format!("{to} 23:59:59")),
+                ("filter.userIds", user.to_string()),
+                ("filter.projectId", project.to_string()),
+            ],
+        )
+        .await?;
+        for value in rows {
+            history.push(prior_project_row(&value, from, before, user, project)?);
+        }
+        limit_previous_rows(&mut history);
+    }
+    Ok(history)
+}
+
+#[tauri::command]
+pub async fn grit_reporting_context(
+    date: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<ReportingContext, String> {
+    past_date(&date)?;
+    let database = db(&local_dir(&state)?)?;
+    let settings: Settings = get(&database, "settings")?.unwrap_or_default();
+    let saved = report(&database, &date)?;
+    let mut ids = saved
+        .as_ref()
+        .map(|report| {
+            report
+                .rows
+                .iter()
+                .map(|row| row.project_id)
+                .filter(|id| *id > 0)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() > 100 {
+        return Err(
+            "Rapporten innehåller för många projekt för en säker behörighetskontroll.".into(),
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let c = client()?;
+        let t = token(&c).await?;
+        let cat = catalog(&c, &t).await?;
+        let user = cat
+            .users
+            .iter()
+            .find(|user| user.id > 0 && user.id == settings.user_id)
+            .cloned()
+            .ok_or("Välj en giltig Spiris-användare innan överföring.")?;
+        let remote = existing(&c, &t, &date, user.id).await?;
+        let existing_rows = remote
+            .iter()
+            .map(|value| existing_report_row(value, &date))
+            .collect::<Result<Vec<_>, _>>()?;
+        let previous_rows = previous_reporting_rows(&c, &t, &date, user.id, &ids).await?;
+        let mut projects = Vec::new();
+        for id in ids {
+            projects.push(fresh_project_choices(&c, &t, id, user.id, &cat).await?);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        Ok(ReportingContext {
+            date,
+            user,
+            checked_at: Local::now().timestamp(),
+            projects,
+            existing_rows,
+            previous_rows,
+        })
+    })
+    .await
+    .map_err(|_| "Spiris-kontrollen tog för lång tid. Försök igen.".to_string())?
+}
+
 fn choices(items: Vec<Value>) -> Vec<Choice> {
     items
         .into_iter()
-        .filter(|v| v["isActive"].as_bool() != Some(false))
+        .filter(|v| v["isActive"].as_bool() == Some(true))
         .filter_map(|v| {
             Some(Choice {
-                id: v["id"].as_i64()?,
+                id: v["id"].as_i64().filter(|id| *id > 0)?,
                 name: v["name"]
                     .as_str()
                     .or(v["title"].as_str())
@@ -746,8 +1222,9 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
         for (id, choices, label) in [
             (row.article_id, &cat.articles, "tidsartikel"),
             (row.activity_id, &cat.activities, "aktivitet"),
+            (row.time_code_id, &cat.time_codes, "tidskod"),
         ] {
-            if strict && !choices.iter().any(|c| c.id == id) {
+            if strict && (id <= 0 || !choices.iter().any(|c| c.id == id)) {
                 return Err(format!("Välj en giltig {label} för varje rad."));
             }
         }
@@ -1310,7 +1787,7 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         .clone();
     cancel.store(false, Ordering::SeqCst);
     let writing_style = writing_style_with(&settings, &cat, &date, fetch_style_history).await?;
-    let mut project_data = json!({"projects":cat.projects,"activities":cat.activities,"articles":cat.articles,"default_activity_id":settings.activity_id,"default_article_id":settings.article_id});
+    let mut project_data = json!({"projects":cat.projects,"activities":cat.activities,"articles":cat.articles,"default_activity_id":0,"default_article_id":0,"default_time_code_id":0});
     if let Some(writing_style) = writing_style {
         project_data["writing_style"] = writing_style;
     }
@@ -1356,6 +1833,10 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         r.rows = o.rows;
         for row in &mut r.rows {
             row.remote_id = None;
+            // Reporting metadata is chosen explicitly during submission review.
+            row.activity_id = 0;
+            row.article_id = 0;
+            row.time_code_id = 0;
             if row.manual || !row.manual_reason.is_empty() {
                 return Err("Agenten får inte skapa manuell tid utan underlag.".into());
             }
@@ -1525,7 +2006,7 @@ async fn existing(
     date: &str,
     user: i64,
 ) -> Result<Vec<Value>, String> {
-    list(
+    let rows = list(
         c,
         t,
         "Core/TimeReports",
@@ -1535,7 +2016,8 @@ async fn existing(
             ("filter.userIds", user.to_string()),
         ],
     )
-    .await
+    .await?;
+    checked_remote_rows(rows, date, user)
 }
 fn marker(db: &Connection, date: &str, row: &Row) -> Result<String, String> {
     let install: String = match get(db, "installation")? {
@@ -1561,6 +2043,11 @@ fn settings_match(db: &Connection, date: &str, s: &Settings) -> Result<(), Strin
     }
     Ok(())
 }
+fn submission_payload(date: &str, row: &Row, settings: &Settings, marker: &str) -> Value {
+    let hours = row.submitted_minutes as f64 / 60.0;
+    json!({"date":format!("{date} 00:00:00"),"hours":hours,"invoiceableHours":if settings.billable {hours}else{0.0},"comment":row.description,"internalComment":marker,"userId":settings.user_id,"projectId":row.project_id,"activityId":row.activity_id,"timeCodeId":row.time_code_id,"timeArticleId":row.article_id})
+}
+
 #[tauri::command]
 pub async fn grit_submit(
     date: String,
@@ -1589,55 +2076,54 @@ pub async fn grit_submit(
         invalidate_draft_revisions(&db)?;
         return Err("Projektregistret har ändrats. Läs in och granska rapporten igen.".into());
     }
-    if !cat.users.iter().any(|v| v.id == s.user_id)
-        || !cat.time_codes.iter().any(|v| v.id == s.time_code_id)
-    {
-        return Err("Välj giltig användare och tidskod i inställningarna.".into());
+    if s.user_id <= 0 || !cat.users.iter().any(|v| v.id == s.user_id) {
+        return Err("Välj en giltig användare i inställningarna.".into());
     }
     let ev = evidence(state.inner(), &dir, &date)?;
     validate_report(&r, &cat, &ev, true)?;
     let project_ids: HashSet<i64> = r.rows.iter().map(|row| row.project_id).collect();
     for id in project_ids {
+        let project = fresh_project_choices(&c, &t, id, s.user_id, &cat).await?;
+        for row in r.rows.iter().filter(|row| row.project_id == id) {
+            validate_reporting_selection(row, &project)?;
+        }
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let response = c
-            .get(format!("{API}/Core/Projects/{id}"))
-            .bearer_auth(&t)
-            .send()
-            .await
-            .map_err(|_| "Kunde inte kontrollera projektbehörighet.".to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("Projekt {id} kunde inte verifieras i Spiris."));
-        }
-        let project: Value = response
-            .json()
-            .await
-            .map_err(|_| "Ogiltigt projektsvar.".to_string())?;
-        if project["status"]["isCompletedStatus"].as_bool() != Some(false) {
-            return Err("Projektet har avslutats. Uppdatera rapporten.".into());
-        }
-        let member = project["allIsMember"].as_bool() == Some(true)
-            || project["members"]
-                .as_array()
-                .is_some_and(|members| members.iter().any(|m| m["id"].as_i64() == Some(s.user_id)));
-        if !member {
-            return Err(format!("Vald användare är inte medlem i projekt {id}."));
-        }
     }
     let remote = existing(&c, &t, &date, s.user_id).await?;
     // Conservatively refuse a second report for a day with pre-existing entries.
     // This catches manually reported time too; do not infer non-overlap from missing clock fields.
     if !remote.is_empty() {
-        return Err("Det finns redan tid i Spiris för användaren och datumet. Stäm av den innan du skickar från Grit Work.".into());
+        return Err("Det finns redan tid i Spiris för användaren och datumet. Stäm av den innan du skickar från GRIT Work.".into());
     }
     put(&db, &format!("submission:{date}"), &s)?;
     r.status = "uploading".into();
     r.error = None;
     save_report(&db, &r)?;
     for i in 0..r.rows.len() {
+        // Recheck immediately before each POST, not only when the modal opened.
+        let fresh = async {
+            let options = Catalog {
+                activities: choices(list(&c, &t, "Admin/Activities", &[]).await?),
+                time_codes: choices(list(&c, &t, "Admin/TimeCodes", &[]).await?),
+                articles: choices(
+                    list(&c, &t, "Admin/Articles", &[("type", "time".into())]).await?,
+                ),
+                ..Catalog::default()
+            };
+            let project =
+                fresh_project_choices(&c, &t, r.rows[i].project_id, s.user_id, &options).await?;
+            validate_reporting_selection(&r.rows[i], &project)
+        }
+        .await;
+        if let Err(message) = fresh {
+            r.status = if i == 0 { "draft" } else { "partial" }.into();
+            r.error = Some(message);
+            save_report(&db, &r)?;
+            return Ok(r);
+        }
         let row = &r.rows[i];
         let mark = marker(&db, &date, row)?;
-        let hours = row.submitted_minutes as f64 / 60.0;
-        let payload = json!({"date":format!("{date} 00:00:00"),"hours":hours,"invoiceableHours":if s.billable {hours}else{0.0},"comment":row.description,"internalComment":mark,"userId":s.user_id,"projectId":row.project_id,"activityId":row.activity_id,"timeCodeId":s.time_code_id,"timeArticleId":row.article_id});
+        let payload = submission_payload(&date, row, &s, &mark);
         // Persist intent before POST. A crash after this point is an ambiguous submission.
         put(&db, &format!("attempt:{date}:{}", row.id), &payload)?;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1702,6 +2188,52 @@ pub async fn grit_submit(
     save_report(&db, &r)?;
     Ok(r)
 }
+fn receipt_choice(attempt: Option<&Value>, key: &str, fallback: i64) -> Result<i64, String> {
+    let id = match attempt {
+        Some(payload) => payload[key]
+            .as_i64()
+            .ok_or("Överföringskvittot saknar rapporteringsval. Kontrollera manuellt.")?,
+        None => fallback,
+    };
+    if id <= 0 {
+        return Err("Överföringsvalet kan inte verifieras. Kontrollera manuellt.".into());
+    }
+    Ok(id)
+}
+fn verify_remote_receipt(
+    row: &Row,
+    settings: &Settings,
+    attempt: Option<&Value>,
+    remote: &Value,
+) -> Result<i64, String> {
+    // Legacy rows deserialize time_code_id as 0. Their durable attempt or original
+    // submission settings remain authoritative; current defaults are never used.
+    let legacy_code = if row.time_code_id > 0 {
+        row.time_code_id
+    } else {
+        settings.time_code_id
+    };
+    let activity = receipt_choice(attempt, "activityId", row.activity_id)?;
+    let article = receipt_choice(attempt, "timeArticleId", row.article_id)?;
+    let code = receipt_choice(attempt, "timeCodeId", legacy_code)?;
+    if activity != row.activity_id
+        || article != row.article_id
+        || (row.time_code_id > 0 && code != row.time_code_id)
+        || remote["project"]["id"].as_i64() != Some(row.project_id)
+        || remote["activity"]["id"].as_i64() != Some(activity)
+        || remote["timeArticle"]["id"].as_i64() != Some(article)
+        || remote["timeCode"]["id"].as_i64() != Some(code)
+        || (remote["hours"].as_f64().unwrap_or(-1.0) - row.submitted_minutes as f64 / 60.0).abs()
+            > 0.001
+    {
+        return Err("Spiris-radens projekt, tid eller rapporteringsval har ändrats. Manuell avstämning krävs.".into());
+    }
+    remote["id"]
+        .as_i64()
+        .filter(|id| *id > 0)
+        .ok_or("Spiris-kvittot saknar giltigt ID.".into())
+}
+
 #[tauri::command]
 pub async fn grit_reconcile(
     date: String,
@@ -1731,13 +2263,8 @@ pub async fn grit_reconcile(
             return Err("Flera Spiris-rader har samma referens. Kontrollera manuellt.".into());
         }
         if let Some(v) = matches.first() {
-            if v["project"]["id"].as_i64() != Some(row.project_id)
-                || (v["hours"].as_f64().unwrap_or(-1.0) - row.submitted_minutes as f64 / 60.0).abs()
-                    > 0.001
-            {
-                return Err("Spiris-raden har ändrats. Manuell avstämning krävs.".into());
-            }
-            row.remote_id = v["id"].as_i64();
+            let attempt: Option<Value> = get(&db, &format!("attempt:{date}:{}", row.id))?;
+            row.remote_id = Some(verify_remote_receipt(row, &s, attempt.as_ref(), v)?);
         }
     }
     if r.rows.iter().all(|row| row.remote_id.is_some()) {
@@ -2019,6 +2546,7 @@ mod tests {
             project_id: 4,
             activity_id: 2,
             article_id: 3,
+            time_code_id: 5,
             start,
             end: start + 3600,
             minutes: 60,
@@ -2053,6 +2581,10 @@ mod tests {
                 id: 3,
                 name: "Timme".into(),
             }],
+            time_codes: vec![Choice {
+                id: 5,
+                name: "Normal".into(),
+            }],
             ..Catalog::default()
         };
         (
@@ -2060,6 +2592,142 @@ mod tests {
             c,
             json!([{"id":7,"timestamp":start+3600,"duration":3600}]),
         )
+    }
+
+    #[test]
+    fn reporting_metadata_is_optional_for_drafts_but_required_for_submission() {
+        let (mut r, c, e) = fixture();
+        r.rows[0].activity_id = 0;
+        r.rows[0].article_id = 0;
+        r.rows[0].time_code_id = 0;
+        assert!(validate_report(&r, &c, &e, false).is_ok());
+        assert!(validate_report(&r, &c, &e, true).is_err());
+        let mut legacy = serde_json::to_value(&r.rows[0]).unwrap();
+        legacy.as_object_mut().unwrap().remove("time_code_id");
+        assert_eq!(
+            serde_json::from_value::<Row>(legacy).unwrap().time_code_id,
+            0
+        );
+    }
+    #[test]
+    fn reporting_choices_use_actual_active_registries_and_project_membership() {
+        let (r, mut c, _) = fixture();
+        c.activities = choices(vec![
+            json!({"id":2,"name":"Active","isActive":true}),
+            json!({"id":8,"isActive":false}),
+            json!({"id":9}),
+            json!({"id":0,"isActive":true}),
+        ]);
+        assert_eq!(c.activities.len(), 1);
+        let mut project = json!({"id":4,"status":{"isCompletedStatus":false},"allIsMember":false,"members":[{"id":7}]});
+        let allowed = project_reporting_choices(4, &project, 7, &c).unwrap();
+        assert_eq!(
+            allowed.restriction_source,
+            "active_registries_no_project_restrictions_exposed"
+        );
+        assert!(validate_reporting_selection(&r.rows[0], &allowed).is_ok());
+        let denied = project_reporting_choices(4, &project, 8, &c).unwrap();
+        assert!(!denied.member && denied.activities.is_empty());
+        assert!(validate_reporting_selection(&r.rows[0], &denied).is_err());
+        project["status"]["isCompletedStatus"] = json!(true);
+        assert!(validate_reporting_selection(
+            &r.rows[0],
+            &project_reporting_choices(4, &project, 7, &c).unwrap()
+        )
+        .is_err());
+        assert!(project_reporting_choices(5, &project, 7, &c).is_err());
+        project.as_object_mut().unwrap().remove("allIsMember");
+        assert!(project_reporting_choices(4, &project, 7, &c).is_err());
+    }
+    #[test]
+    fn reporting_payload_and_receipts_use_row_choices_with_legacy_fallback() {
+        let (mut r, _, _) = fixture();
+        let settings = Settings {
+            user_id: 7,
+            time_code_id: 99,
+            ..Settings::default()
+        };
+        let payload = submission_payload(&r.date, &r.rows[0], &settings, "synthetic-marker");
+        assert_eq!(payload["timeCodeId"], 5);
+        let mut remote = json!({"id":123,"project":{"id":4},"activity":{"id":2},"timeArticle":{"id":3},"timeCode":{"id":5},"hours":1.0});
+        assert_eq!(
+            verify_remote_receipt(&r.rows[0], &settings, Some(&payload), &remote).unwrap(),
+            123
+        );
+        remote["timeCode"]["id"] = json!(99);
+        assert!(verify_remote_receipt(&r.rows[0], &settings, Some(&payload), &remote).is_err());
+        r.rows[0].time_code_id = 0;
+        assert!(verify_remote_receipt(&r.rows[0], &settings, None, &remote).is_ok());
+        // An old attempt is authoritative even when its row predates time_code_id.
+        remote["timeCode"]["id"] = json!(5);
+        assert!(verify_remote_receipt(&r.rows[0], &settings, Some(&payload), &remote).is_ok());
+        remote["activity"]["id"] = json!(99);
+        assert!(verify_remote_receipt(&r.rows[0], &settings, Some(&payload), &remote).is_err());
+    }
+    #[test]
+    fn reporting_remote_projection_is_scoped_and_does_not_expose_internal_data() {
+        let value = json!({"id":10,"date":"2026-01-12","user":{"id":7},"project":{"id":4,"name":"Project"},"activity":{"id":2,"name":"Work"},"timeCode":{"id":5,"name":"Normal"},"timeArticle":{"id":3,"name":"Hour"},"hours":1,"comment":"Public description","internalComment":"PRIVATE MARKER","cost":123});
+        assert!(checked_remote_rows(vec![value.clone()], "2026-01-12", 7).is_ok());
+        assert!(checked_remote_rows(vec![value.clone()], "2026-01-13", 7).is_err());
+        assert!(checked_remote_rows(vec![value.clone()], "2026-01-12", 8).is_err());
+        let row = existing_report_row(&value, "2026-01-12").unwrap();
+        let output = serde_json::to_value(row).unwrap();
+        assert_eq!(output["activity"]["name"], "Work");
+        assert_eq!(output["time_code"]["id"], 5);
+        assert_eq!(output["article"]["name"], "Hour");
+        assert!(output.get("internalComment").is_none() && output.get("cost").is_none());
+        assert!(!output.to_string().contains("PRIVATE MARKER"));
+    }
+    #[test]
+    fn reporting_prior_rows_require_user_project_and_strict_ninety_day_scope() {
+        let before = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let from = before - chrono::Days::new(90);
+        let mut value =
+            json!({"id":1,"user":{"id":7},"project":{"id":4},"date":"2026-01-01","hours":1});
+        assert!(prior_project_row(&value, from, before, 7, 4).is_ok());
+        assert!(prior_project_row(&value, from, before, 7, 5).is_err());
+        assert!(prior_project_row(&value, from, before, 8, 4).is_err());
+        value["date"] = json!("2025-12-31");
+        assert!(prior_project_row(&value, from, before, 7, 4).is_err());
+        value["date"] = json!("2026-04-01");
+        assert!(prior_project_row(&value, from, before, 7, 4).is_err());
+        let mut rows = Vec::new();
+        for id in 1..=40 {
+            value["id"] = json!(id);
+            value["date"] = json!(format!("2026-03-{:02}", ((id - 1) % 28) + 1));
+            rows.push(prior_project_row(&value, from, before, 7, 4).unwrap());
+        }
+        rows.push(prior_project_row(&value, from, before, 7, 4).unwrap());
+        limit_previous_rows(&mut rows);
+        assert_eq!(rows.len(), 30);
+        assert_eq!(rows.iter().map(|r| r.id).collect::<HashSet<_>>().len(), 30);
+        assert!(rows.windows(2).all(|pair| pair[0].date >= pair[1].date));
+    }
+    #[test]
+    fn reporting_read_permissions_are_independent_and_do_not_prove_post_rights() {
+        let denied = permission_result(
+            "Core/Projects",
+            Err(ReportingReadError::new(Some(403), "Denied")),
+        );
+        let allowed = permission_result(
+            "Admin/Activities",
+            Ok(json!({"items":[],"totalItemCount":0})),
+        );
+        assert!(!denied.ok && denied.tested && denied.http_status == Some(403));
+        assert!(allowed.ok && allowed.tested);
+        assert!(allowed.message.contains("inte rätt att skicka tid"));
+        let pending = untested_permission("Core/TimeReports", "Select user");
+        assert!(!pending.tested && !pending.ok);
+        let result = ConnectionTest {
+            checked_at: 0,
+            authentication: allowed,
+            reads: vec![denied, pending],
+            submission_permission: "not_tested",
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["submission_permission"],
+            "not_tested"
+        );
     }
     #[test]
     fn valid_evidence_uses_end_timestamp() {

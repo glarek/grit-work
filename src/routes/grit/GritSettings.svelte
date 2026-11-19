@@ -1,9 +1,24 @@
 <script lang="ts">
+  import UiCheckbox from "$lib/components/ui/UiCheckbox.svelte";
   import { createEventDispatcher, onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
   import { invoke } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import {
+    AlertCircle,
+    Building2,
+    Check,
+    CheckCircle2,
+    ChevronDown,
+    FolderOpen,
+    KeyRound,
+    RefreshCw,
+    ShieldCheck,
+    Sparkles,
+  } from 'lucide-svelte';
   import CaptureSettings from './CaptureSettings.svelte';
-  import GritIcon from './GritIcon.svelte';
+  import UiSelect from '$lib/components/ui/UiSelect.svelte';
+  import HelpTip from '$lib/components/ui/HelpTip.svelte';
   import { notifyGritChanged } from './workflow.ts';
   import {
     applyProviderChange,
@@ -16,12 +31,40 @@
   } from './gritTypes.ts';
 
   type AuthMode = 'oauth' | 'static';
+  type GritSettingsSection = 'all' | 'ai' | 'spiris' | 'capture';
 
+  interface ConnectionReadCheck {
+    resource: string;
+    ok: boolean;
+    tested: boolean;
+    message: string;
+    count?: number;
+  }
+
+  interface ConnectionTestResult {
+    checked_at: string | number;
+    authentication: { ok: boolean; tested: boolean; message: string };
+    reads: ConnectionReadCheck[];
+    submission_permission: string;
+  }
+
+  const providerOptions = [
+    { value: 'codex', label: 'Codex CLI (OpenAI)' },
+    { value: 'grok', label: 'Grok CLI (xAI)' },
+    { value: 'agy', label: 'Antigravity CLI (Google Gemini)' },
+  ];
+
+  export let section: GritSettingsSection = 'all';
   export let initialStatus: GritStatus | null = null;
 
   const dispatch = createEventDispatcher<{
     statusUpdated: GritStatus;
     saved: void;
+    connectionState: {
+      aiReady: boolean;
+      credentialSaved: boolean;
+      connectionVerified: boolean;
+    };
   }>();
 
   let status: GritStatus | null = initialStatus;
@@ -29,17 +72,51 @@
     ? { ...initialStatus.settings }
     : createDefaultSettings();
   let savedSettings = { ...settingsForm };
+
+  function emitConnectionState(): void {
+    dispatch('connectionState', {
+      aiReady: Boolean(status?.settings.ai_consent && status?.settings.provider),
+      credentialSaved: Boolean(status?.credential_saved),
+      connectionVerified,
+    });
+  }
+
+  function invalidateVerification(): void {
+    if (connectionVerified || verifiedUserId !== null || connectionResult !== null) {
+      connectionVerified = false;
+      verifiedUserId = null;
+      connectionResult = null;
+    }
+    emitConnectionState();
+  }
+
   function adoptStatus(next: GritStatus, force = false): void {
     const clean = JSON.stringify(settingsForm) === JSON.stringify(savedSettings);
     status = next;
-    if (clean || force) { settingsForm = { ...next.settings }; savedSettings = { ...next.settings }; }
+    if (clean || force) {
+      settingsForm = { ...next.settings };
+      savedSettings = { ...next.settings };
+    }
+    if (!next.credential_saved || (verifiedUserId !== null && next.settings.user_id !== verifiedUserId)) {
+      connectionVerified = false;
+      verifiedUserId = null;
+      connectionResult = null;
+    }
+    emitConnectionState();
   }
+
   let loading = !initialStatus;
   let savingSettings = false;
   let savingCredentials = false;
   let syncingSpiris = false;
+  let testingConnection = false;
+  let openingLocalDir = false;
+  let connectionVerified = false;
+  let verifiedUserId: number | null = null;
+  let connectionResult: ConnectionTestResult | null = null;
   let errorMessage: string | null = null;
   let noticeMessage: string | null = null;
+  let showAdvancedAi = false;
 
   let authMode: AuthMode = 'oauth';
   let applicationId = '';
@@ -54,6 +131,13 @@
   }
 
   $: providerInfo = PROVIDER_LABELS[settingsForm.provider];
+  $: userOptions = [
+    { value: '0', label: 'Välj användare...' },
+    ...(status?.users ?? []).map((u) => ({ value: String(u.id), label: u.name })),
+  ];
+  $: showAi = section === 'all' || section === 'ai';
+  $: showSpiris = section === 'all' || section === 'spiris';
+  $: showCapture = section === 'all' || section === 'capture';
 
   function formatError(err: unknown): string {
     if (typeof err === 'string' && err.trim()) return err;
@@ -94,12 +178,81 @@
       const nextStatus = normalizeGritStatus(rawStatus);
       adoptStatus(nextStatus);
       dispatch('statusUpdated', nextStatus);
-      noticeMessage = `Spiris synkroniserad (${nextStatus.projects.length} projekt, ${nextStatus.time_codes.length} tidskoder).`;
+      noticeMessage = `Spiris synkroniserat (${nextStatus.projects.length} projekt). Kör Testa anslutning för full läskontroll.`;
       emitSaved();
     } catch (err) {
       errorMessage = formatError(err);
     } finally {
       syncingSpiris = false;
+    }
+  }
+
+  async function handleTestConnection(): Promise<void> {
+    errorMessage = null;
+    noticeMessage = null;
+    connectionResult = null;
+    connectionVerified = false;
+    verifiedUserId = null;
+    testingConnection = true;
+    try {
+      const raw = await invoke<unknown>('grit_test_connection');
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error('Ogiltigt svar från anslutningskontrollen.');
+      }
+      const rec = raw as Record<string, unknown>;
+      const authRaw = (rec.authentication && typeof rec.authentication === 'object'
+        ? rec.authentication
+        : null) as Record<string, unknown> | null;
+      const readsRaw = Array.isArray(rec.reads) ? rec.reads : [];
+      if (!authRaw || readsRaw.length === 0) {
+        throw new Error('Anslutningskontrollen saknar autentiserings- eller läsresultat.');
+      }
+
+      const parsed: ConnectionTestResult = {
+        checked_at: (typeof rec.checked_at === 'string' || typeof rec.checked_at === 'number')
+          ? rec.checked_at
+          : '',
+        authentication: {
+          ok: authRaw.ok === true,
+          tested: authRaw.tested === true,
+          message: typeof authRaw.message === 'string' ? authRaw.message : '',
+        },
+        reads: readsRaw
+          .filter((r): r is Record<string, unknown> => Boolean(r && typeof r === 'object'))
+          .map((r) => ({
+            resource: typeof r.resource === 'string' ? r.resource : 'resurs',
+            ok: r.ok === true,
+            tested: r.tested === true,
+            message: typeof r.message === 'string' ? r.message : '',
+            count: typeof r.count === 'number' ? r.count : undefined,
+          })),
+        submission_permission:
+          typeof rec.submission_permission === 'string'
+            ? rec.submission_permission
+            : 'not_tested',
+      };
+
+      connectionResult = parsed;
+      const allSixReadsOk =
+        parsed.reads.length >= 6 && parsed.reads.every((r) => r.ok && r.tested);
+      connectionVerified =
+        parsed.authentication.ok && parsed.authentication.tested && allSixReadsOk;
+
+      if (connectionVerified) {
+        verifiedUserId = settingsForm.user_id;
+        noticeMessage =
+          'Läskontroll mot Spiris lyckades (6/6 resurser). Skrivbehörighet för tidrapporter är inte testad.';
+      } else {
+        verifiedUserId = null;
+        errorMessage = 'Anslutningskontrollen kunde inte verifiera alla 6 läskontroller.';
+      }
+    } catch (err) {
+      connectionVerified = false;
+      verifiedUserId = null;
+      errorMessage = formatError(err);
+    } finally {
+      emitConnectionState();
+      testingConnection = false;
     }
   }
 
@@ -118,6 +271,18 @@
     }
   }
 
+  async function handleOpenLocalDir(): Promise<void> {
+    errorMessage = null;
+    openingLocalDir = true;
+    try {
+      await invoke('open_screenshots_dir');
+    } catch (err) {
+      errorMessage = formatError(err);
+    } finally {
+      openingLocalDir = false;
+    }
+  }
+
   function handleProviderSelect(nextProvider: GritProvider): void {
     settingsForm = applyProviderChange(settingsForm, nextProvider);
   }
@@ -127,14 +292,7 @@
     noticeMessage = null;
     savingSettings = true;
     try {
-      const latest = normalizeGritStatus(await invoke('grit_status')).settings;
-      const merged = { ...latest };
-      for (const key of Object.keys(savedSettings) as (keyof GritSettingsModel)[]) {
-        if (JSON.stringify(settingsForm[key]) !== JSON.stringify(savedSettings[key])) {
-          Object.assign(merged, { [key]: settingsForm[key] });
-        }
-      }
-      await invoke('grit_save_settings', { settings: merged });
+      await invoke('grit_save_settings', { settings: settingsForm });
       await refreshStatus(true);
       noticeMessage = 'Inställningarna har sparats.';
       emitSaved();
@@ -148,6 +306,7 @@
   async function handleSaveCredentials(): Promise<void> {
     errorMessage = null;
     noticeMessage = null;
+    connectionResult = null;
     savingCredentials = true;
     try {
       const payload =
@@ -167,8 +326,9 @@
       applicationId = '';
       secret = '';
       staticToken = '';
+      invalidateVerification();
       await refreshStatus();
-      noticeMessage = 'Spiris-uppgifterna har sparats i datorns nyckellager.';
+      noticeMessage = 'Spiris-uppgifterna har sparats i datorns nyckellager. Testa anslutningen för att verifiera.';
       emitSaved();
     } catch (err) {
       errorMessage = formatError(err);
@@ -182,384 +342,463 @@
   });
 </script>
 
-<div class="space-y-5">
+<div class="grit-settings space-y-5">
   {#if errorMessage}
-    <div class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-800/60 dark:bg-rose-950/40 dark:text-rose-200">
-      <div class="font-semibold">Fel</div>
-      <p class="mt-0.5 whitespace-pre-wrap">{errorMessage}</p>
+    <div role="alert" class="flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+      <AlertCircle class="mt-0.5 h-4 w-4 shrink-0 text-rose-600" aria-hidden="true" />
+      <div>
+        <div class="font-semibold">Fel</div>
+        <p class="mt-0.5 whitespace-pre-wrap text-xs">{errorMessage}</p>
+      </div>
     </div>
   {/if}
 
   {#if noticeMessage}
-    <div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200">
-      {noticeMessage}
+    <div role="status" class="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
+      <CheckCircle2 class="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+      <span>{noticeMessage}</span>
     </div>
   {/if}
 
   {#if loading && !status}
-    <div class="rounded-xl border border-slate-200/80 bg-white/90 p-8 text-center text-sm text-slate-500 dark:border-[#30363d] dark:bg-[#161b22]/90 dark:text-[#8b949e]">
-      Laddar Grit Work-inställningar...
+    <div class="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
+      Laddar GRIT Work-inställningar...
     </div>
   {:else if status}
-    <CaptureSettings
-      settings={status.capture}
-      monitors={status.monitors}
-      on:saved={handleCaptureSaved}
-    />
-
-    <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
-      <!-- AI & Spiris defaults -->
-      <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-              AI & rapportering
-            </h2>
-            <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-              Välj AI-tjänst och standardvärden för Spiris.
-            </p>
+    {#if showAi}
+      <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <Sparkles class="h-4 w-4 text-slate-600" aria-hidden="true" />
+            <div>
+              <h2 class="text-base font-semibold text-slate-900">AI & rapportering</h2>
+              <p class="text-xs text-slate-500">Välj AI-tjänst och samtycke för rapportutkast.</p>
+            </div>
           </div>
-          <button
-            type="button"
-            on:click={handleSyncSpiris}
-            disabled={syncingSpiris}
-            class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
-          >
-            <GritIcon name="sync" sizeClass="h-3.5 w-3.5 {syncingSpiris ? 'animate-spin' : ''}" />
-            <span>{syncingSpiris ? 'Synkar...' : 'Synka Spiris'}</span>
-          </button>
+          <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium {settingsForm.ai_consent
+            ? 'bg-emerald-50 text-emerald-800'
+            : 'bg-amber-50 text-amber-800'}">
+            {#if settingsForm.ai_consent}
+              <ShieldCheck class="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+              <span>Samtycke aktivt</span>
+            {:else}
+              <AlertCircle class="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
+              <span>Samtycke saknas</span>
+            {/if}
+          </span>
         </div>
 
         <div class="space-y-3">
-          <div>
-            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-              AI-tjänst
-              <select
-                value={settingsForm.provider}
-                on:change={(e) => {
-                  const val = e.currentTarget.value;
-                  if (val === 'codex' || val === 'grok' || val === 'agy') {
-                    handleProviderSelect(val);
-                  }
-                }}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value="codex">Codex CLI (OpenAI)</option>
-                <option value="grok">Grok CLI (xAI)</option>
-                <option value="agy">Antigravity CLI (Google Gemini)</option>
-              </select>
-            </label>
+          <div class="text-xs font-medium text-slate-700">
+            <div class="mb-1">AI-tjänst</div>
+            <UiSelect
+              label="AI-tjänst"
+              value={settingsForm.provider}
+              options={providerOptions}
+              on:change={(e) => {
+                const val = e.detail;
+                if (val === 'codex' || val === 'grok' || val === 'agy') {
+                  handleProviderSelect(val);
+                }
+              }}
+            />
           </div>
 
-          <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition {settingsForm.ai_consent
-            ? 'border-emerald-200/80 bg-emerald-50/50 dark:border-emerald-800/50 dark:bg-emerald-950/20'
-            : 'border-amber-200/80 bg-amber-50/50 dark:border-amber-800/50 dark:bg-amber-950/20'}">
-            <input
-              type="checkbox"
-              bind:checked={settingsForm.ai_consent}
-              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-            />
+          <label for="gritsettings-settingsForm-ai_consent" class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition {settingsForm.ai_consent
+            ? 'border-emerald-200 bg-emerald-50/40'
+            : 'border-amber-200 bg-amber-50/40'}">
+            <UiCheckbox id="gritsettings-settingsForm-ai_consent" bind:checked={settingsForm.ai_consent} label={`Informerat samtycke till AI-analys (${providerInfo.name})`} />
             <div>
-              <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
-                <GritIcon name="shield" sizeClass="h-3.5 w-3.5 {settingsForm.ai_consent ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}" />
+              <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
                 <span>Informerat samtycke till AI-analys ({providerInfo.name})</span>
+                <HelpTip
+                  label="Om AI-samtycke"
+                  text="Skärmbilder och aktivitetsloggar skickas till vald inloggad CLI-leverantör ({providerInfo.name} · {providerInfo.vendor}, utan API-nycklar) och tillåter bakgrundsförberedelse."
+                />
               </div>
-              <p class="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">
-                Skärmbilder och aktivitetsloggar skickas till vald inloggad CLI-leverantör ({providerInfo.name} · {providerInfo.vendor}, utan separata API-nycklar). Medger även automatisk bakgrundsförberedelse av väntande dagar.
+              <p class="mt-0.5 text-xs text-slate-600">
+                Krävs för att skapa tidrapportutkast med AI.
               </p>
             </div>
           </label>
 
-          <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 dark:border-[#30363d] dark:bg-[#0d1117]">
-            <input
-              type="checkbox"
-              bind:checked={settingsForm.use_report_history}
-              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-            />
-            <div>
-              <div class="text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
-                Använd min skrivstil från Spiris
+          <label for="gritsettings-settingsForm-use_report_history" class="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+            <UiCheckbox id="gritsettings-settingsForm-use_report_history" bind:checked={settingsForm.use_report_history} label="Använd min skrivstil från Spiris" />
+            <div class="flex-1">
+              <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
+                <span>Använd min skrivstil från Spiris</span>
+                <HelpTip
+                  label="Om skrivstil från Spiris"
+                  text="Läser vald Spiris-användares senaste 90 dagars kommentarer före rapportdagen för språk, längd och detaljnivå. Används aldrig som bevis för nytt arbete."
+                />
               </div>
-              <p class="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">
-                Läser vald Spiris-användares tidigare rapporter 90 dagar före rapportdagen och skickar ett begränsat urval exempeltexter till {providerInfo.name} för språk, längd och detaljnivå. Används aldrig som bevis för nytt arbete.
-              </p>
               {#if settingsForm.use_report_history && !settingsForm.ai_consent}
-                <p class="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                <p class="mt-1 text-[11px] font-medium text-amber-700">
                   Kräver även att AI-samtycke ovan är aktiverat (ditt val sparas).
                 </p>
               {:else if settingsForm.use_report_history && settingsForm.user_id <= 0}
-                <p class="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
-                  Välj en Spiris-användare nedan för att hämta skrivstil.
+                <p class="mt-1 text-[11px] font-medium text-amber-700">
+                  Välj en Spiris-användare under Spiris-fliken för att hämta skrivstil.
                 </p>
               {/if}
             </div>
           </label>
 
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-              Spiris-användare (krävs)
-              <select
-                value={settingsForm.user_id}
-                on:change={(e) =>
-                  (settingsForm = { ...settingsForm, user_id: Number(e.currentTarget.value) || 0 })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Välj användare...</option>
-                {#each status.users as user (user.id)}
-                  <option value={user.id}>{user.name}</option>
-                {/each}
-              </select>
-            </label>
+          <div class="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+            <button
+              type="button"
+              on:click={() => (showAdvancedAi = !showAdvancedAi)}
+              aria-expanded={showAdvancedAi}
+              class="flex w-full items-center justify-between text-left text-xs font-semibold text-slate-700"
+            >
+              <span>Avancerade AI-inställningar</span>
+              <span class="inline-flex items-center gap-2 font-mono text-[11px] font-normal text-slate-500">
+                <span>{settingsForm.model} · {settingsForm.timeout_seconds} s</span>
+                <ChevronDown class="h-3.5 w-3.5 transition-transform {showAdvancedAi ? 'rotate-180' : ''}" aria-hidden="true" />
+              </span>
+            </button>
 
-            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-              Tidskod (krävs)
-              <select
-                value={settingsForm.time_code_id}
-                on:change={(e) =>
-                  (settingsForm = {
-                    ...settingsForm,
-                    time_code_id: Number(e.currentTarget.value) || 0,
-                  })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Välj tidskod...</option>
-                {#each status.time_codes as tc (tc.id)}
-                  <option value={tc.id}>{tc.name}</option>
-                {/each}
-              </select>
-            </label>
-
-            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-              Standardaktivitet
-              <select
-                value={settingsForm.activity_id}
-                on:change={(e) =>
-                  (settingsForm = {
-                    ...settingsForm,
-                    activity_id: Number(e.currentTarget.value) || 0,
-                  })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Ingen standard</option>
-                {#each status.activities as act (act.id)}
-                  <option value={act.id}>{act.name}</option>
-                {/each}
-              </select>
-            </label>
-
-            <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-              Standardartikel
-              <select
-                value={settingsForm.article_id}
-                on:change={(e) =>
-                  (settingsForm = {
-                    ...settingsForm,
-                    article_id: Number(e.currentTarget.value) || 0,
-                  })}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-              >
-                <option value={0}>Ingen standard</option>
-                {#each status.articles as art (art.id)}
-                  <option value={art.id}>{art.name}</option>
-                {/each}
-              </select>
-            </label>
-          </div>
-
-          <label class="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 dark:border-[#30363d] dark:bg-[#0d1117]">
-            <input
-              type="checkbox"
-              bind:checked={settingsForm.billable}
-              class="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-            />
-            <div>
-              <div class="text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
-                Debiterbar tid
-              </div>
-              <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-                Styr om rapporterad tid skickas som fakturerbar till Spiris.
-              </p>
-            </div>
-          </label>
-
-          <div class="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5 dark:border-[#30363d] dark:bg-[#0d1117]">
-            <div class="mb-2.5 text-xs font-semibold text-slate-900 dark:text-[#e6edf3]">
-              Långtidsarkiv
-            </div>
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div class="sm:col-span-2">
-                <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-                  Arkivmapp (valfri)
-                  <div class="mt-1 flex gap-2">
+            {#if showAdvancedAi}
+              <div transition:slide={{ duration: 180 }} class="mt-3 space-y-3 border-t border-slate-200 pt-3">
+                <p class="rounded-lg bg-white p-2.5 text-xs text-slate-600">
+                  {providerInfo.description}
+                </p>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label class="block text-xs font-medium text-slate-700">
+                    Modell
                     <input
                       type="text"
-                      bind:value={settingsForm.archive_dir}
-                      placeholder={status.local_dir || 'Lokal arbetsmapp'}
-                      class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
+                      bind:value={settingsForm.model}
+                      class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
                     />
-                    <button
-                      type="button"
-                      on:click={handlePickArchiveDir}
-                      class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9]"
-                    >
-                      <GritIcon name="folder" sizeClass="h-3.5 w-3.5" />
-                      <span>Välj mapp</span>
-                    </button>
-                  </div>
-                </label>
+                  </label>
+                  <label class="block text-xs font-medium text-slate-700">
+                    Timeout (sekunder)
+                    <input
+                      type="number"
+                      min="30"
+                      step="30"
+                      bind:value={settingsForm.timeout_seconds}
+                      class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+                    />
+                  </label>
+                </div>
               </div>
-
-              <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-                Arkivlagring (dagar)
-                <input
-                  type="number"
-                  min="1"
-                  max="3650"
-                  step="1"
-                  bind:value={settingsForm.archive_retention_days}
-                  class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                />
-                <span class="mt-1 block font-normal text-slate-500">Standard: 90 dagar. Ofärdiga rapporter och deras underlag sparas tills de har skickats eller hoppats över.</span>
-              </label>
-            </div>
+            {/if}
           </div>
-
-          <details class="group rounded-xl border border-slate-200/80 bg-slate-50/60 p-3 dark:border-[#30363d] dark:bg-[#0d1117]">
-            <summary class="flex cursor-pointer list-none items-center justify-between text-xs font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-[#c9d1d9]">
-              <span>Avancerade AI-inställningar</span>
-              <span class="font-mono text-[11px] font-normal text-slate-500 dark:text-[#8b949e]">
-                {settingsForm.model} · {settingsForm.timeout_seconds} s
-              </span>
-            </summary>
-
-            <div class="mt-3 space-y-3 border-t border-slate-200/70 pt-3 dark:border-[#30363d]">
-              <p class="rounded-lg bg-white p-2.5 text-xs text-slate-600 dark:bg-[#161b22] dark:text-[#8b949e]">
-                {providerInfo.description}
-              </p>
-
-              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-                  Modell
-                  <input
-                    type="text"
-                    bind:value={settingsForm.model}
-                    class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                  />
-                </label>
-
-                <label class="block text-xs font-medium text-slate-700 dark:text-[#c9d1d9]">
-                  Timeout (sekunder)
-                  <input
-                    type="number"
-                    min="30"
-                    step="30"
-                    bind:value={settingsForm.timeout_seconds}
-                    class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-[#30363d] dark:bg-[#161b22] dark:text-[#e6edf3]"
-                  />
-                </label>
-              </div>
-            </div>
-          </details>
         </div>
 
-        <div class="flex justify-end pt-2">
+        <div class="flex justify-end pt-1">
           <button
             type="button"
             on:click={handleSaveSettings}
             disabled={savingSettings}
-            class="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50"
+            class="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
           >
-            <GritIcon name="check" sizeClass="h-3.5 w-3.5" />
-            <span>{savingSettings ? 'Sparar...' : 'Spara inställningar'}</span>
+            <Check class="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{savingSettings ? 'Sparar...' : 'Spara AI-inställningar'}</span>
           </button>
         </div>
       </section>
+    {/if}
 
-      <!-- Spiris Credentials -->
-      <section class="space-y-4 rounded-xl border border-slate-200/80 bg-white/90 p-5 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
-        <div>
-          <h2 class="text-base font-semibold text-slate-900 dark:text-[#e6edf3]">
-            Anslutning till Spiris
-          </h2>
-          <p class="mt-0.5 text-xs text-slate-500 dark:text-[#8b949e]">
-            Uppgifter sparas skyddat i datorns nyckellager.
-          </p>
+    {#if showSpiris}
+      <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <Building2 class="h-4 w-4 text-slate-600" aria-hidden="true" />
+            <div>
+              <h2 class="text-base font-semibold text-slate-900">Spiris</h2>
+              <p class="text-xs text-slate-500">Användare, debitering och skyddade inloggningsuppgifter.</p>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium {connectionVerified
+              ? 'bg-emerald-50 text-emerald-800'
+              : status.credential_saved
+                ? 'bg-slate-100 text-slate-700'
+                : 'bg-amber-50 text-amber-800'}">
+              {#if connectionVerified}
+                <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                <span>Anslutning verifierad</span>
+              {:else if status.credential_saved}
+                <KeyRound class="h-3.5 w-3.5 text-slate-600" aria-hidden="true" />
+                <span>Uppgifter sparade (ej testad)</span>
+              {:else}
+                <AlertCircle class="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
+                <span>Ej konfigurerad</span>
+              {/if}
+            </span>
+
+            <button
+              type="button"
+              on:click={handleTestConnection}
+              disabled={testingConnection || !status.credential_saved}
+              class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              <CheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{testingConnection ? 'Testar...' : 'Testa anslutning'}</span>
+            </button>
+
+            <button
+              type="button"
+              on:click={handleSyncSpiris}
+              disabled={syncingSpiris || !status.credential_saved}
+              class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              <RefreshCw class="h-3.5 w-3.5 {syncingSpiris ? 'animate-spin' : ''}" aria-hidden="true" />
+              <span>{syncingSpiris ? 'Synkar...' : 'Synka Spiris'}</span>
+            </button>
+          </div>
         </div>
 
-        <div class="inline-flex rounded-xl border border-slate-200 bg-slate-100/80 p-1 dark:border-[#30363d] dark:bg-[#0d1117]">
+        {#if connectionResult}
+          <div class="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 text-xs">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-semibold {connectionResult.authentication.ok ? 'text-emerald-800' : 'text-rose-800'}">
+                Autentisering: {connectionResult.authentication.ok ? 'OK' : 'Misslyckades'}
+                {#if connectionResult.authentication.message}
+                  · {connectionResult.authentication.message}
+                {/if}
+              </span>
+              <span class="rounded-full bg-slate-200/70 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                Skrivbehörighet: {connectionResult.submission_permission === 'not_tested' ? 'Ej testad (endast läsning)' : connectionResult.submission_permission}
+              </span>
+            </div>
+            {#if connectionResult.reads.length > 0}
+              <ul class="space-y-1 border-t border-slate-200/80 pt-2">
+                {#each connectionResult.reads as check}
+                  <li class="flex items-center justify-between gap-2">
+                    <span class="font-medium text-slate-700">{check.resource}</span>
+                    <span class="font-mono {check.ok ? 'text-emerald-700' : 'text-rose-700'}">
+                      {check.ok ? 'OK' : 'Fel'}{typeof check.count === 'number' ? ` (${check.count})` : ''}{check.message ? ` · ${check.message}` : ''}
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div class="text-xs font-medium text-slate-700">
+            <div class="mb-1">Spiris-användare (krävs)</div>
+            <UiSelect
+              label="Spiris-användare"
+              value={String(settingsForm.user_id)}
+              options={userOptions}
+              on:change={(e) => {
+                const nextUserId = Number(e.detail) || 0;
+                settingsForm = { ...settingsForm, user_id: nextUserId };
+                if (verifiedUserId !== null && nextUserId !== verifiedUserId) {
+                  invalidateVerification();
+                }
+              }}
+            />
+          </div>
+
+          <label for="gritsettings-settingsForm-billable" class="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+            <UiCheckbox id="gritsettings-settingsForm-billable" bind:checked={settingsForm.billable} label="Fakturerbar tid" />
+            <div>
+              <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
+                <span>Debiterbar tid</span>
+                <HelpTip
+                  label="Om debiterbar tid"
+                  text="Styr om rapporterad tid markeras som fakturerbar (invoiceableHours) i Spiris."
+                />
+              </div>
+              <p class="mt-0.5 text-xs text-slate-500">Fakturerbar som standard.</p>
+            </div>
+          </label>
+        </div>
+
+        <div class="flex justify-end">
           <button
             type="button"
-            on:click={() => (authMode = 'oauth')}
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {authMode === 'oauth'
-              ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
-              : 'text-slate-600 dark:text-[#8b949e]'}"
+            on:click={handleSaveSettings}
+            disabled={savingSettings}
+            class="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
           >
-            Application ID + Secret
-          </button>
-          <button
-            type="button"
-            on:click={() => (authMode = 'static')}
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold transition {authMode === 'static'
-              ? 'bg-white text-slate-900 shadow-sm dark:bg-[#21262d] dark:text-[#e6edf3]'
-              : 'text-slate-600 dark:text-[#8b949e]'}"
-          >
-            Statisk token
+            <Check class="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{savingSettings ? 'Sparar...' : 'Spara Spiris-val'}</span>
           </button>
         </div>
 
-        {#if authMode === 'oauth'}
-          <div class="space-y-3">
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Application ID
+        <div class="space-y-3 border-t border-slate-100 pt-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-xs font-semibold text-slate-800">Inloggningsuppgifter (sparas i nyckellagret)</h3>
+            <div class="inline-flex rounded-xl bg-slate-100 p-1">
+              <button
+                type="button"
+                on:click={() => (authMode = 'oauth')}
+                class="rounded-lg px-3 py-1 text-xs font-semibold transition {authMode === 'oauth'
+                  ? 'bg-white text-slate-900'
+                  : 'text-slate-600'}"
+              >
+                App-id + hemlighet
+              </button>
+              <button
+                type="button"
+                on:click={() => (authMode = 'static')}
+                class="rounded-lg px-3 py-1 text-xs font-semibold transition {authMode === 'static'
+                  ? 'bg-white text-slate-900'
+                  : 'text-slate-600'}"
+              >
+                Statisk token
+              </button>
+            </div>
+          </div>
+
+          {#if authMode === 'oauth'}
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label class="block text-xs font-medium text-slate-700">
+                App-id
+                <input
+                  type="password"
+                  autocomplete="off"
+                  bind:value={applicationId}
+                  placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange App-id'}
+                  class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+                />
+              </label>
+              <label class="block text-xs font-medium text-slate-700">
+                Apphemlighet
+                <input
+                  type="password"
+                  autocomplete="off"
+                  bind:value={secret}
+                  placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange Apphemlighet'}
+                  class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+                />
+              </label>
+            </div>
+          {:else}
+            <label class="block text-xs font-medium text-slate-700">
+              Statisk Bearer-token
               <input
                 type="password"
                 autocomplete="off"
-                bind:value={applicationId}
-                placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange Application ID'}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                bind:value={staticToken}
+                placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange statisk token'}
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
               />
             </label>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-              Client Secret
+          {/if}
+
+          <div class="flex justify-end">
+            <button
+              type="button"
+              on:click={handleSaveCredentials}
+              disabled={
+                savingCredentials ||
+                (authMode === 'oauth' ? !applicationId.trim() || !secret.trim() : !staticToken.trim())
+              }
+              class="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              <KeyRound class="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{savingCredentials ? 'Sparar...' : 'Spara uppgifter'}</span>
+            </button>
+          </div>
+        </div>
+      </section>
+    {/if}
+
+    {#if showCapture}
+      <div class="space-y-5">
+        <CaptureSettings
+          settings={status.capture}
+          monitors={status.monitors}
+          on:saved={handleCaptureSaved}
+        />
+
+        <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-base font-semibold text-slate-900">Långtidsarkiv & lokal mapp</h2>
+              <p class="text-xs text-slate-500">
+                Ofärdiga rapporter och deras underlag sparas tills de har skickats eller hoppats över.
+              </p>
+            </div>
+            <button
+              type="button"
+              on:click={handleOpenLocalDir}
+              disabled={openingLocalDir}
+              class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              <FolderOpen class="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{openingLocalDir ? 'Öppnar...' : 'Öppna lokal bildmapp'}</span>
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div class="sm:col-span-2">
+              <label class="block text-xs font-medium text-slate-700">
+                Arkivmapp (valfri)
+                <div class="mt-1 flex gap-2">
+                  <input
+                    type="text"
+                    bind:value={settingsForm.archive_dir}
+                    placeholder={status.local_dir || 'Lokal arbetsmapp'}
+                    class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+                  />
+                  <button
+                    type="button"
+                    on:click={handlePickArchiveDir}
+                    class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    <FolderOpen class="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Välj mapp</span>
+                  </button>
+                </div>
+              </label>
+            </div>
+
+            <label class="block text-xs font-medium text-slate-700">
+              <span class="inline-flex items-center gap-1.5">
+                <span>Arkivlagring (dagar)</span>
+                <HelpTip
+                  label="Om arkivlagring"
+                  text="Standard: 90 dagar. Ofärdiga rapporter och deras underlag sparas alltid tills de har skickats eller hoppats över."
+                />
+              </span>
               <input
-                type="password"
-                autocomplete="off"
-                bind:value={secret}
-                placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange Client Secret'}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
+                type="number"
+                min="1"
+                max="3650"
+                step="1"
+                bind:value={settingsForm.archive_retention_days}
+                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
               />
             </label>
           </div>
-        {:else}
-          <label class="block text-xs font-semibold text-slate-700 dark:text-[#c9d1d9]">
-            Statisk Bearer-token
-            <input
-              type="password"
-              autocomplete="off"
-              bind:value={staticToken}
-              placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange statisk token'}
-              class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#e6edf3]"
-            />
-          </label>
-        {/if}
 
-        <div class="flex items-center justify-between pt-2">
-          <span class="text-xs text-slate-500 dark:text-[#8b949e]">
-            {status.credential_saved ? 'Uppgifterna är sparade i datorns nyckellager.' : 'Inga uppgifter sparade ännu.'}
-          </span>
-          <button
-            type="button"
-            on:click={handleSaveCredentials}
-            disabled={
-              savingCredentials ||
-              (authMode === 'oauth' ? !applicationId.trim() || !secret.trim() : !staticToken.trim())
-            }
-            class="rounded-xl bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-[#238636] dark:hover:bg-[#2ea043]"
-          >
-            {savingCredentials ? 'Sparar...' : 'Spara uppgifter'}
-          </button>
-        </div>
-      </section>
-    </div>
+          <div class="flex justify-end">
+            <button
+              type="button"
+              on:click={handleSaveSettings}
+              disabled={savingSettings}
+              class="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <Check class="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{savingSettings ? 'Sparar...' : 'Spara arkivinställningar'}</span>
+            </button>
+          </div>
+        </section>
+      </div>
+    {/if}
   {/if}
 </div>
+
+<style>
+  .grit-settings :is(button, input, select):focus-visible {
+    outline: 2px solid #4f46e5;
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .grit-settings * {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+</style>

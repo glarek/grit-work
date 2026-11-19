@@ -22,7 +22,11 @@
       "timestampUrl": "",
       "nsis": {
         "installMode": "currentUser",
-        "installerHooks": "windows/hooks.nsh"
+        "installerHooks": "windows/hooks.nsh",
+        "languages": [
+          "Swedish"
+        ],
+        "displayLanguageSelector": false
       }
     },
     "icon": [
@@ -41,7 +45,7 @@
     "copyright": "© 2026 WorkReview",
     "category": "Productivity",
     "shortDescription": "Lokalt arbetsunderlag och tidrapporter för Spiris Tid",
-    "longDescription": "Grit Work samlar arbetsunderlag, arkiverar säkert och skapar granskbara tidrapporter.",
+    "longDescription": "GRIT Work samlar arbetsunderlag, arkiverar säkert och skapar granskbara tidrapporter.",
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "10.13",
@@ -78,7 +82,7 @@
       }
     }
   },
-  "productName": "Grit Work",
+  "productName": "GRIT Work",
   "mainBinaryName": "grit-work",
   "version": "1.1.4-rc.2",
   "identifier": "se.grit.work",
@@ -87,7 +91,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Grit Work",
+        "title": "GRIT Work",
         "width": 1000,
         "height": 700,
         "visible": false,

@@ -146,9 +146,10 @@ test('validateReportForSubmit requires manual_reason for manual rows and uses ro
 });
 
 test('GritSettings and GritWork UI expose consent gating, retention=90, manual gap rows, and recorded vs rounded totals', async () => {
-  const [settingsSource, workSource] = await Promise.all([
+  const [settingsSource, workSource, rowEditorSource] = await Promise.all([
     readFile(new URL('./GritSettings.svelte', import.meta.url), 'utf8'),
     readFile(new URL('./GritWork.svelte', import.meta.url), 'utf8'),
+    readFile(new URL('./ReportRowEditor.svelte', import.meta.url), 'utf8'),
   ]);
 
   assert.match(settingsSource, /settingsForm\.ai_consent/);
@@ -164,8 +165,11 @@ test('GritSettings and GritWork UI expose consent gating, retention=90, manual g
   assert.match(workSource, /!aiConsent/);
   assert.match(workSource, /Inspelad tid/);
   assert.match(workSource, /Avrundad tid/);
-  assert.match(workSource, /row\.manual_reason/);
-  assert.match(workSource, /Manuell lucka/);
+  assert.match(workSource, /class="grit-row/);
+  assert.match(workSource, /<ReportRowEditor/);
+  assert.match(rowEditorSource, /draft\.manual_reason/);
+  assert.match(rowEditorSource, /synkroniserade Spiris-registren/);
+  assert.match(rowEditorSource, /activity_id:\s*0,\s*time_code_id:\s*0,\s*article_id:\s*0/);
 });
 
 test('computeProjectRounding with preservePersisted=true keeps persisted submitted_minutes without re-rounding legacy reports', () => {

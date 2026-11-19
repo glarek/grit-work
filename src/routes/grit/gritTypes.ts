@@ -38,6 +38,7 @@ export interface GritChoice {
 }
 
 export interface GritRow {
+  time_code_id?: number;
   id: string;
   project_id: number;
   activity_id: number;
@@ -237,6 +238,7 @@ export function normalizeGritRow(raw: unknown, index = 0): GritRow {
       project_id: 0,
       activity_id: 0,
       article_id: 0,
+      time_code_id: 0,
       start: 0,
       end: 0,
       minutes: 0,
@@ -266,6 +268,7 @@ export function normalizeGritRow(raw: unknown, index = 0): GritRow {
     id: toStringOr(raw.id, `row-${index + 1}`),
     project_id: Math.trunc(toFiniteNumber(raw.project_id, 0)),
     activity_id: Math.trunc(toFiniteNumber(raw.activity_id, 0)),
+    time_code_id: Math.trunc(toFiniteNumber(raw.time_code_id, 0)),
     article_id: Math.trunc(toFiniteNumber(raw.article_id, 0)),
     start: Math.trunc(toFiniteNumber(raw.start, 0)),
     end: Math.trunc(toFiniteNumber(raw.end, 0)),
@@ -627,10 +630,6 @@ export function validateReportForSubmit(
     blockers.push('Ingen Spiris-användare är vald i inställningarna.');
   }
 
-  if (status.settings.time_code_id <= 0) {
-    blockers.push('Tidskod (timeCodeId) saknas. Välj en tidskod i inställningarna.');
-  }
-
   if (report.rows.length === 0) {
     blockers.push('Tidrapporten innehåller inga rader.');
   }
@@ -699,9 +698,11 @@ export function timeInputToUnixSeconds(isoDate: string, timeStr: string): number
   const year = Number(dateMatch[1]);
   const month = Number(dateMatch[2]);
   const day = Number(dateMatch[3]);
-  const hour = Math.min(23, Math.max(0, Number(timeMatch[1])));
-  const minute = Math.min(59, Math.max(0, Number(timeMatch[2])));
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  if (hour > 23 || minute > 59) return 0;
   const dt = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day || dt.getHours() !== hour || dt.getMinutes() !== minute) return 0;
   return Math.floor(dt.getTime() / 1000);
 }
 

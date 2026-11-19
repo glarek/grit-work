@@ -1,7 +1,9 @@
 <script lang="ts">
+  import UiCheckbox from "$lib/components/ui/UiCheckbox.svelte";
   import { createEventDispatcher, onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { formatDurationLocalized, locale, t } from '$lib/i18n/index.ts';
+  import UiSwitch from '../../../lib/components/ui/UiSwitch.svelte';
   import CollapsibleSection from '../../../lib/components/CollapsibleSection.svelte';
 
   interface WorkTimeSegment {
@@ -34,11 +36,13 @@
 
   export let config: GeneralConfig;
   export let showAutoReport = true;
+  export let runtimePlatform = "";
 
   const dispatch = createEventDispatcher<{ change: GeneralConfig }>();
   $: currentLocale = $locale;
   let workHours = '—';
   let autoStartEnabled = false;
+  let autoStartBusy = false;
   const MAX_WORK_SEGMENTS = 8;
 
   onMount(async () => {
@@ -199,8 +203,8 @@
     dispatch('change', config);
   }
 
-  async function toggleAutoStart() {
-    const targetState = !autoStartEnabled;
+  async function toggleAutoStart(targetState = !autoStartEnabled) {
+    autoStartBusy = true;
     try {
       if (targetState) {
         await invoke<void>('enable_autostart', { silent: !!config.auto_start_silent });
@@ -220,8 +224,9 @@
       }
       dispatch('change', config);
     } catch (e) {
-      console.error('重新校验开机自启状态失败:', e);
-    }
+      console.error('Autostartstatus kunde inte kontrolleras:', e);
+      autoStartEnabled = !targetState;
+    } finally { autoStartBusy = false; }
   }
 
   async function toggleDockIcon() {
@@ -272,19 +277,7 @@
             <span class="settings-muted">{t('settingsGeneral.workTimeDisabledHint')}</span>
           {/if}
         </div>
-        <button
-          type="button"
-          on:click={() => {
-            config.work_time_enabled = !config.work_time_enabled;
-            handleChange();
-          }}
-          class="switch-track {config.work_time_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-          role="switch"
-          aria-label={t('settingsGeneral.workTime')}
-          aria-checked={config.work_time_enabled}
-        >
-          <span class="switch-thumb {config.work_time_enabled ? 'translate-x-5' : 'translate-x-0'}"></span>
-        </button>
+        <UiSwitch bind:checked={config.work_time_enabled} label={t('settingsGeneral.workTime')}  on:change={handleChange} />
       </div>
 
       {#if config.work_time_enabled}
@@ -426,20 +419,20 @@
           <span class="text-xs text-slate-500 dark:text-[#7d8590]">{t('settingsGeneral.hours')}</span>
         </div>
       </div>
-      <label class="flex items-center justify-between mt-3 cursor-pointer">
+      <label for="settingsgeneral-config-goal_notifications" class="flex items-center justify-between mt-3 cursor-pointer">
         <span class="settings-text text-sm">{t('settingsGeneral.workGoalNotifications')}</span>
-        <input type="checkbox" bind:checked={config.goal_notifications} on:change={handleChange} class="accent-primary-500" />
+        <UiCheckbox id="settingsgeneral-config-goal_notifications" bind:checked={config.goal_notifications} label={t('settingsGeneral.workGoalNotifications')} on:change={handleChange} />
       </label>
     </CollapsibleSection>
 
     <!-- AI 工作记忆 -->
     <CollapsibleSection title={t('settingsGeneral.memoryTitle')} storageKey="settings.general.memory">
-      <label class="flex items-center justify-between mt-3 cursor-pointer">
+      <label for="settingsgeneral-config-memory_enabled" class="flex items-center justify-between mt-3 cursor-pointer">
         <div>
           <span class="settings-text text-sm">{t('settingsGeneral.memoryEnabled')}</span>
           <p class="settings-muted mt-0.5">{t('settingsGeneral.memoryHint')}</p>
         </div>
-        <input type="checkbox" bind:checked={config.memory_enabled} on:change={handleChange} class="accent-primary-500" />
+        <UiCheckbox id="settingsgeneral-config-memory_enabled" bind:checked={config.memory_enabled} label={t('settingsGeneral.memoryEnabled')} on:change={handleChange} />
       </label>
     </CollapsibleSection>
     {#if showAutoReport}
@@ -480,16 +473,7 @@
       <div class="space-y-2.5">
         <div class="settings-row">
           <span class="settings-text">{t('settingsGeneral.autoStart')}</span>
-          <button
-            type="button"
-            on:click={toggleAutoStart}
-            class="switch-track {autoStartEnabled ? 'bg-primary-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-            role="switch"
-            aria-label={t('settingsGeneral.autoStart')}
-            aria-checked={autoStartEnabled}
-          >
-            <span class="switch-thumb {autoStartEnabled ? 'translate-x-5' : 'translate-x-0'}"></span>
-          </button>
+          <UiSwitch bind:checked={autoStartEnabled} label={t('settingsGeneral.autoStart')} disabled={autoStartBusy} on:change={(e)=>toggleAutoStart(e.detail)} />
         </div>
 
         {#if autoStartEnabled}
@@ -514,35 +498,19 @@
           </div>
         {/if}
 
+        {#if runtimePlatform === "macos"}
         <div class="settings-row">
           <span class="settings-text">{t('settingsGeneral.hideDockIcon')}</span>
-          <button
-            type="button"
-            on:click={toggleDockIcon}
-            class="switch-track {config.hide_dock_icon ? 'bg-primary-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-            role="switch"
-            aria-label={t('settingsGeneral.hideDockIcon')}
-            aria-checked={config.hide_dock_icon}
-          >
-            <span class="switch-thumb {config.hide_dock_icon ? 'translate-x-5' : 'translate-x-0'}"></span>
-          </button>
+          <UiSwitch bind:checked={config.hide_dock_icon} label={t('settingsGeneral.hideDockIcon')}  on:change={async()=>{ await invoke("set_dock_visibility",{visible:!config.hide_dock_icon}); handleChange(); }} />
         </div>
+        {/if}
 
         <div class="settings-row">
           <div>
             <span class="settings-text">{t('settingsGeneral.lightweightMode')}</span>
             <p class="settings-muted mt-0.5">{t('settingsGeneral.lightweightModeDescription')}</p>
           </div>
-          <button
-            type="button"
-            on:click={toggleLightweightMode}
-            class="switch-track {config.lightweight_mode ? 'bg-primary-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-            role="switch"
-            aria-label={t('settingsGeneral.lightweightMode')}
-            aria-checked={config.lightweight_mode}
-          >
-            <span class="switch-thumb {config.lightweight_mode ? 'translate-x-5' : 'translate-x-0'}"></span>
-          </button>
+          <UiSwitch bind:checked={config.lightweight_mode} label={t('settingsGeneral.lightweightMode')}  on:change={handleChange} />
         </div>
       </div>
     </div>

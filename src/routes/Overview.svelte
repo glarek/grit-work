@@ -8,6 +8,7 @@
   import StatsCard from '../lib/components/StatsCard.svelte';
   import AppUsageChart from '../lib/components/AppUsageChart.svelte';
   import ActivityHourlyChart from '../lib/components/ActivityHourlyChart.svelte';
+  import { BarChart3, Globe } from 'lucide-svelte';
   import LocalizedDatePicker from '../lib/components/LocalizedDatePicker.svelte';
   import { cache } from '../lib/stores/cache.ts';
   import { portalToBody } from '$lib/actions/portal.ts';
@@ -1830,7 +1831,7 @@
       {:else}
         <div class="empty-state-compact">
           <div class="empty-state-icon !w-12 !h-12 !mb-3 shadow-none">
-            <span class="text-xl">🌐</span>
+            <Globe class="h-5 w-5 text-slate-400" aria-hidden="true" />
           </div>
           <p class="empty-state-copy">{overviewNoWebsiteVisitsText}</p>
         </div>
@@ -1880,7 +1881,7 @@
       {:else}
         <div class="empty-state-compact">
           <div class="empty-state-icon !w-12 !h-12 !mb-3 shadow-none">
-            <span class="text-xl">📊</span>
+            <BarChart3 class="h-5 w-5 text-slate-400" aria-hidden="true" />
           </div>
           <p class="empty-state-copy">{overviewNoAppStatsText}</p>
         </div>

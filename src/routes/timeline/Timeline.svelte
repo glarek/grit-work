@@ -50,6 +50,8 @@
   } from './timelineData.ts';
   import { type HourlySummaryRecord } from './summaryPresentation.ts';
   import { timelineGateway } from './timelineGateway.ts';
+  import { FileText, Tag, Laptop, Globe, MessageCircle, Palette, ChartColumn, BookOpen, Target, Star } from 'lucide-svelte';
+  import UiSelect from '$lib/components/ui/UiSelect.svelte';
   import LocalizedDatePicker from '../../lib/components/LocalizedDatePicker.svelte';
   import HourlySummaryDrawer from './HourlySummaryDrawer.svelte';
   import { confirm } from '../../lib/stores/confirm.ts';
@@ -500,9 +502,13 @@
     }
   }
 
-  const CATEGORY_EMOJIS = [
-    '💻', '🌐', '💬', '🎨', '📊', '📚', '🎯', '⭐',
-  ];
+  // Keep existing database keys while presenting Lucide icons.
+  const CATEGORY_EMOJIS = ['💻', '🌐', '💬', '🎨', '📊', '📚', '🎯', '⭐'];
+  const categoryIcons = [Laptop, Globe, MessageCircle, Palette, ChartColumn, BookOpen, Target, Star];
+  const categoryIconNames = ['Dator', 'Webb', 'Samtal', 'Design', 'Statistik', 'Läsning', 'Mål', 'Favorit'];
+  const categoryColors = [{value:'#6366f1',label:'Indigo'},{value:'#2563eb',label:'Blå'},{value:'#059669',label:'Grön'},{value:'#d97706',label:'Bärnsten'},{value:'#db2777',label:'Rosa'},{value:'#64748b',label:'Grå'}];
+  function colorOptions(value:string) { return categoryColors.some(c=>c.value===value) ? categoryColors : [...categoryColors,{value,label:`Egen färg (${value})`}]; }
+  function categoryIcon(key: string) { return categoryIcons[CATEGORY_EMOJIS.indexOf(key)] ?? Tag; }
 
   function getCategoryMeta(category: string | null | undefined): CategoryMeta {
     return categoryStore.getCategoryMeta(category || 'other');
@@ -1490,7 +1496,7 @@
   {:else if activities.length === 0}
     <div class="empty-state-lg">
       <div class="empty-state-icon">
-        <span class="text-2xl">📝</span>
+        <FileText class="h-6 w-6 text-slate-400" aria-hidden="true" />
       </div>
       <p class="empty-state-copy">{t('timeline.empty')}</p>
     </div>
@@ -1569,7 +1575,7 @@
                                on:error={() => handleTimelineIconError(activity)}
                                class="timeline-app-icon-image app-icon object-cover" />
                         {:else}
-                          <span>{info.icon}</span>
+                          <Laptop size={18} />
                         {/if}
                       </div>
                       <div class="timeline-entry-heading timeline-entry-heading-featured">
@@ -1602,7 +1608,7 @@
                            on:error={() => handleTimelineIconError(activity)}
                            class="timeline-app-icon-image app-icon object-cover" />
                     {:else}
-                      <span>{info.icon}</span>
+                      <Laptop size={18} />
                     {/if}
                   </div>
                   <div class="timeline-entry-heading">
@@ -1709,7 +1715,7 @@
                      on:error={() => handleTimelineIconError(selectedActivity)}
                      class="timeline-app-icon-image timeline-app-icon-image-lg app-icon object-cover" />
               {:else}
-                {info.icon}
+                <Laptop size={22} />
               {/if}
             </div>
             <!-- 应用名是次要身份信息：列表里已经知道，这里降为小字 -->
@@ -1886,16 +1892,16 @@
                   bind:value={newCategoryName}
                   placeholder={t('timeline.categoryNamePlaceholder')}
                 />
-                <input type="color" bind:value={newCategoryColor} aria-label={t('timeline.detail.appCategory')} />
-                <span>{newCategoryIcon}</span>
+                <UiSelect label="Kategorifärg" bind:value={newCategoryColor} options={colorOptions(newCategoryColor)} />
+                <svelte:component this={categoryIcon(newCategoryIcon)} size={18} />
               </div>
               <div class="timeline-category-emoji-grid">
-                {#each CATEGORY_EMOJIS as emoji}
+                {#each CATEGORY_EMOJIS as emoji, iconIndex}
                   <button
                     type="button"
                     class:timeline-category-emoji-active={newCategoryIcon === emoji}
                     on:click={() => newCategoryIcon = emoji}
-                  >{emoji}</button>
+                   aria-label={categoryIconNames[iconIndex]}><svelte:component this={categoryIcons[iconIndex]} size={17} /></button>
                 {/each}
               </div>
               <div class="timeline-category-editor-actions">
@@ -1914,16 +1920,16 @@
                   bind:value={renameCategoryName}
                   placeholder={t('timeline.categoryNamePlaceholder')}
                 />
-                <input type="color" bind:value={renameCategoryColor} aria-label={t('timeline.detail.appCategory')} />
-                <span>{renameCategoryIcon}</span>
+                <UiSelect label="Kategorifärg" bind:value={renameCategoryColor} options={colorOptions(renameCategoryColor)} />
+                <svelte:component this={categoryIcon(renameCategoryIcon)} size={18} />
               </div>
               <div class="timeline-category-emoji-grid">
-                {#each CATEGORY_EMOJIS as emoji}
+                {#each CATEGORY_EMOJIS as emoji, iconIndex}
                   <button
                     type="button"
                     class:timeline-category-emoji-active={renameCategoryIcon === emoji}
                     on:click={() => renameCategoryIcon = emoji}
-                  >{emoji}</button>
+                   aria-label={categoryIconNames[iconIndex]}><svelte:component this={categoryIcons[iconIndex]} size={17} /></button>
                 {/each}
               </div>
               <div class="timeline-category-editor-actions">
@@ -2077,14 +2083,16 @@
         {:else}
           <div class="space-y-3">
             {#if cleanupAppCandidates.length === 0}
-              <p class="text-sm text-slate-500 dark:text-[#7d8590]">{t('timeline.noActivitiesToDelete')}</p>
+              <p class="text-sm text-slate-500">{t('timeline.noActivitiesToDelete')}</p>
             {:else}
-              <select class="page-control-input w-full" bind:value={cleanupApp}>
-                <option value="">{t('timeline.selectApp')}</option>
-                {#each cleanupAppCandidates as app}
-                  <option value={app}>{app}</option>
-                {/each}
-              </select>
+              <UiSelect
+                label={t('timeline.selectApp')}
+                bind:value={cleanupApp}
+                options={[
+                  { value: '', label: t('timeline.selectApp') },
+                  ...cleanupAppCandidates.map((app) => ({ value: app, label: app })),
+                ]}
+              />
               <button
                 class="w-full px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
                 on:click={doCleanupByApp}
@@ -3163,7 +3171,7 @@
 
   .timeline-category-editor-fields {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 2rem 1.5rem;
+    grid-template-columns: minmax(0, 1fr) 130px 1.5rem;
     align-items: center;
     gap: 0.45rem;
   }
@@ -3177,14 +3185,7 @@
     font-size: 0.8rem;
   }
 
-  .timeline-category-editor-fields input[type='color'] {
-    width: 2rem;
-    height: 2rem;
-    padding: 0;
-    border: 0;
-    border-radius: var(--radius-xs);
-    background: transparent;
-  }
+
 
   .timeline-category-emoji-grid {
     display: flex;

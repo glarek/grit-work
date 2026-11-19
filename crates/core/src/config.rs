@@ -11,7 +11,7 @@ fn default_true() -> bool {
 }
 
 fn default_locale() -> String {
-    "en".to_string()
+    "sv-SE".to_string()
 }
 
 /// AI 提供商类型
@@ -1291,7 +1291,7 @@ fn default_avatar_persona() -> String {
     "assistant".to_string()
 }
 fn default_ui_visual_style() -> String {
-    "c".to_string()
+    "a".to_string()
 }
 pub fn default_assistant_timeout_secs() -> u64 {
     120
@@ -1370,7 +1370,7 @@ impl Default for AppConfig {
             auto_start_silent: cfg!(windows),
             macos_screen_capture_permission_prompted: false,
             last_app_version: None,
-            theme: "system".to_string(),
+            theme: "light".to_string(),
             ui_visual_style: default_ui_visual_style(),
             report_editor_font: String::new(),
             work_start_hour: 9,
@@ -2819,11 +2819,11 @@ mod tests {
         let config = AppConfig::default();
 
         assert_eq!(config.ui_visual_style, default_ui_visual_style());
-        assert_eq!(config.ui_visual_style, "c");
+        assert_eq!(config.ui_visual_style, "a");
         assert_eq!(normalize_ui_visual_style(" a "), "a");
         assert_eq!(normalize_ui_visual_style("B"), "b");
         assert_eq!(normalize_ui_visual_style("c"), "c");
-        assert_eq!(normalize_ui_visual_style("unknown"), "c");
+        assert_eq!(normalize_ui_visual_style("unknown"), "a");
     }
 
     #[test]

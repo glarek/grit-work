@@ -8,7 +8,9 @@ test('关于页应展示 Grit Work 仓库与上游 Work Review MIT 归属', asyn
   assert.match(source, /https:\/\/github\.com\/glarek\/grit-work/);
   assert.match(source, /https:\/\/github\.com\/wm94i\/Work-Review/);
   assert.match(source, /MIT-licens/);
-  assert.match(source, /<h1 class="about-brand-title">Grit Work<\/h1>/);
+  assert.match(source, /<h1 class="about-brand-title">GRIT Work<\/h1>/);
+  assert.match(source, /ExternalLink/);
+  assert.doesNotMatch(source, /from 'lucide-svelte'[\s\S]*Github/);
 });
 
 test('关于页应禁用自动更新与发布通道控件，并说明手动更新', async () => {

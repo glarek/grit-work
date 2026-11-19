@@ -275,29 +275,15 @@ fn tray_recording_toggle_action(is_recording: bool, is_paused: bool) -> Recordin
 }
 
 /// 托盘菜单文案的三语映射（后端独立于前端 i18n，因为托盘在 Rust 端构造）。
-fn tray_label(key: &str, locale: &str) -> &'static str {
-    match (key, locale) {
-        ("show", "en") => "Show Window",
-        ("show", "zh-TW") => "顯示視窗",
-        ("show", _) => "显示窗口",
-        ("quit", "en") => "Quit",
-        ("quit", "zh-TW") => "結束",
-        ("quit", _) => "退出",
-        ("lightweight", "en") => "Lightweight Mode",
-        ("lightweight", "zh-TW") => "輕量模式",
-        ("lightweight", _) => "轻量模式",
-        ("avatar", "en") => "Desktop Pet",
-        ("avatar", "zh-TW") => "桌寵",
-        ("avatar", _) => "桌宠",
-        ("recording_start", "en") => "Start Recording",
-        ("recording_start", "zh-TW") => "開始錄製",
-        ("recording_start", _) => "开始录制",
-        ("recording_pause", "en") => "Pause",
-        ("recording_pause", "zh-TW") => "暫停錄製",
-        ("recording_pause", _) => "暂停录制",
-        ("recording_resume", "en") => "Resume",
-        ("recording_resume", "zh-TW") => "恢復錄製",
-        ("recording_resume", _) => "恢复录制",
+fn tray_label(key: &str, _locale: &str) -> &'static str {
+    match key {
+        "show" => "Visa GRIT Work",
+        "quit" => "Avsluta",
+        "lightweight" => "Resurssnålt läge",
+        "avatar" => "Skrivbordsfigur",
+        "recording_start" => "Starta insamling",
+        "recording_pause" => "Pausa insamling",
+        "recording_resume" => "Återuppta insamling",
         _ => "",
     }
 }
@@ -348,23 +334,19 @@ pub(crate) fn refresh_tray_menu(app: &AppHandle) {
     let _ = tray_menu.quit.set_text(tray_label("quit", &locale));
 }
 
-/// 前端切换语言时同步到后端 config，并刷新托盘菜单文案
+/// Keep legacy callers compatible while enforcing the app's Swedish locale.
 #[tauri::command]
 async fn set_app_locale(
     locale: String,
     app: AppHandle,
     state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), work_review_core::error::AppError> {
-    let normalized = match locale.as_str() {
-        v if v.starts_with("en") => "en",
-        "zh-TW" | "zh-HK" => "zh-TW",
-        _ => "zh-CN",
-    };
+    let _ = locale;
     let config = {
         let mut s = state
             .lock()
             .map_err(|e| work_review_core::error::AppError::Unknown(e.to_string()))?;
-        s.config.locale = normalized.to_string();
+        s.config.locale = "sv-SE".to_string();
         s.config.clone()
     };
     commands::persist_app_config(config, app.clone(), state.inner())?;
@@ -1824,7 +1806,7 @@ async fn background_avatar_task(state: Arc<Mutex<AppState>>, app: AppHandle) {
                             avatar_engine::emit_avatar_bubble(
                                 &app,
                                 &avatar_engine::AvatarBubblePayload::success(
-                                    "🎉 今日工作目标达成！继续保持！",
+                                    "Dagens arbetsmål är uppnått.",
                                 ),
                             );
                             goal_celebrated_date = today;
@@ -3726,7 +3708,7 @@ fn install_crash_handler() {
             .unwrap_or_else(|| "<未知位置>".to_string());
         let now = chrono::Local::now();
         let report = format!(
-            "Work Review crash report\n版本: {}\n时间: {}\nPanic: {}\n位置: {}\n\n调用栈:\n{}\n",
+            "GRIT Work felrapport\nVersion: {}\nTid: {}\nPanic: {}\nPlats: {}\n\nAnropsstack:\n{}\n",
             env!("CARGO_PKG_VERSION"),
             now.format("%Y-%m-%d %H:%M:%S"),
             message,
@@ -4762,6 +4744,8 @@ async fn main() {
             grit::grit_save_settings,
             grit::grit_save_credentials,
             grit::grit_sync_spiris,
+            grit::grit_test_connection,
+            grit::grit_reporting_context,
             grit::grit_archive,
             grit::grit_generate,
             grit::grit_get_report,
@@ -4822,6 +4806,7 @@ async fn main() {
             commands::download_and_install_github_update,
             commands::quit_app_for_update,
             commands::open_data_dir,
+            commands::open_screenshots_dir,
             commands::get_screenshot_thumbnail,
             commands::get_screenshot_full,
             commands::test_remote_storage,
@@ -5651,13 +5636,16 @@ mod tests {
     fn 托盘录制按钮文案应与状态一致() {
         assert_eq!(
             tray_recording_toggle_label(false, false, "zh-CN"),
-            "开始录制"
+            "Starta insamling"
         );
         assert_eq!(
             tray_recording_toggle_label(true, false, "zh-CN"),
-            "暂停录制"
+            "Pausa insamling"
         );
-        assert_eq!(tray_recording_toggle_label(true, true, "zh-CN"), "恢复录制");
+        assert_eq!(
+            tray_recording_toggle_label(true, true, "zh-CN"),
+            "Återuppta insamling"
+        );
     }
 
     #[test]

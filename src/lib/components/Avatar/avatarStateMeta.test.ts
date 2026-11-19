@@ -86,6 +86,11 @@ test('桌宠状态切换气泡应返回短文案', () => {
     tone: 'info',
     duration: 1800,
   });
+  assert.deepEqual(getAvatarStateBubble('working', 'sv-SE', '编码中', 'companion'), {
+    message: 'Vi kodar',
+    tone: 'info',
+    duration: 1800,
+  });
   assert.equal(getAvatarStateBubbleFromUnknown('unknown'), null);
 });
 

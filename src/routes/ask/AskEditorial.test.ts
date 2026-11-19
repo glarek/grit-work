@@ -26,7 +26,7 @@ test('助手左上角应复用其他页面的统一页头结构', () => {
   const sharedAssistantIcon = /d="M8 10h8M8 14h4m-6 6h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/;
   assert.match(header, sharedAssistantIcon);
   // Grit's /ask route opens time analysis, whose navigation icon differs from legacy chat.
-  assert.match(sidebarSource, /path:\s*'\/ask',\s*labelKey:\s*'sidebar\.nav\.ask'/);
+  assert.match(sidebarSource, /path:\s*'\/ask',\s*label:\s*'Tidsanalys'/);
   assert.doesNotMatch(source, /ask-conversation-bar/);
   assert.doesNotMatch(source, /ask-context-strip/);
 });

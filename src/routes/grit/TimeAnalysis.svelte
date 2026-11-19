@@ -3,6 +3,7 @@
   import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
   import WorkflowBar from './WorkflowBar.svelte';
+  import LocalizedDatePicker from '$lib/components/LocalizedDatePicker.svelte';
   import { workDate, selectWorkDate, notifyGritChanged } from './workflow.ts';
   import { normalizeGritStatus, PROVIDER_LABELS } from './gritTypes.ts';
   export let params: {date?: string} = {};
@@ -56,11 +57,17 @@
 </script>
 <div class="grit-work analysis-view mx-auto max-w-6xl space-y-5 px-4 py-5 sm:px-6 sm:py-6">
   <header class="grit-header flex flex-wrap items-end justify-between gap-4">
-    <div><h1 class="text-slate-900 dark:text-[#e6edf3]">Tidsanalys</h1><p class="mt-1 text-sm text-slate-500 dark:text-[#8b949e]">Förstå arbetet bakom tidrapporten.</p></div>
-    <label class="flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-[#adbac7]">
-      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>
-      Arbetsdag <input aria-label="Arbetsdag för analys" type="date" bind:value={date} max={today} disabled={busy} on:change={load} class="min-w-0 rounded-lg border border-slate-200 bg-transparent px-3 py-2 font-mono dark:border-[#30363d]" />
-    </label>
+    <div><h1 class="text-slate-900">Tidsanalys</h1><p class="mt-1 text-sm text-slate-500">Förstå arbetet bakom tidrapporten.</p></div>
+    <div class="flex flex-wrap items-center gap-2 text-sm text-slate-600">
+      <span>Arbetsdag</span>
+      <LocalizedDatePicker
+        bind:value={date}
+        max={today}
+        disabled={busy}
+        label="Välj analysdag"
+        on:change={load}
+      />
+    </div>
   </header>
   <WorkflowBar {date} current="/ask" />
   <section class="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-[#30363d] dark:bg-[#161b22]" aria-label="Analysera arbetsdagen">

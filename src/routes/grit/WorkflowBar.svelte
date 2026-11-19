@@ -6,7 +6,7 @@
   import { getStatusBadgeMeta } from './gritTypes.ts';
 
   export let date: string;
-  export let current = '';
+  export const current: string = '';
   export let archived = false;
   export let showProjects = false;
 
@@ -88,21 +88,7 @@
     </span>
   </div>
 
-  <nav aria-label="Arbetsflöde för vald dag" class="mt-3 flex flex-wrap gap-2">
-    {#each links as item}
-      <a
-        href={`#${item.path}`}
-        on:click={() => selectWorkDate(date)}
-        aria-current={current === item.path ? 'page' : undefined}
-        class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 {current === item.path
-          ? 'border-indigo-200 bg-white text-indigo-700 shadow-sm dark:border-indigo-700/60 dark:bg-[#21262d] dark:text-indigo-300'
-          : 'border-slate-200 text-slate-700 hover:bg-white dark:border-[#30363d] dark:text-[#adbac7] dark:hover:bg-[#21262d]'}"
-      >
-        <GritIcon name={item.icon} sizeClass="h-3.5 w-3.5" />
-        <span>{item.label}</span>
-      </a>
-    {/each}
-  </nav>
+
 
   {#if showProjects}
     <div class="mt-3.5 border-t border-slate-200 pt-3 dark:border-[#30363d]">
