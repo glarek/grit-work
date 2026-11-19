@@ -1,6 +1,6 @@
 # GRIT Work — handover
 
-Senast uppdaterad 2026-11-19. **rc.3 pågående:** dygnsunderlag, originalupplösta bilder, tom/gles OCR-status, syntetiska AI-tester, dagens utkast och anslutningsmärken. Ny Windows-verifiering inväntas; följande rc.2-resultat gäller föregående leverans. Implementation av bildtolkning och statusindikatorer: `dcbadef`; Windows-bygge, testinstallation, autostart och syntetisk native OCR är verifierade; run `44509135282` är godkänd. Se den nya sektionen i VALIDATION. Windows x64 är första produktens enda målplattform. Se [README](../../README.md) för användarflödet och [VALIDATION](VALIDATION.md) för verifiering och kvarvarande begränsningar.
+Senast uppdaterad 2026-11-19. Implementation till `c62879b`, Windows run `44532427486` och uppgradering till **1.1.4-rc.3** är verifierade. Leveransen omfattar dygnsunderlag, originalupplösta bilder, OCR-kvalitetsstatus, AI-tester, dagens utkast och anslutningsmärken. Windows x64 är enda målplattformen. Se [README](../../README.md) och [VALIDATION](VALIDATION.md) för funktioner, verifiering och begränsningar.
 
 ## Arbetsmiljö
 
@@ -19,14 +19,14 @@ Senast uppdaterad 2026-11-19. **rc.3 pågående:** dygnsunderlag, originalupplö
 - `ImageInterpretationSettings.svelte`: Off/OCR/AI, eget intervall, sparkrav före körning och status. `image_interpretation.rs`: gemensam JSON-cache och validerat rapportunderlag. `image_ocr.rs`: begränsad Windows OCR med svensk språkpreferens och balanserad WinRT-initiering.
 - `src-tauri/src/grit.rs`: Spiris, projektregister, utkast, arkiv, behörighetskontroller och överföringskvitton. `grit_cli.rs`: CLI-anrop och validerat AI-svar. `monitor.rs`/`screenshot.rs`: Windows integritetskontroller före/efter minnesbaserad fångst.
 
-## Pågående rc.3
+## Levererad rc.3
 
 - `get_day_evidence` och `clip_day_evidence` bevarar original-ID men klipper intervall vid lokal midnatt. `grit_read::Archive` kan betyda blandat lokalt/verifierat arkiv. Endast mål- och nästa dygn inspekteras; utgångna dygn och trasiga arkiv respekteras. Rå export/rensning är oförändrad.
 - Utkast tillåter idag. Manuell generering använder färdiga bildtolkningar (`allow_incomplete=true`) och tydliga tomma statusfält för resterande bilder. Automatisk förberedelse av avslutade dagar är strikt. `Report.basis` beskriver ögonblicksbilden och bevaras vid manuell redigering. Ingen tid får skapas från bildfrekvens. Spiris-överföring är fortfarande för avslutade dygn.
 - Standardbildbredd 0 = original. `resolution_policy` migrerar gamla 1280/1440-gränser bara en gång; nya uttryckliga gränser behålls. AI delar i 1600-pixelbitar med 80-pixelöverlapp; ingen thumbnail. OCR:s textmängd är inte ett kvalitets-/korrekthetsmått.
 - Arkiv är valfritt; utan arkiv ingen automatisk lokal rensning. Äldre exakt fel om saknat arkiv döljs, andra insamlingsfel behålls.
 - Spiris/AI-badges bygger enbart på sparade testresultat och lokal pollning. Inställningsbyte gör test ogiltigt, 30 minuter gör test gammalt. AI-rapport och eventuell AI-bildmodell har separata resultat.
-- Agentarbetet finns synligt i Herdr wM. Tillfällig överlämning/loggar: `/tmp/grit-refinement/HANDOVER.md`. Native byggresultat uppdateras efter leverans.
+- Agentarbetet finns synligt i Herdr wM. Tillfällig överlämning/loggar: `/tmp/grit-refinement/HANDOVER.md`. Native byggresultat och checksummor är sparade i VALIDATION.
 
 ## Kontrakt som måste bevaras
 
@@ -49,6 +49,6 @@ Webbläsartester körs **sekventiellt**: `node scripts/with-grit-preview.mjs scr
 
 Push på grenen startar `.github/workflows/windows-review.yml`: native tester/Clippy och optimerad NSIS. Ny push avbryter tidigare körning. Hämta artefakten `Grit-Work-Windows-review`, verifiera SHA-256 och använd skillen `windows-vm-ssh` för testinstallation på `grit-windows`. Bevara aktiva användarprocesser och data; starta inte verklig insamling som del av installationskontrollen. Spara slutliga run-ID, checksumma och VM-resultat i VALIDATION. Dokumentationscommit efter bygget använder `[skip ci]`.
 
-Aktuell leverans: `all-artifacts/windows-interpretation/GRIT Work_1.1.4-rc.2_x64-setup.exe`, byggd från `dcbadef` i run `44509135282`. Checksummor och VM-resultat finns i VALIDATION och intill installationsfilen. PDF:en har tolv sidor och finns i `all-artifacts/interface-review/GRIT-Work-interfacegranskning.pdf`. `windows-polish/` innehåller föregående version och ska inte användas för denna leverans.
+Aktuell leverans: `all-artifacts/windows-refinement/GRIT Work_1.1.4-rc.3_x64-setup.exe`, byggd från `c62879b` i run `44532427486`. Checksummor, VM-uppgradering, bildikonen och syntetisk native OCR finns intill installationsfilen och i VALIDATION. PDF: `all-artifacts/interface-review/GRIT-Work-interfacegranskning.pdf` (14 sidor). `windows-interpretation/` innehåller föregående rc.2.
 
-Temporära arbetsloggar och verifieringsresultat finns i `/tmp/grit-interpretation/`. Inga aktiva agentuppgifter eller filägarskap återstår. Testpanelen `wM:p5` stängdes när den var tom på jobb; agentpaneler och worktrees bevarades. Det ärvda macOS-jobbet har 12 arkivtester som avvisar `/var`-symlänken i temporärsökvägen; macOS stöds inte och detta får inte beskrivas som en helt grön plattformsöverskridande CI. Windows-installationen är osignerad; fysisk flerskärmsfångst, inloggade Windows-CLI:er och riktig Spiris-rapportering kräver separat verifiering.
+Arbetsloggar: `/tmp/grit-refinement/`. Alla agenter är frysta; inga aktiva filägarskap eller nödvändiga uppgifter återstår. Testpanelen `wM:p7` stängdes efter att endast bash återstod. Agentpaneler och worktrees bevarades. Sex ägda stagingfiler och deras tomma katalog togs bort i Windows; appen behölls och startades inte. Det ärvda macOS-jobbet har tidigare haft arkivtester som avvisar `/var`-symlänken; macOS stöds inte och Windows-leveransen ska inte beskrivas som verifierad för alla plattformar. Installationen är osignerad. Riktig Spiris-rapportering och insamling på användarens skärmar gjordes inte i testerna.

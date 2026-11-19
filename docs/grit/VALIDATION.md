@@ -2,7 +2,7 @@
 
 ## rc.3 — day evidence, usable images and drafts during the day
 
-Current source changes (Windows verification pending):
+Implementation through `c62879b`, verified with native Windows run `44532427486`:
 
 - Calendar-day reads retain original activity IDs, clip intervals at local midnight, and union overlap once. All active computer time counts as work; legacy schedules do not change day totals. Target/adjacent verified archive projection and expiry rules are covered, including Stockholm DST days. Raw archive exports and deletion ownership are unchanged.
 - Default capture preserves native pixels. Legacy 1280/1440 caps migrate once; a later explicit cap survives. AI uses native 1600px tiles with 80px overlap and bounded image/decoded-size limits. OCR/AI JSON reports dimensions and empty/sparse-content warnings. Empty OCR is a completed recognition with no text, not evidence of no work.
@@ -12,7 +12,11 @@ Current source changes (Windows verification pending):
 - Live synthetic text and image connection checks passed through visible Herdr for Codex `gpt-6.2-sol`, Grok `grok-4.7-build-fast`, and agy `gemini-4-hydrogen-medium`. The random image identifier was supplied only as pixels. Test status polling is local; it never runs these checks automatically.
 - The privacy panel and prior capture exceptions were removed as explicitly requested. Native capture safety checks remain; tests configure exclusions explicitly when testing the guard. A strict known-browser allowlist prevents WebView/Electron/GRIT false browser labels; exact generated legacy Chinese summaries localize in memory, without rewriting arbitrary authored/model text.
 - Local frontend: 786 tests passed; Svelte check zero errors/warnings. The full Rust workspace passed 921 tests with one real-display test ignored, including seven connection-health tests. All-target Clippy with warnings denied and workspace formatting pass; the final default-config cleanup also passed 54 focused configuration tests.
-- The rc.3 installer and native Windows run will be recorded here after verification. The rc.2 artifact below remains the previously verified build until then.
+- Native [Windows run 44532427486](https://github.com/glarek/grit-work/actions/runs/44532427486) passed at `c62879b`: **921 Rust tests**, one real-display test ignored, **786 frontend tests**, all-target Clippy, Svelte zero errors/warnings and optimized NSIS packaging. Installer: `all-artifacts/windows-refinement/GRIT Work_1.1.4-rc.3_x64-setup.exe`, 10,519,743 bytes, SHA-256 `5cf35dbcef972effec76c7229defef14f67e85608e5ed9960ba6545815e3cabe`. The adjacent verification JSON and checksum file record provenance. Earlier run `44530718096` was superseded by the midnight boundary correction and is not the delivered build.
+- The rc.3 upgrade over rc.2 passed in `grit-windows`: registered version `1.1.4-rc.3`, exact display name `GRIT Work`, silent current-user autostart retained, installed EXE SHA-256 `f9b8c1e2878737da631145f24ffa46c629f1cb8c32e1b341ea96e6cbb9404f21` (38,413,824 bytes). The associated EXE icon was extracted and visually verified as the supplied pixel icon; Desktop and Start-menu shortcuts point to that EXE. No app process was started. This VM had zero top-level appdata files, so this check does not establish a migration of populated user data.
+- The native OCR diagnostic from the final run read a synthetic 3840 × 2160 JPEG with small text: `SAPPHIRE-729`, `en-US`, 23 regions. The same fixture downscaled to 1280 pixels failed to recognize the expected identifier; this supports preserving pixels but is not an accuracy measurement on user documents. No real desktop was captured.
+- The review PDF has 14 pages. Wide screenshots were visually inspected, and an additional 800 × 650 browser check passed for metric/icon separation and absence of horizontal overflow in Overview/About.
+- Six owned Windows staging files and their empty directory were removed. The installed application was retained. This is an **unsigned development preview**; physical multi-monitor capture, populated-user-data migration, authenticated CLI use on the destination Windows machine and live time submission remain outside these checks.
 
 ## Previous delivery: reusable image interpretation, pixel icon and aligned settings
 
