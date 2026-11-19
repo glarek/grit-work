@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onDestroy, onMount } from 'svelte';
   import { ClipboardCheck, LayoutGrid, Clock3, Settings, Info, Pause, Play, Camera, LoaderCircle } from 'lucide-svelte';
+  import ConnectionBadges from './ConnectionBadges.svelte';
   import type { GritImageInterpretationStatus } from '../../routes/grit/gritTypes';
 
   export let isRecording = true;
@@ -111,7 +112,7 @@
   })();
 </script>
 
-<div class="grit-sidebar">
+<div class="grit-sidebar flex h-full min-h-0 flex-col overflow-y-auto">
   <div class="grit-brand">
     <img src="/icons/256x256.png" alt="" width="32" height="32" style="image-rendering: pixelated;" />
     <strong>GRIT Work</strong>
@@ -150,7 +151,7 @@
       <p role="alert" class="mt-2 text-xs text-red-700">{error}</p>
     {/if}
   </div>
-  <nav aria-label="Huvudnavigation" class="grit-main-nav">
+  <nav aria-label="Huvudnavigation" class="grit-main-nav mb-6">
     {#each items as item}
       {@const active = item.path === '/' ? $location === '/' || $location === '/report' : $location.startsWith(item.path)}
       <a href={item.path} use:link aria-current={active ? 'page' : undefined} title={item.label}>
@@ -159,6 +160,7 @@
       </a>
     {/each}
   </nav>
+  <ConnectionBadges />
 </div>
 
 <style>

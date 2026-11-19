@@ -4757,6 +4757,8 @@ async fn main() {
             grit::grit_save_credentials,
             grit::grit_sync_spiris,
             grit::grit_test_connection,
+            grit::grit_connection_status,
+            grit::grit_test_ai,
             grit::grit_reporting_context,
             grit::grit_archive,
             grit::grit_generate,

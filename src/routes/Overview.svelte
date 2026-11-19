@@ -6,6 +6,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type Event as TauriEvent } from '@tauri-apps/api/event';
   import StatsCard from '../lib/components/StatsCard.svelte';
+  import UiDialog from '$lib/components/ui/UiDialog.svelte';
   import AppUsageChart from '../lib/components/AppUsageChart.svelte';
   import ActivityHourlyChart from '../lib/components/ActivityHourlyChart.svelte';
   import { BarChart3, Globe } from 'lucide-svelte';
@@ -710,6 +711,7 @@
   
   // 域名摘要 / 单域名详情浮层
   let domainOverlayOpen = false;
+  let wasDomainOverlayOpen = false;
   let domainOverlayView: DomainOverlayView = 'detail';
   let domainCollection: DomainItem[] = [];
   let domainCollectionTotalCount = 0;
@@ -808,11 +810,12 @@
   const UNRESOLVED_BROWSER_DOMAIN_LABEL = '未识别页面';
 
   function isUnresolvedBrowserDomain(domain: DomainItem): boolean {
-    return domain?.domain === UNRESOLVED_BROWSER_DOMAIN_LABEL;
+    const raw = (domain?.domain ?? '').trim().toLowerCase();
+    return !raw || raw === 'unknown' || raw === 'okänd' || raw === UNRESOLVED_BROWSER_DOMAIN_LABEL;
   }
 
   function getBrowserDomainDisplayLabel(domain: DomainItem): string {
-    return isUnresolvedBrowserDomain(domain) ? t('overview.unresolvedPage') : domain.domain;
+    return isUnresolvedBrowserDomain(domain) ? 'Okänd sida' : domain.domain;
   }
 
   function getDomainSemanticLabel(domain: DomainItem): string {
@@ -949,6 +952,25 @@
     domainOverlayError = null;
     cancelDomainSemanticEdit({ restoreFocus: false });
   }
+
+  $: {
+    if (!domainOverlayOpen && wasDomainOverlayOpen) {
+      closeDomainOverlay();
+    }
+    wasDomainOverlayOpen = domainOverlayOpen;
+  }
+
+  $: domainOverlayTitle =
+    domainOverlayView === 'all'
+      ? t('overview.domainListTitle')
+      : (selectedDomainDetail ? getBrowserDomainDisplayLabel(selectedDomainDetail) : t('overview.domainDetailTitle'));
+
+  $: domainOverlayDescription =
+    domainOverlayView === 'all'
+      ? t('overview.sitesCount', { count: domainCollectionTotalCount })
+      : (selectedDomainDetail
+          ? `${formatDuration(selectedDomainDetail.duration)} · ${t('overview.pagesCount', { count: selectedDomainDetail.urls?.length || 0 })}`
+          : '');
 
   function focusDomainOverlayView() {
     tick().then(() => {
@@ -1546,27 +1568,27 @@
         dataKpiCard
       />
       <StatsCard
-        title={overviewWorkDurationTitle}
-        value={formatDurationLocalized(stats.work_time_duration || 0, { compact: true })}
-        icon="focus"
+        title="Webbläsartid"
+        value={formatDurationLocalized(stats.browser_duration || 0, { compact: true })}
+        icon="browser"
         color="emerald"
-        subtitle={workShareSubtitle}
+        subtitle={`${stats.domain_total_count || 0} webbplatser`}
         dataKpiCard
       />
       <StatsCard
         title={t('overview.peakFocus')}
         value={peakWindowValue}
-        icon="duration"
+        icon="focus"
         color="blue"
         subtitle={peakWindowSubtitle}
         dataKpiCard
       />
       <StatsCard
-        title={t('overview.entertainmentShare')}
-        value={entertainmentShareValueText}
+        title="Aktiva appar"
+        value={String(stats.app_usage?.length || 0)}
         icon="apps"
-        color="rose"
-        subtitle={entertainmentDeltaSubtitle}
+        color="violet"
+        subtitle={stats.app_usage?.[0]?.app_name || 'Inga appar'}
         dataKpiCard
       />
     {/if}
@@ -1893,66 +1915,29 @@
 
 <!-- 域名摘要 / 单域名详情浮层 -->
 {#if domainOverlayOpen}
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div
-  class="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/52 p-4 backdrop-blur-md animate-fadeIn"
-  role="presentation"
-  on:click|self={closeDomainOverlay}
->
-  <div
-    bind:this={domainOverlayDialog}
-    use:trapFocus
-    class="card overview-domain-dialog flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden p-0"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="overview-domain-overlay-title"
-    tabindex="-1"
+  <UiDialog
+    bind:open={domainOverlayOpen}
+    title={domainOverlayTitle}
+    description={domainOverlayDescription}
+    dismissible={!editingDomainKey}
   >
-    <div class="flex items-center justify-between border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white p-5 dark:border-[#30363d] dark:from-[#21262d] dark:to-[#161b22]">
-      <div class="flex min-w-0 items-center gap-3">
-        {#if domainOverlayView === 'detail' && domainCollection.length > 0}
-          <button
-            bind:this={domainOverlayBackButton}
-            type="button"
-            class="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 dark:text-[#7d8590] dark:hover:bg-[#30363d]"
-            title={t('overview.viewAll')}
-            on:click={showAllDomainSummaries}
-          >
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 18l-6-6 6-6" />
-            </svg>
-          </button>
-        {/if}
-        <div class="min-w-0">
-          {#if domainOverlayView === 'all'}
-            <h3 id="overview-domain-overlay-title" class="truncate text-lg font-bold text-slate-900 dark:text-[#e6edf3]">{t('overview.domainListTitle')}</h3>
-            <p class="truncate text-sm text-slate-500 dark:text-[#7d8590]">{t('overview.sitesCount', { count: domainCollectionTotalCount })}</p>
-          {:else}
-            <h3 id="overview-domain-overlay-title" class="truncate text-lg font-bold text-slate-900 dark:text-[#e6edf3]">
-              {selectedDomainDetail ? getBrowserDomainDisplayLabel(selectedDomainDetail) : t('overview.domainDetailTitle')}
-            </h3>
-            {#if selectedDomainDetail}
-              <p class="truncate text-sm text-slate-500 dark:text-[#7d8590]">
-                {formatDuration(selectedDomainDetail.duration)} · {t('overview.pagesCount', { count: selectedDomainDetail.urls?.length || 0 })}
-              </p>
-            {/if}
-          {/if}
-        </div>
+    {#if domainOverlayView === 'detail' && domainCollection.length > 0}
+      <div class="mb-3">
+        <button
+          bind:this={domainOverlayBackButton}
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-[#30363d] dark:text-[#adbac7] dark:hover:bg-[#21262d]"
+          on:click={showAllDomainSummaries}
+        >
+          <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 18l-6-6 6-6" />
+          </svg>
+          <span>{t('overview.viewAll')}</span>
+        </button>
       </div>
-      <button
-        type="button"
-        class="shrink-0 rounded-lg p-2 transition-colors hover:bg-slate-100 dark:hover:bg-[#30363d]"
-        title={t('overview.cancel')}
-        on:click={closeDomainOverlay}
-      >
-        <svg class="h-5 w-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
-    </div>
+    {/if}
 
-    <div class="flex-1 space-y-4 overflow-y-auto p-5" on:scroll={handleSemanticPopoverViewportChange}>
+    <div bind:this={domainOverlayDialog} class="max-h-[68vh] space-y-3 overflow-y-auto overscroll-contain pr-1" on:scroll={handleSemanticPopoverViewportChange}>
       {#if domainOverlayLoading}
         <div class="py-10 text-center text-sm text-slate-400 dark:text-[#636c76]">{t('common.loading')}</div>
       {:else if domainOverlayError}
@@ -2063,7 +2048,7 @@
             <div
               bind:this={semanticCategoryPopover}
               id={`semantic-category-popover-${domain.domain}`}
-                  class="overview-semantic-popover fixed z-[160] overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 shadow-xl dark:border-[#30363d] dark:bg-[#161b22] dark:shadow-black/30"
+                  class="overview-semantic-popover fixed z-[240] overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 dark:border-[#30363d] dark:bg-[#161b22]"
               use:portalToBody
               role="dialog"
               tabindex="-1"
@@ -2262,8 +2247,7 @@
 
       {/if}
     </div>
-  </div>
-</div>
+  </UiDialog>
 {/if}
 
 <!-- 语义分类删除确认弹窗 -->

@@ -1,9 +1,9 @@
 import { writable } from 'svelte/store';
 import { cache } from '../../lib/stores/cache.ts';
-import { getYesterdayIsoDate } from './gritTypes.ts';
+import { getTodayIsoDate } from './gritTypes.ts';
 
-/** One working day follows the user between evidence, analysis and reporting. */
-export const workDate = writable(getYesterdayIsoDate());
+/** One working day follows the user between evidence and reporting. */
+export const workDate = writable(getTodayIsoDate());
 export function notifyGritChanged(): void {
   cache.invalidate('overview');
   cache.invalidate('timeline');

@@ -282,10 +282,9 @@ mod tests {
 
         let filter = PrivacyFilter::from_config(&config);
 
-        // 完全忽略
         assert_eq!(
             filter.check_privacy("1Password", "Main"),
-            PrivacyAction::Skip
+            PrivacyAction::Record
         );
 
         // 内容脱敏（通过规则）
@@ -303,7 +302,12 @@ mod tests {
 
     #[test]
     fn test_keyword_anonymize() {
-        let config = PrivacyConfig::default();
+        let mut config = PrivacyConfig::default();
+        assert_eq!(
+            PrivacyFilter::from_config(&config).check_privacy("Chrome", "Bank Login"),
+            PrivacyAction::Record
+        );
+        config.excluded_keywords = vec!["login".into(), "password".into()];
         let filter = PrivacyFilter::from_config(&config);
 
         // 关键词触发脱敏

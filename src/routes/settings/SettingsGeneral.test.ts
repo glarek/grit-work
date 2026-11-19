@@ -2,30 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-test('工作时间跨零点时应拆成当天首尾两段后计算并集', async () => {
+test('已移除工作时段分段配置并保留按日历日说明', async () => {
   const source = await readFile(
     new URL('./components/SettingsGeneral.svelte', import.meta.url),
     'utf8'
   );
 
-  assert.match(
-    source,
-    /function totalWorkSegmentMinutes\(segments(?:\s*:\s*WorkTimeSegment\[\])?\)/,
-  );
-  assert.match(source, /ranges\.push\(\[start, 24 \* 60\], \[0, end\]\)/);
-  assert.match(source, /ranges\.sort/);
-  assert.match(source, /Math\.max\(current\[1\], range\[1\]\)/);
-});
-
-test('开始时间等于结束时间时应按零时长处理', async () => {
-  const source = await readFile(
-    new URL('./components/SettingsGeneral.svelte', import.meta.url),
-    'utf8'
-  );
-
-  assert.match(source, /if \(start === end\) continue/);
-  assert.match(source, /const diffMinutes = totalWorkSegmentMinutes\(workSegments\)/);
-  assert.match(source, /formatDurationLocalized\(0\)/);
+  assert.doesNotMatch(source, /config\.work_time_segments/);
+  assert.doesNotMatch(source, /function addWorkSegment\(/);
+  assert.doesNotMatch(source, /border-l-2/);
+  assert.match(source, /aria-pressed=\{!config\.auto_start_silent\}/);
+  assert.match(source, /aria-pressed=\{!!config\.auto_start_silent\}/);
 });
 
 test('关闭开机自启动失败时不应吞掉所有异常并伪称已经移除成功', async () => {
@@ -169,10 +156,9 @@ test('基本设置的开关和数值输入应提供本地化可访问名称', as
     'utf8'
   );
 
-  assert.equal((source.match(/<UiSwitch/g) || []).length, 4);
+  assert.equal((source.match(/<UiSwitch/g) || []).length, 3);
   assert.match(source, /bind:checked=\{autoStartEnabled\}/);
   for (const key of [
-    'workTime',
     'standardWorkHours',
     'idleThreshold',
     'workGoalHours',
@@ -183,19 +169,4 @@ test('基本设置的开关和数值输入应提供本地化可访问名称', as
   ]) {
     assert.match(source, new RegExp(`(?:aria-label|label)=\\{t\\('settingsGeneral\\.${key}'\\)\\}`));
   }
-  assert.match(source, /aria-label=\{`\$\{t\('settingsGeneral\.segmentLabel'/);
-  assert.match(source, /\$\{t\('settingsGeneral\.from'\)\}`\}/);
-  assert.match(source, /\$\{t\('settingsGeneral\.to'\)\}`\}/);
-});
-
-test('工作时间设置应支持分段配置并写回 work_time_segments', async () => {
-  const source = await readFile(
-    new URL('./components/SettingsGeneral.svelte', import.meta.url),
-    'utf8'
-  );
-
-  assert.match(source, /config\.work_time_segments/);
-  assert.match(source, /function addWorkSegment\(/);
-  assert.match(source, /function removeWorkSegment\(/);
-  assert.match(source, /function updateSegment\(/);
 });

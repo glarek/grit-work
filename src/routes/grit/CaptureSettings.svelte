@@ -3,6 +3,7 @@
   import { slide } from 'svelte/transition';
   import { invoke } from '@tauri-apps/api/core';
   import { Camera, ChevronDown, HardDrive, Monitor, Save } from 'lucide-svelte';
+  import UiSwitch from '$lib/components/ui/UiSwitch.svelte';
   import UiSelect from '$lib/components/ui/UiSelect.svelte';
   import HelpTip from '$lib/components/ui/HelpTip.svelte';
   import { estimateCapture, formatStorage, type CaptureSettings, type CaptureMonitor } from './captureSettings.ts';
@@ -12,10 +13,6 @@
     { value: 'all', label: 'Alla skärmar' },
   ];
 
-  const widthModeOptions = [
-    { value: 'auto', label: 'Automatisk' },
-    { value: 'fixed', label: 'Vald maxbredd' },
-  ];
 
   export let settings: CaptureSettings;
   export let monitors: CaptureMonitor[] = [];
@@ -135,16 +132,14 @@
           <p class="mt-1 text-xs text-slate-500">Högre kvalitet tar mer plats.</p>
         </div>
 
-        <div class="text-xs font-medium text-slate-700">
-          <div class="mb-1.5 flex min-h-6 items-center">Bildstorlek</div>
-          <UiSelect
-            label="Bildstorlek"
-            bind:value={draft.width_mode}
-            options={widthModeOptions}
-            on:change={() => (dirty = true)}
-          />
+        <div class="space-y-2">
+          <div class="flex min-h-6 items-center justify-between gap-3 text-xs font-medium text-slate-700">
+            <span>Begränsa bildbredd</span>
+            <UiSwitch checked={draft.max_image_width > 0} label="Begränsa bildbredd" on:change={(e) => { draft = { ...draft, max_image_width: e.detail ? 2560 : 0, width_mode: 'fixed' }; dirty = true; }} />
+          </div>
+          <p class="text-xs text-slate-500">{draft.max_image_width === 0 ? 'Originalupplösning. Rekommenderas för OCR och AI.' : 'Nedskalning kan göra liten text svår att läsa.'}</p>
         </div>
-
+        {#if draft.max_image_width > 0}
         <div>
           <div class="mb-1.5 flex min-h-6 items-center">
             <label for="capture-max-width" class="text-xs font-medium text-slate-700">
@@ -163,6 +158,7 @@
           />
           <p class="mt-1 text-xs text-slate-500">Gäller hela bilden.</p>
         </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -250,7 +246,7 @@
     <button
       type="button"
       on:click={save}
-      disabled={saving || !draft.interval_seconds || !draft.max_image_width || !draft.jpeg_quality}
+      disabled={saving || !draft.interval_seconds || !Number.isFinite(draft.max_image_width) || !draft.jpeg_quality}
       class="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
     >
       <Save class="h-3.5 w-3.5" aria-hidden="true" />

@@ -45,22 +45,18 @@ test('产品原则应使用统一外层卡片并保持三项居中内容', async
   assert.match(source, /about-principles-title/);
   assert.match(source, /about-trust-grid/);
   assert.equal(
-    (source.match(/class="about-trust-card"/g) || []).length,
+    (source.match(/class="about-trust-card\b/g) || []).length,
     3,
     '产品原则应保留三项'
   );
   assert.doesNotMatch(source, /class="page-card about-trust-card"/);
 });
 
-test('技术栈应使用低对比居中行，不再使用胶囊结构', async () => {
+test('应移除技术栈页脚并保留精简原则卡片', async () => {
   const source = await readAboutSource();
 
-  assert.match(source, /class="page-card about-tech-stack"/);
-  assert.equal(
-    (source.match(/class="about-tech-item"/g) || []).length,
-    4,
-    '技术栈应展示四个轻量条目'
-  );
+  assert.doesNotMatch(source, /about-tech-stack/);
+  assert.doesNotMatch(source, /about-tech-item/);
   assert.doesNotMatch(source, /about-tech-pill/);
   assert.doesNotMatch(source, /about-action-strip/);
   assert.doesNotMatch(source, /about-system-note/);

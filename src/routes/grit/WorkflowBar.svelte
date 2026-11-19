@@ -32,7 +32,7 @@
       const value = await invoke<DayContext>('grit_day_context', { date });
       if (request === sequence) {
         context = value;
-        archived = value?.source === 'archive';
+        archived = value?.source === 'archive' || value?.source === 'mixed';
       }
     } catch (e) {
       if (request === sequence) error = String(e);
@@ -74,7 +74,7 @@
       <strong class="font-mono text-sm font-semibold text-slate-900 dark:text-[#e6edf3]">{date}</strong>
       <span class="text-xs text-slate-500 dark:text-[#8b949e]">
         {#if context}
-          {context.activities} poster · {Math.round(context.minutes)} min · {context.source === 'archive' ? 'Arkiv' : 'Lokalt'}
+          {context.activities} poster · {Math.round(context.minutes)} min · {context.source === 'archive' ? 'Arkiv' : context.source === 'mixed' ? 'Lokalt och arkiv' : 'Lokalt'}
         {:else}
           {error || 'Hämtar underlag…'}
         {/if}

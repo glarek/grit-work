@@ -23,3 +23,11 @@ test('rotated vertical displays and downscaling affect estimated pixels', () => 
   assert.equal(estimateCapture(settings, []).assumedScreen, true);
   assert.deepEqual(normalizeMonitors([{ width: -1, height: 10 }, null]), []);
 });
+
+test('native resolution is the default and estimates retain every monitor pixel', () => {
+  const settings = { ...normalizeCapture(null), display_mode: 'all' as const };
+  assert.equal(settings.max_image_width, 0);
+  assert.equal(normalizeCapture({ max_image_width: 0 }).max_image_width, 0);
+  assert.equal(estimateCapture(settings, monitors).high, estimateCapture({ ...settings, width_mode: 'fixed', max_image_width: 3840 }, monitors).high);
+  assert.ok(estimateCapture(settings, monitors).high > estimateCapture({ ...settings, width_mode: 'fixed', max_image_width: 1280 }, monitors).high);
+});

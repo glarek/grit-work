@@ -2332,7 +2332,30 @@ Path=Profiles/wkm9x2lf.Default (release)
 
         let window = parse_gnome_focused_window_dbus_output(output).expect("应解析成功");
 
+        assert_eq!(window.app_name, "Google Chrome");
         assert_eq!(window.browser_url, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn gnome_browser_title_does_not_promote_embedded_or_similarly_named_apps() {
+        for app in [
+            "msedgewebview2",
+            "Electron",
+            "GRIT Work",
+            "google-chrome-document-viewer",
+        ] {
+            let payload = serde_json::json!({
+                "title": "https://example.com - Google Chrome",
+                "wm_class": app,
+                "x": 0, "y": 0, "width": 800, "height": 600,
+            });
+            let window = parse_gnome_focused_window_dbus_output(&payload.to_string()).unwrap();
+            assert_eq!(window.browser_url, None, "{app}");
+            assert!(
+                !work_review_core::categorize::is_browser_app(&window.app_name),
+                "{app}"
+            );
+        }
     }
 
     #[test]
@@ -4783,6 +4806,7 @@ mod capture_privacy_tests {
     fn capture_guard_browser_unknown_and_excluded_urls_fail_closed() {
         let config = PrivacyConfig {
             excluded_domains: vec!["private.example".into()],
+            excluded_keywords: vec!["password".into()],
             ..PrivacyConfig::default()
         };
         let filter = PrivacyFilter::from_config(&config);

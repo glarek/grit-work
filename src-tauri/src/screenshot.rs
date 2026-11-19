@@ -173,10 +173,10 @@ pub struct ScreenshotConfig {
 impl Default for ScreenshotConfig {
     fn default() -> Self {
         Self {
-            max_width: 1440,
+            max_width: 0,
             jpeg_quality: 70,
             display_mode: ScreenshotDisplayMode::ActiveWindow,
-            width_mode: ScreenshotWidthMode::Auto,
+            width_mode: ScreenshotWidthMode::Fixed,
         }
     }
 }
@@ -184,10 +184,10 @@ impl Default for ScreenshotConfig {
 impl From<&StorageConfig> for ScreenshotConfig {
     fn from(value: &StorageConfig) -> Self {
         Self {
-            max_width: value.max_image_width.max(320),
+            max_width: value.resolved_max_image_width(),
             jpeg_quality: value.jpeg_quality.clamp(30, 95),
             display_mode: value.screenshot_display_mode,
-            width_mode: value.screenshot_width_mode,
+            width_mode: ScreenshotWidthMode::Fixed,
         }
     }
 }
@@ -2042,51 +2042,14 @@ fn transformed_mode_pixels(
     }
 }
 
-/// 检测主屏幕宽度（像素）
-/// 返回主屏幕的逻辑宽度，用于自适应截图分辨率
-#[cfg(target_os = "macos")]
-fn detect_primary_screen_width() -> Option<u32> {
-    use screenshots::Screen;
-    Screen::all().ok()?.first().map(|s| s.display_info.width)
-}
-
-#[cfg(target_os = "linux")]
-fn detect_primary_screen_width() -> Option<u32> {
-    use x11::xlib;
-    unsafe {
-        let display = xlib::XOpenDisplay(std::ptr::null());
-        if display.is_null() {
-            return None;
-        }
-        let screen = xlib::XDefaultScreen(display);
-        let width = xlib::XDisplayWidth(display, screen).max(1) as u32;
-        xlib::XCloseDisplay(display);
-        Some(width)
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn detect_primary_screen_width() -> Option<u32> {
-    // Windows 上回退到固定值，后续可集成 EnumDisplayMonitors
-    None
-}
-
 impl ScreenshotConfig {
-    /// 根据模式计算实际使用的最大宽度
-    /// auto 模式：取屏幕宽度的 70%，保证 OCR 清晰度同时控制存储
-    /// fixed 模式：使用配置的 max_width
-    fn compute_max_width(&self) -> u32 {
-        match self.width_mode {
-            ScreenshotWidthMode::Auto => {
-                if let Some(screen_width) = detect_primary_screen_width() {
-                    let adaptive = (screen_width as f32 * 0.7) as u32;
-                    // 至少 1280，不超过原始 max_width 的 2 倍
-                    adaptive.clamp(1280, self.max_width.max(1280) * 2)
-                } else {
-                    self.max_width
-                }
-            }
-            ScreenshotWidthMode::Fixed => self.max_width,
+    /// `None` keeps every captured pixel. A value downscales only when the image is wider.
+    fn capture_width_limit(&self) -> Option<u32> {
+        let _ = self.width_mode;
+        if self.max_width == 0 {
+            None
+        } else {
+            Some(self.max_width)
         }
     }
 }
@@ -2098,7 +2061,9 @@ fn prepare_archive_image_with_config(
 ) -> DynamicImage {
     let width = dynamic_image.width();
     let height = dynamic_image.height();
-    let max_width = config.compute_max_width();
+    let Some(max_width) = config.capture_width_limit() else {
+        return dynamic_image;
+    };
 
     if width > max_width {
         let scale = max_width as f32 / width as f32;
@@ -2415,6 +2380,18 @@ mod tests {
 
         assert_eq!(service.config.jpeg_quality, 92);
         assert_eq!(service.config.max_width, 2048);
+        let old_preset = StorageConfig {
+            resolution_policy: 0,
+            max_image_width: 1440,
+            ..StorageConfig::default()
+        };
+        assert_eq!(super::ScreenshotConfig::from(&old_preset).max_width, 0);
+        let chosen = StorageConfig {
+            max_image_width: 1280,
+            ..StorageConfig::default()
+        };
+        assert_eq!(chosen.resolution_policy, 1);
+        assert_eq!(super::ScreenshotConfig::from(&chosen).max_width, 1280);
         assert!(should_capture_all_displays(&service.config));
     }
 
@@ -2677,7 +2654,7 @@ Monitors: 2
 
         let storage = StorageConfig {
             jpeg_quality: 85,
-            max_image_width: 1440,
+            max_image_width: 1600,
             screenshot_width_mode: ScreenshotWidthMode::Fixed,
             ..StorageConfig::default()
         };
@@ -2691,9 +2668,31 @@ Monitors: 2
         let archive = image::open(&result.path).unwrap();
 
         assert_eq!(result.path, screenshots_dir.join("101530_123.jpg"));
-        assert_eq!(archive.width(), 1440);
-        assert_eq!(archive.height(), 935);
-
+        assert_eq!(archive.width(), 1600);
+        assert!(archive.height() < 1964);
+        let native = ScreenshotService::new(
+            &data_dir,
+            &StorageConfig {
+                max_image_width: 0,
+                screenshot_width_mode: ScreenshotWidthMode::Auto,
+                ..storage
+            },
+        );
+        let full = native
+            .persist_dynamic_image_capture(
+                DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                    3024,
+                    1964,
+                    Rgba([24, 48, 96, 255]),
+                )),
+                &screenshots_dir,
+                "101531_123",
+                0,
+            )
+            .unwrap();
+        let full_image = image::open(&full.path).unwrap();
+        assert_eq!(full_image.width(), 3024);
+        assert_eq!(full_image.height(), 1964);
         let ocr_temp_path = result.ocr_source_path.unwrap();
         assert!(ocr_temp_path.ends_with("101530_123_ocr.png"));
         assert!(!ocr_temp_path.starts_with(&screenshots_dir));

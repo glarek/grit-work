@@ -94,7 +94,7 @@ test('computeProjectRounding rounds per project/day to ceil 30 min and assigns p
   );
 });
 
-test('validateReportForSubmit requires manual_reason for manual rows and uses rounded submittedMinutes for invoiceableHours', () => {
+test('manual rows need no separate reason or review checkbox; totals still round per project', () => {
   const status = normalizeGritStatus({
     credential_saved: true,
     projects: PROJECTS,
@@ -127,8 +127,10 @@ test('validateReportForSubmit requires manual_reason for manual rows and uses ro
   };
 
   const invalid = validateReportForSubmit(reportMissingReason, status);
-  assert.equal(invalid.canSubmit, false);
-  assert.ok(invalid.blockers.some((b) => b.includes('manuell rad saknar')));
+  assert.equal(invalid.canSubmit, true);
+  assert.deepEqual(invalid.blockers, []);
+  reportMissingReason.rows[0]!.needs_review = true;
+  assert.equal(validateReportForSubmit(reportMissingReason, status).canSubmit, true);
 
   const validReport: GritReport = {
     ...reportMissingReason,
@@ -167,7 +169,7 @@ test('GritSettings and GritWork UI expose consent gating, retention=90, manual g
   assert.match(workSource, /Avrundad tid/);
   assert.match(workSource, /class="grit-row/);
   assert.match(workSource, /<ReportRowEditor/);
-  assert.match(rowEditorSource, /draft\.manual_reason/);
+  assert.doesNotMatch(rowEditorSource, /Orsak till manuell tid|Behöver granskas/);
   assert.match(rowEditorSource, /synkroniserade Spiris-registren/);
   assert.match(rowEditorSource, /activity_id:\s*0,\s*time_code_id:\s*0,\s*article_id:\s*0/);
 });

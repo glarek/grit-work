@@ -74,7 +74,7 @@
             <span class="about-version-badge">v{appVersion}</span>
           </div>
           <p class="about-brand-description">
-            Lokal skrivbordsklient för aktivitetsinsamling, tidsanalys och granskade tidrapporter till Spiris.
+            Lokal skrivbordsklient för aktivitetsinsamling, arbetsöversikt och granskade tidrapporter till Spiris.
           </p>
         </div>
       </div>
@@ -107,36 +107,39 @@
     </section>
 
     <section class="page-card about-principles-card">
-      <h2 class="about-principles-title page-section-title text-center">Principer</h2>
-      <div class="about-trust-grid">
-        <article class="about-trust-card">
-          <Shield size={18} strokeWidth={1.75} />
-          <h3 class="about-trust-title">Lokal lagring först</h3>
-          <p class="about-trust-copy">Aktivitetsloggar och skärmbilder lagras lokalt eller i ditt verifierade arkiv innan något underlag analyseras.</p>
+      <h2 class="about-principles-title page-section-title">Principer</h2>
+      <div class="about-trust-grid mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+        <article class="about-trust-card rounded-xl border border-slate-200/80 bg-slate-50/50 p-4 dark:border-[#30363d] dark:bg-[#161b22]/40">
+          <div class="flex items-center gap-2 text-slate-900 dark:text-[#e6edf3]">
+            <Shield size={16} strokeWidth={1.75} class="shrink-0 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+            <h3 class="about-trust-title text-sm font-semibold">Lokal lagring först</h3>
+          </div>
+          <p class="about-trust-copy mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">Aktivitetsloggar och skärmbilder lagras lokalt eller i ditt verifierade arkiv innan något underlag analyseras.</p>
         </article>
-        <article class="about-trust-card">
-          <ListTree size={18} strokeWidth={1.75} />
-          <h3 class="about-trust-title">Spårbar tidslinje</h3>
-          <p class="about-trust-copy">Varje föreslagen tidrad kopplas till dokumenterat underlag och kan granskas mot tidslinjen.</p>
+        <article class="about-trust-card rounded-xl border border-slate-200/80 bg-slate-50/50 p-4 dark:border-[#30363d] dark:bg-[#161b22]/40">
+          <div class="flex items-center gap-2 text-slate-900 dark:text-[#e6edf3]">
+            <ListTree size={16} strokeWidth={1.75} class="shrink-0 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+            <h3 class="about-trust-title text-sm font-semibold">Spårbar tidslinje</h3>
+          </div>
+          <p class="about-trust-copy mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">Varje föreslagen tidrad kopplas till dokumenterat underlag och kan granskas mot tidslinjen.</p>
         </article>
-        <article class="about-trust-card">
-          <CircleCheck size={18} strokeWidth={1.75} />
-          <h3 class="about-trust-title">Manuellt godkännande</h3>
-          <p class="about-trust-copy">Inga tidrapporter skickas till Spiris utan att du själv granskat och bekräftat överföringen.</p>
+        <article class="about-trust-card rounded-xl border border-slate-200/80 bg-slate-50/50 p-4 dark:border-[#30363d] dark:bg-[#161b22]/40">
+          <div class="flex items-center gap-2 text-slate-900 dark:text-[#e6edf3]">
+            <CircleCheck size={16} strokeWidth={1.75} class="shrink-0 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+            <h3 class="about-trust-title text-sm font-semibold">Manuellt godkännande</h3>
+          </div>
+          <p class="about-trust-copy mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-[#8b949e]">Inga tidrapporter skickas till Spiris utan att du själv granskat och bekräftat överföringen.</p>
         </article>
       </div>
-    </section>
-
-    <section class="page-card about-tech-stack">
-      <span class="about-tech-item">Tauri 2</span>
-      <span class="about-tech-item">Svelte</span>
-      <span class="about-tech-item">Rust</span>
-      <span class="about-tech-item">SQLite</span>
     </section>
   </div>
 </div>
 
 <style>
+  .about-trust-card {
+    text-align: left;
+  }
+
   .about-editorial-shell :global(.page-card),
   .about-trust-card,
   .about-brand-mark img {

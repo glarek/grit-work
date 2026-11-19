@@ -49,41 +49,69 @@ pub fn is_system_process(app_name: &str) -> bool {
 
 /// 判断进程名是否属于浏览器
 pub fn is_browser_app(app_name: &str) -> bool {
-    let app_lower = app_name.to_lowercase();
-    // 子串匹配：这些片段足够独特，不会被其它常见应用名误命中
-    let substring_match = app_lower.contains("chrome")
-        || app_lower.contains("msedge")
-        || app_lower.contains("microsoft edge")
-        || app_lower.contains("brave")
-        || app_lower.contains("opera")
-        || app_lower.contains("vivaldi")
-        || app_lower.contains("firefox")
-        || app_lower.contains("safari")
-        || app_lower.contains("orion")
-        || app_lower.contains("zen browser")
-        || app_lower.contains("browser")
-        || app_lower.contains("qq browser")
-        || app_lower.contains("360 browser")
-        || app_lower.contains("sogou browser")
-        || app_lower.contains("360se")
-        || app_lower.contains("360chrome")
-        || app_lower.contains("qqbrowser")
-        || app_lower.contains("sogouexplorer")
-        || app_lower.contains("2345explorer")
-        || app_lower.contains("liebao")
-        || app_lower.contains("maxthon")
-        || app_lower.contains("theworld")
-        || app_lower.contains("iexplore")
-        || app_lower.contains("tabbit");
-    if substring_match {
-        return true;
-    }
-    // 精确匹配：避免短关键字误中其它应用
-    //   - "cent" 之前用 contains() 会把 "Tencent Lemon" / "Tencent Meeting" 等误判为浏览器
-    //   - "arc" 同理（"Arch Linux" 等 .exe 都会误中）
+    // An embedded browser engine is not a browser application. Use executable
+    // or canonical display names, never substrings such as "browser" or "opera".
+    let name = app_name.trim().to_lowercase();
+    let name = name.trim_end_matches(".exe");
     matches!(
-        app_lower.as_str(),
-        "cent" | "cent browser" | "centbrowser" | "arc"
+        name,
+        "chrome"
+            | "google-chrome"
+            | "google chrome"
+            | "google chrome beta"
+            | "google chrome dev"
+            | "google chrome canary"
+            | "chrome helper"
+            | "chromium"
+            | "chromium-browser"
+            | "chromium browser"
+            | "msedge"
+            | "edge"
+            | "microsoft edge"
+            | "microsoft edge beta"
+            | "microsoft edge dev"
+            | "microsoft edge canary"
+            | "brave"
+            | "brave browser"
+            | "brave-browser"
+            | "firefox"
+            | "firefox developer edition"
+            | "firefox nightly"
+            | "safari"
+            | "safari technology preview"
+            | "opera"
+            | "opera gx"
+            | "vivaldi"
+            | "orion"
+            | "zen"
+            | "zen browser"
+            | "arc"
+            | "cent"
+            | "cent browser"
+            | "centbrowser"
+            | "qqbrowser"
+            | "qq browser"
+            | "360se"
+            | "360chrome"
+            | "360 browser"
+            | "sogouexplorer"
+            | "sogou browser"
+            | "2345explorer"
+            | "liebao"
+            | "maxthon"
+            | "theworld"
+            | "iexplore"
+            | "internet explorer"
+            | "tabbit"
+            | "yandex"
+            | "yandex browser"
+            | "tor"
+            | "tor browser"
+            | "waterfox"
+            | "librewolf"
+            | "floorp"
+            | "iceweasel"
+            | "sidekick"
     )
 }
 
@@ -123,9 +151,10 @@ pub fn normalize_display_app_name(app_name: &str) -> String {
 
     match normalized.as_str() {
         // ── 本应用 ──
+        "grit-work" | "grit_work" | "gritwork" | "grit work" => "GRIT Work".to_string(),
         "work-review" | "work_review" | "workreview" | "work review" => "Work Review".to_string(),
         // ── 浏览器 ──
-        "chrome" | "google chrome" => "Google Chrome".to_string(),
+        "chrome" | "google-chrome" | "google chrome" => "Google Chrome".to_string(),
         "msedge" | "edge" | "microsoft edge" => "Microsoft Edge".to_string(),
         "brave" | "brave browser" => "Brave Browser".to_string(),
         "firefox" => "Firefox".to_string(),
@@ -974,6 +1003,31 @@ pub fn get_category_name(category: &str) -> &str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn embedded_engines_and_browser_name_substrings_are_not_browsers() {
+        for app in [
+            "msedgewebview2",
+            "msedgewebview2.exe",
+            "Electron",
+            "GRIT Work",
+            "grit-work.exe",
+            "Browser Helper",
+            "Opera Accounting",
+            "Chrome Document Viewer",
+        ] {
+            assert!(!is_browser_app(app), "{app}");
+        }
+        for app in [
+            "chrome.exe",
+            "MSedge.EXE",
+            "Brave Browser",
+            "Chromium",
+            "Firefox",
+        ] {
+            assert!(is_browser_app(app), "{app}");
+        }
+        assert_eq!(normalize_display_app_name("grit-work.exe"), "GRIT Work");
+    }
     #[test]
     fn is_browser_app_recognises_common_browsers() {
         assert!(is_browser_app("Google Chrome"));

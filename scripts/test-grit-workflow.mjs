@@ -7,6 +7,23 @@ const errors=[];page.on('pageerror',e=>errors.push(e.message));
 await page.addInitScript(installReviewFixture());
 await page.goto(process.env.GRIT_TEST_URL || 'http://127.0.0.1:5182/');
 await page.getByRole('button',{name:'Rapportera till Spiris',exact:true}).waitFor();
+// Today is selectable and a draft can be regenerated without submitting time.
+assert.equal(await page.getByRole('button',{name:'Idag',exact:true}).isDisabled(),true);
+const generate=page.getByRole('button',{name:'Generera om utkast',exact:true});
+assert.equal(await generate.isEnabled(),true);
+await generate.click();
+await page.getByRole('button',{name:'Avbryt',exact:true}).click();
+assert.equal(await page.evaluate(()=>window.testCalls.includes('grit_generate')),false);
+await generate.click();
+await page.getByRole('button',{name:'Ersätt med nytt utkast',exact:true}).click();
+await page.locator('[data-report-basis]').waitFor();
+assert.match(await page.locator('[data-report-basis]').innerText(),/1 bilder utan färdig tolkning/);
+assert.equal(await page.getByRole('button',{name:'Rapportera till Spiris',exact:true}).isDisabled(),true);
+await page.evaluate(()=>window.testGenerateFailure=true);
+await generate.click();await page.getByRole('button',{name:'Ersätt med nytt utkast',exact:true}).click();
+await page.getByText('CLI-inloggning saknas. Logga in och försök igen.',{exact:true}).waitFor();
+assert.equal(await page.locator('.grit-row').count(),1,'Failed regeneration retains previous rows');
+await page.evaluate(()=>window.testGenerateFailure=false);
 await page.getByRole('button',{name:'Föregående dag',exact:true}).click();
 const originalDate=(await page.getByRole('button',{name:'Välj arbetsdag',exact:true}).innerText()).trim();
 for(const nav of ['Tidslinje','Översikt']){
@@ -31,6 +48,13 @@ assert.equal(await historyChoice.isChecked(),true);
 await page.getByRole('button',{name:'Spara AI-inställningar',exact:true}).click();
 await page.waitForFunction(()=>window.testCallArgs.some(call=>call.cmd==='grit_save_settings' && call.args.settings.use_report_history===true));
 
+await page.getByRole('button',{name:'Testa AI',exact:true}).click();
+await page.getByText('Modellen svarade med rätt format.',{exact:true}).waitFor();
+await page.evaluate(()=>window.testAiFailure=true);
+await page.getByRole('button',{name:'Testa AI',exact:true}).click();
+await page.getByText('CLI-inloggning saknas. Logga in och försök igen.',{exact:true}).waitFor();
+await page.evaluate(()=>window.testAiFailure=false);
+
 // Image interpretation settings: off / ocr / ai, dirty gating, consent, and manual run
 await page.getByRole('button',{name:'Insamling & lagring',exact:true}).click();
 async function assertRowAligned(locators,label){
@@ -44,7 +68,12 @@ async function assertRowAligned(locators,label){
 }
 await assertRowAligned([page.getByRole('spinbutton',{name:'Skärmbildsintervall i sekunder'}),page.getByRole('combobox',{name:'Skärmar att samla in',exact:true})],'captureRow');
 await page.getByRole('button',{name:/Bildinställningar/}).click();
-await assertRowAligned([page.locator('#capture-jpeg-quality'),page.getByRole('combobox',{name:'Bildstorlek',exact:true}),page.locator('#capture-max-width')],'imageAdvancedRow');
+assert.equal(await page.locator('#capture-max-width').count(),0);
+await page.getByRole('switch',{name:'Begränsa bildbredd',exact:true}).click();
+await assertRowAligned([page.locator('#capture-jpeg-quality'),page.locator('#capture-max-width')],'imageAdvancedRow');
+await page.getByRole('switch',{name:'Begränsa bildbredd',exact:true}).click();
+await page.getByRole('button',{name:'Spara insamling',exact:true}).click();
+await page.waitForFunction(()=>window.testCallArgs.some(c=>c.cmd==='grit_save_capture_settings' && c.args.settings.max_image_width===0));
 await assertRowAligned([page.getByRole('combobox',{name:'Tolkningsläge',exact:true}),page.locator('#grit-image-interp-interval')],'imageInterpRow');
 await assertRowAligned([page.locator('#grit-archive-dir'),page.getByRole('button',{name:'Välj mapp',exact:true}),page.locator('#grit-archive-retention')],'archiveRow');
 async function assertRowAlignedOrStacked(locators,label){
@@ -79,7 +108,7 @@ assert.equal(await page.getByRole('button',{name:'Tolka nu',exact:true}).isDisab
 await page.getByRole('button',{name:'Spara bildtolkning',exact:true}).click();
 await page.waitForFunction(()=>window.testCallArgs.some(call=>call.cmd==='grit_save_settings' && call.args.settings.image_interpretation?.mode==='ocr'));
 await page.getByRole('button',{name:'Tolka nu',exact:true}).click();
-await page.getByText('2 klara',{exact:false}).waitFor();
+await page.getByText('2 behandlade',{exact:false}).waitFor();
 
 await page.getByRole('combobox',{name:'Tolkningsläge',exact:true}).click();
 await page.getByRole('option',{name:'AI-bildtolkning',exact:true}).click();
@@ -90,7 +119,13 @@ assert.equal(await page.locator('#grit-image-interp-model').inputValue(),'grok-4
 await page.getByRole('button',{name:'Spara bildtolkning',exact:true}).click();
 await page.waitForFunction(()=>window.testCallArgs.some(call=>call.cmd==='grit_save_settings' && call.args.settings.image_interpretation?.mode==='ai' && call.args.settings.image_interpretation?.provider==='grok'));
 await page.getByRole('button',{name:'Tolka nu',exact:true}).click();
-await page.getByText('2 klara',{exact:false}).waitFor();
+await page.getByText('2 behandlade',{exact:false}).waitFor();
+
+await page.getByRole('button',{name:'Testa bildmodell',exact:true}).click();
+await page.getByText('Modellen läste testbilden och lämnade ett giltigt svar.',{exact:true}).waitFor();
+await page.evaluate(()=>window.testInterpretationStatus={completed:48,with_content:8,no_text:40,sparse:8});
+await page.getByText('40 bilder utan läst innehåll, 8 med lite innehåll.',{exact:true}).waitFor();
+await page.evaluate(()=>window.testInterpretationStatus=null);
 
 await page.getByRole('link',{name:'Tidrapporter',exact:true}).click();
 assert.equal((await page.getByRole('button',{name:'Välj arbetsdag',exact:true}).innerText()).trim(),originalDate);

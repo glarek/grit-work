@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import UiDialog from '../../lib/components/ui/UiDialog.svelte';
   import ReportingDialog from './ReportingDialog.svelte';
   import ReportRowEditor from './ReportRowEditor.svelte';
   import LocalizedDatePicker from '../../lib/components/LocalizedDatePicker.svelte';
@@ -18,6 +19,7 @@
     formatSwedishHours,
     getStatusBadgeMeta,
     getYesterdayIsoDate,
+    getTodayIsoDate,
     isKnownProjectId,
     isReportEditable,
     isReportReconcilable,
@@ -45,6 +47,9 @@
   let initialLoading = true;
   let reportLoading = false;
   let generating = false;
+  let generationPending = false;
+  let confirmGenerateOpen = false;
+  let todayDate = getTodayIsoDate();
   let savingDraft = false;
   let submitting = false;
   let reconciling = false;
@@ -113,7 +118,7 @@
         report = nextReport;
       }
 
-      if (nextReport?.status !== 'running') {
+      if (!generationPending && nextReport?.status !== 'running') {
         generating = false;
       }
       syncPollingState();
@@ -130,7 +135,7 @@
       status = nextStatus;
       settingsForm = { ...nextStatus.settings };
 
-      const targetDate = dateOverride ?? (nextStatus.yesterday || getYesterdayIsoDate());
+      const targetDate = dateOverride ?? getTodayIsoDate();
       selectedDate = targetDate;
       selectWorkDate(targetDate);
 
@@ -180,6 +185,7 @@
     }
     selectedDate = targetDate;
     generating = true;
+    generationPending = true;
     try {
       const rawReport = await invoke<unknown>('grit_generate', { date: targetDate });
       const nextReport = normalizeGritReport(rawReport);
@@ -194,6 +200,7 @@
     } catch (err) {
       errorMessage = formatError(err);
     } finally {
+      generationPending = false;
       generating = report?.status === 'running';
       syncPollingState();
     }
@@ -472,6 +479,7 @@
   onMount(() => {
     void loadStatusAndReport(selectedDate);
     dayTimer = setInterval(() => {
+      todayDate = getTodayIsoDate();
       void pollActiveReport();
     }, 15000);
   });
@@ -540,7 +548,8 @@
       <button
         type="button"
         on:click={handleArchive}
-        disabled={archiving || initialLoading}
+        disabled={archiving || initialLoading || !status?.settings.archive_dir}
+        title={status?.settings.archive_dir ? 'Arkivera underlaget' : 'Valfritt: välj arkivmapp under Insamling & lagring'}
         class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]"
       >
         <GritIcon name="archive" sizeClass="h-3.5 w-3.5" />
@@ -608,7 +617,7 @@
       </section>
     {/if}
 
-    {#if selectedDate > yesterdayDate}<p class="text-sm text-slate-500 dark:text-[#8b949e]">Arbetsdagen pågår. Du kan analysera underlaget nu och skapa tidrapporten när dygnet är avslutat.</p>{/if}
+    {#if selectedDate > yesterdayDate}<p class="text-sm text-slate-500 dark:text-[#8b949e]">Dagens utkast använder det som samlats in hittills. Generera om när mer underlag är klart.</p>{/if}
     <!-- Date selector & pending dates -->
     <section class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-sm dark:border-[#30363d] dark:bg-[#161b22]/90">
       <div class="flex flex-wrap items-center gap-2">
@@ -621,17 +630,20 @@
         >
           <GritIcon name="chevron-left" sizeClass="h-4 w-4" />
         </button>
-        <LocalizedDatePicker bind:value={selectedDate} max={shiftIsoDateString(yesterdayDate, 1)} label="Välj arbetsdag" on:change={() => selectDate(selectedDate)} />
+        <LocalizedDatePicker bind:value={selectedDate} max={todayDate} label="Välj arbetsdag" on:change={() => selectDate(selectedDate)} />
         <button
           type="button"
           on:click={() => selectDate(shiftIsoDateString(selectedDate, 1))}
           class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-40 dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#21262d]"
-          disabled={selectedDate >= shiftIsoDateString(yesterdayDate, 1)}
+          disabled={selectedDate >= todayDate}
           aria-label="Nästa dag"
           title="Nästa dag"
         >
           <GritIcon name="chevron-right" sizeClass="h-4 w-4" />
         </button>
+
+        <button type="button" on:click={() => selectDate(todayDate)} disabled={selectedDate === todayDate || generating}
+          class="rounded-lg px-3 py-2 text-xs font-semibold text-indigo-700 disabled:text-slate-400">Idag</button>
 
         {#if status && status.pending_dates.length > 0}
           <div class="ml-2 flex flex-wrap items-center gap-1.5">
@@ -667,7 +679,7 @@
             <button
               type="button"
               on:click={createManualReportAndRow}
-              disabled={generating || reportLoading || selectedDate > shiftIsoDateString(yesterdayDate, 1)}
+              disabled={generating || reportLoading || selectedDate > todayDate}
               class="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#e6edf3]"
             >
               <GritIcon name="plus" sizeClass="h-3.5 w-3.5" />
@@ -676,14 +688,14 @@
           {/if}
           <button
             type="button"
-            on:click={() => handleGenerate(selectedDate)}
-            disabled={generating || reportLoading || selectedDate > yesterdayDate || !aiConsent}
+            on:click={() => { if (report?.status === 'draft' && report.rows.length) confirmGenerateOpen = true; else void handleGenerate(selectedDate); }}
+            disabled={generating || reportLoading || selectedDate > todayDate || !aiConsent}
             class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-50 {report
               ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-[#30363d] dark:bg-[#21262d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]'
               : 'bg-indigo-600 text-white hover:bg-indigo-700'}"
           >
             <GritIcon name="sparkles" sizeClass="h-3.5 w-3.5" />
-            <span>{report ? 'Generera om utkast' : 'Generera tidrapport'}</span>
+            <span>{report ? 'Generera om utkast' : 'Generera utkast'}</span>
           </button>
         {/if}
       </div>
@@ -720,9 +732,9 @@
           Ingen tidrapport för {selectedDate}
         </h2>
         <p class="mt-1 text-sm text-slate-500 dark:text-[#8b949e]">
-          Klicka på "Generera tidrapport" för att sammanställa dagens arbete, eller lägg till en manuell lucka om du arbetat utan dator.
+          Skapa ett utkast från aktivitetsloggar och färdiga bildtolkningar, eller lägg till tid manuellt.
         </p>
-        {#if selectedDate <= shiftIsoDateString(yesterdayDate, 1)}
+        {#if selectedDate <= todayDate}
           <div class="mt-4 flex justify-center">
             <button
               type="button"
@@ -783,6 +795,15 @@
           </div>
         </div>
 
+        {#if report.basis}
+          <p class="text-xs text-slate-500" data-report-basis>
+            Underlag vid {new Date(report.basis.created_at * 1000).toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' })}
+            · {report.basis.activities} loggposter · {report.basis.images_with_content} bilder med innehåll
+            {#if report.basis.images_pending || report.basis.images_failed}
+              · {report.basis.images_pending + report.basis.images_failed} bilder utan färdig tolkning
+            {/if}
+          </p>
+        {/if}
         {#if rounding && rounding.projectTotals.length > 0}
           <details class="rounded-lg border border-slate-200/70 bg-slate-50/60 px-3.5 py-2.5 text-xs dark:border-[#30363d] dark:bg-[#0d1117]">
             <summary class="flex cursor-pointer list-none items-center justify-between font-medium text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-[#c9d1d9]">
@@ -995,3 +1016,10 @@
   <ReportingDialog bind:open={confirmSubmitOpen} {report} {status} {submitting}
     on:change={(e) => { report = e.detail; dirtyDraft = true; }} on:submit={handleConfirmSubmit} />
 {/if}
+
+<UiDialog bind:open={confirmGenerateOpen} title="Generera ett nytt utkast?" description="Det nya utkastet ersätter rapportens rader och dina ändringar. Om genereringen misslyckas behålls det sparade utkastet.">
+  <div class="flex justify-end gap-2 mt-5">
+    <button type="button" class="ui-button" on:click={() => { confirmGenerateOpen = false; }}>Avbryt</button>
+    <button type="button" class="ui-button ui-button-primary" on:click={() => { confirmGenerateOpen = false; void handleGenerate(selectedDate); }}>Ersätt med nytt utkast</button>
+  </div>
+</UiDialog>

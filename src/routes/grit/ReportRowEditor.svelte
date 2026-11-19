@@ -1,5 +1,4 @@
 <script lang="ts">
-  import UiCheckbox from "$lib/components/ui/UiCheckbox.svelte";
   import { createEventDispatcher } from 'svelte';
   import { Trash2, Check, ChevronDown } from 'lucide-svelte';
   import UiDialog from '../../lib/components/ui/UiDialog.svelte';
@@ -38,8 +37,7 @@
     if(!start||end<=start){error='Ange ett giltigt tidsintervall (HH:mm).';return;}
     if(!Number.isFinite(hours)||hours<=0||Math.round(hours*60)>(end-start)/60){error='Tiden måste vara positiv och rymmas inom intervallet.';return;}
     if(!draft.description.trim()){error='Skriv en dagboksanteckning.';return;}
-    if(draft.manual&&!draft.manual_reason.trim()){error='Ange en orsak till den manuella tiden.';return;}
-    dispatch('save',{index:rowIndex,row:{...draft,start,end,minutes:Math.round(hours*60)}});open=false;
+    dispatch('save',{index:rowIndex,row:{...draft,start,end,minutes:Math.round(hours*60),needs_review:draft.project_id<=0}});open=false;
   }
 </script>
 <UiDialog bind:open title={readonly ? 'Rapporterad tidrad' : 'Redigera tidrad'} description={date}>
@@ -65,8 +63,6 @@
       </div>
       <p class="text-xs text-slate-500 mt-3">Underlag: {draft.evidence_ids.length ? draft.evidence_ids.map(id=>`#${id}`).join(', ') : 'Manuell tid'}</p>
     </details>
-    {#if draft.manual}<label class="block text-xs text-slate-500">Orsak till manuell tid<input type="text" bind:value={draft.manual_reason} disabled={readonly} class="mt-1 w-full rounded-lg bg-slate-100 px-3 py-2 text-sm border-0" placeholder="Till exempel möte utan skärmaktivitet" /></label>{/if}
-    {#if !readonly}<label for="reportroweditor-draft-needs_review" class="flex items-center gap-2 text-sm text-slate-600"><UiCheckbox id="reportroweditor-draft-needs_review" bind:checked={draft.needs_review} label="Behöver granskas" />Behöver granskas</label>{/if}
     <div class="flex items-center justify-between gap-3 pt-1">
       {#if !readonly}<button class="ui-icon-button text-rose-600" aria-label="Ta bort tidrad" title="Ta bort tidrad" on:click={()=>{dispatch('delete',{index:rowIndex});open=false;}}><Trash2 size={17}/></button>{:else}<span></span>{/if}
       <div class="flex gap-2"><button class="ui-button" on:click={()=>open=false}>{readonly ? 'Stäng' : 'Avbryt'}</button>{#if !readonly}<button class="ui-button ui-button-primary" on:click={save}><Check size={16}/>Spara rad</button>{/if}</div>

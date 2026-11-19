@@ -46,6 +46,9 @@ Var GritUserDisabled
     ; First install. Silent current-user startup is the default.
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "GRIT Work" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --autostart --hidden"
   ${EndIf}
+  ; Notify Explorer after replacing the executable's icon resources.
+  ; Do not remove the user's pinned shortcuts or global icon cache.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

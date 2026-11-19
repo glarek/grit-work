@@ -252,7 +252,6 @@
     border: 1px solid rgba(148, 163, 184, 0.24);
     border-radius: var(--radius-lg);
     background: #fff;
-    box-shadow: -18px 0 48px rgba(15, 23, 42, 0.18);
   }
 
   .hourly-summary-header {
@@ -260,7 +259,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 1rem;
-    padding: 1.35rem 1.4rem 1.2rem;
+    padding: 1rem 1.25rem;
     border-bottom: 1px solid rgba(148, 163, 184, 0.18);
   }
 
@@ -326,7 +325,8 @@
     min-height: 0;
     flex: 1;
     overflow-y: auto;
-    padding: 1.1rem 1.25rem 1.4rem;
+    overscroll-behavior: contain;
+    padding: 0.9rem 1.15rem 1.15rem;
     background: #fafaf9;
   }
 
@@ -438,18 +438,22 @@
   }
 
   .hourly-summary-primary {
-    margin-top: 0.82rem !important;
+    margin-top: 0.72rem !important;
     color: #1c1917;
     font-size: 0.9rem;
     font-weight: 600;
-    line-height: 1.65;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .hourly-summary-secondary {
-    margin-top: 0.48rem !important;
+    margin-top: 0.42rem !important;
     color: #57534e;
     font-size: 0.82rem;
-    line-height: 1.72;
+    line-height: 1.62;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .hourly-summary-expand {
@@ -483,12 +487,15 @@
   }
 
   .hourly-summary-apps span {
-    padding: 0.27rem 0.58rem;
+    max-width: 100%;
+    padding: 0.25rem 0.55rem;
     border: 1px solid rgba(120, 113, 108, 0.12);
     border-radius: var(--radius-full);
     color: #57534e;
     background: #fafaf9;
     font-size: 0.72rem;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   :global(.dark) .hourly-summary-drawer {

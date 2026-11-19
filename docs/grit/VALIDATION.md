@@ -1,6 +1,20 @@
 # Validation — 2026-11-19
 
-## Reusable image interpretation, pixel icon and aligned settings
+## rc.3 — day evidence, usable images and drafts during the day
+
+Current source changes (Windows verification pending):
+
+- Calendar-day reads retain original activity IDs, clip intervals at local midnight, and union overlap once. All active computer time counts as work; legacy schedules do not change day totals. Target/adjacent verified archive projection and expiry rules are covered, including Stockholm DST days. Raw archive exports and deletion ownership are unchanged.
+- Default capture preserves native pixels. Legacy 1280/1440 caps migrate once; a later explicit cap survives. AI uses native 1600px tiles with 80px overlap and bounded image/decoded-size limits. OCR/AI JSON reports dimensions and empty/sparse-content warnings. Empty OCR is a completed recognition with no text, not evidence of no work.
+- The supplied real JSON contained 49 image entries: 48 completed, 40 of those empty, and only 74 text characters across 8 nonempty entries. It contains image context, not the activity intervals needed to establish reportable time. No raw user evidence was copied into fixtures or sent to external test providers.
+- Explicit draft generation permits today and uses completed image context without processing the whole queue. Unfinished/failed/unconsented entries emit empty content and their actual status. Report metadata records the log/image snapshot. Future dates and unsupported minutes remain rejected; Spiris submission still requires a completed day and explicit approval. A failed regeneration retains the prior saved draft.
+- Browser tests pass for compact editing, current-day generation/regeneration failure, date sharing, image modes, native-width saving, aligned controls, AI test feedback, sidebar test health (including stale and incomplete image-model checks), approval/membership/duplicate gates, countdown and reduced layout. No real time was submitted.
+- Live synthetic text and image connection checks passed through visible Herdr for Codex `gpt-6.2-sol`, Grok `grok-4.7-build-fast`, and agy `gemini-4-hydrogen-medium`. The random image identifier was supplied only as pixels. Test status polling is local; it never runs these checks automatically.
+- The privacy panel and prior capture exceptions were removed as explicitly requested. Native capture safety checks remain; tests configure exclusions explicitly when testing the guard. A strict known-browser allowlist prevents WebView/Electron/GRIT false browser labels; exact generated legacy Chinese summaries localize in memory, without rewriting arbitrary authored/model text.
+- Local frontend: 785 tests passed; Svelte check zero errors/warnings. The full Rust workspace passed 921 tests with one real-display test ignored, including seven connection-health tests. All-target Clippy with warnings denied and workspace formatting pass; the final default-config cleanup also passed 54 focused configuration tests.
+- The rc.3 installer and native Windows run will be recorded here after verification. The rc.2 artifact below remains the previously verified build until then.
+
+## Previous delivery: reusable image interpretation, pixel icon and aligned settings
 
 Implementation through `dcbadef` introduces three persisted image modes, independent sampling, incremental background processing and text-only report input. Tidsanalys is removed. Off writes explicit empty image content; OCR uses Windows.Media.Ocr from Rust; AI reads one selected screenshot through the chosen CLI. Changing method/model/image invalidates cached content. Failed jobs need explicit retry. The archive verifies the daily JSON companion and keeps the local derived cache.
 
@@ -15,7 +29,7 @@ Implementation through `dcbadef` introduces three persisted image modes, indepen
 - The inherited macOS job in run `44509146739` fails 12 archive tests because its temporary directory resolves through the `/var` symlink, which the archive path guard rejects. Linux and Windows jobs pass. macOS is outside this Windows-only product's supported platforms; the path guard was not weakened.
 - Native [Windows run 44509135282](https://github.com/glarek/grit-work/actions/runs/44509135282) passed at `dcbadef`: **887 Rust tests**, one real-display test ignored, **786 frontend tests**, all-target Clippy, Svelte zero errors/warnings and optimized NSIS packaging. Installer: `all-artifacts/windows-interpretation/GRIT Work_1.1.4-rc.2_x64-setup.exe`, 10,468,127 bytes, SHA-256 `6cddd294ac1fadffcf00e82077e0c6a4cfa376c8be23d56e3e808c22fef4953a`. The adjacent `SHA256SUMS.txt` and `installer-verification.json` record provenance.
 - Windows VM upgrade passed: transferred installer checksum matched, the installed executable changed to SHA-256 `ef7e7671ce5c2537ff1bd3fedbe3eff85eb63cd3d6e134d193e75be33880fe27`, display name is exactly `GRIT Work`, and current-user `--autostart --hidden` remained configured. Signature status is `NotSigned`. No app session was running or started during the smoke test. The installed app and its data were preserved; four owned staging files and their empty directory were removed.
-- This installer is the current unsigned development preview. Older installers below do not contain this iteration. The installation/OCR checks do not establish real desktop capture, physical multi-monitor behavior, logged-in Windows CLI execution or live time submission.
+- This rc.2 installer is the previously verified unsigned development preview; it does not contain rc.3 changes. The installation/OCR checks do not establish real desktop capture, physical multi-monitor behavior, logged-in Windows CLI execution or live time submission.
 
 ## Previous delivery: Swedish interface and compact reporting
 

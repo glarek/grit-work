@@ -1,6 +1,6 @@
 // 小时摘要生成器：按小时聚合活动，供时间线小时摘要使用。
 
-use crate::database::Activity;
+use crate::database::{Activity, HourlySummary};
 use std::collections::HashMap;
 
 fn calculate_activity_covered_duration(activities: &[Activity]) -> i64 {
@@ -54,6 +54,10 @@ pub struct HourlyStats {
 impl HourlyStats {
     /// 从活动列表构建统计
     pub fn from_activities(activities: Vec<Activity>) -> Self {
+        let activities: Vec<_> = activities
+            .into_iter()
+            .filter(|activity| activity.duration > 0)
+            .collect();
         let mut app_durations: HashMap<String, i64> = HashMap::new();
         let mut representative_screenshots = Vec::new();
         let mut urls = Vec::new();
@@ -129,7 +133,7 @@ impl HourlyStats {
     /// 获取主要应用（按时长排序）
     pub fn get_main_apps(&self) -> Vec<String> {
         let mut apps: Vec<_> = self.app_durations.iter().collect();
-        apps.sort_by(|a, b| b.1.cmp(a.1));
+        apps.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
         apps.into_iter()
             .map(|(name, _)| name.clone())
             .take(5)
@@ -137,9 +141,90 @@ impl HourlyStats {
     }
 }
 
-/// 生成小时摘要（无 AI 时的备选方案）
+/// Swedish text generated from recorded activity, without guessing missing URLs.
 pub fn generate_fallback_summary(stats: &HourlyStats) -> String {
     let main_apps = stats.get_main_apps();
+    if main_apps.is_empty() {
+        return "Ingen registrerad aktivitet".to_string();
+    }
+
+    let duration_min = (stats.total_duration + 30) / 60;
+    let mut summary = format!("Aktiv i {} i {duration_min} min", main_apps.join(", "));
+    let mut domains = Vec::new();
+    for url in &stats.urls {
+        // Only name hosts supported by a recorded URL. Keep raw URL/OCR data intact.
+        if let Ok(url) = reqwest::Url::parse(url) {
+            if matches!(url.scheme(), "https" | "http") {
+                if let Some(host) = url.host_str() {
+                    if !domains.contains(&host.to_string()) {
+                        domains.push(host.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if !domains.is_empty() {
+        summary.push_str(&format!(
+            ". Webbplatser: {}",
+            domains.into_iter().take(5).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !stats.ocr_keywords.is_empty() {
+        summary.push_str(&format!(
+            ". Nyckelord från skärmen: {}",
+            stats
+                .ocr_keywords
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    summary
+}
+
+/// Recognize only the exact historical template, corroborated by its source rows.
+/// The replacement is for display; stored prose and original evidence are never changed.
+pub fn regenerated_legacy_fallback(summary: &HourlySummary, stats: &HourlyStats) -> Option<String> {
+    if summary.activity_count != stats.activity_count
+        || summary.total_duration != stats.total_duration
+    {
+        return None;
+    }
+    let main_apps: Vec<String> = if summary.main_apps.is_empty() {
+        Vec::new()
+    } else {
+        summary.main_apps.split(", ").map(str::to_string).collect()
+    };
+    // Historical HashMap ties had arbitrary order. Validate membership/ranking while
+    // using the cached order to reconstruct the exact old generated text.
+    if main_apps.len() != stats.app_durations.len().min(5) {
+        return None;
+    }
+    let mut previous = i64::MAX;
+    let mut seen = std::collections::HashSet::new();
+    for app in &main_apps {
+        let duration = *stats.app_durations.get(app)?;
+        if duration > previous || !seen.insert(app) {
+            return None;
+        }
+        previous = duration;
+    }
+    if stats
+        .app_durations
+        .iter()
+        .any(|(app, duration)| !seen.contains(app) && *duration > previous)
+    {
+        return None;
+    }
+    (summary.summary == legacy_fallback_summary(stats, &main_apps))
+        .then(|| generate_fallback_summary(stats))
+}
+
+// Kept solely to recognize existing generated cache entries, never used for new output.
+/// 生成小时摘要（无 AI 时的备选方案）
+fn legacy_fallback_summary(stats: &HourlyStats, main_apps: &[String]) -> String {
     if main_apps.is_empty() {
         return "无活动记录".to_string();
     }
@@ -224,6 +309,68 @@ mod tests {
         let stats = HourlyStats::from_activities(activities);
 
         assert_eq!(stats.total_duration, 55 * 60);
-        assert!(generate_fallback_summary(&stats).contains("55分钟"));
+        assert!(generate_fallback_summary(&stats).contains("55 min"));
+    }
+    fn cached_summary(stats: &HourlyStats, apps: &[String]) -> crate::database::HourlySummary {
+        crate::database::HourlySummary {
+            id: Some(7),
+            date: "2026-11-19".into(),
+            hour: 10,
+            summary: super::legacy_fallback_summary(stats, apps),
+            main_apps: apps.join(", "),
+            activity_count: stats.activity_count,
+            total_duration: stats.total_duration,
+            representative_screenshots: None,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn swedish_fallback_preserves_evidence_and_does_not_guess_urls() {
+        let mut activity = sample_activity("Editor", 60, 60);
+        activity.browser_url = Some("not a captured URL".into());
+        activity.ocr_text = Some("Projekt ritningar".into());
+        let stats = HourlyStats::from_activities(vec![activity]);
+        assert_eq!(
+            generate_fallback_summary(&stats),
+            "Aktiv i Editor i 1 min. Nyckelord från skärmen: Projekt, ritningar"
+        );
+        assert_eq!(stats.urls, ["not a captured URL"]);
+        assert_eq!(
+            generate_fallback_summary(&HourlyStats::from_activities(vec![])),
+            "Ingen registrerad aktivitet"
+        );
+    }
+
+    #[test]
+    fn legacy_fallback_requires_exact_template_and_corroborating_evidence() {
+        let mut activity = sample_activity("Firefox", 60, 60);
+        activity.browser_url = Some("https://example.com/docs".into());
+        activity.ocr_text = Some("Ritningar".into());
+        let stats = HourlyStats::from_activities(vec![activity]);
+        let mut cached = cached_summary(&stats, &stats.get_main_apps());
+        assert_eq!(super::regenerated_legacy_fallback(&cached, &stats), Some("Aktiv i Firefox i 1 min. Webbplatser: example.com. Nyckelord från skärmen: Ritningar".into()));
+        cached.summary.push_str("。这是我写的备注");
+        assert_eq!(super::regenerated_legacy_fallback(&cached, &stats), None);
+        cached = cached_summary(&stats, &stats.get_main_apps());
+        cached.activity_count += 1;
+        assert_eq!(super::regenerated_legacy_fallback(&cached, &stats), None);
+        cached = cached_summary(&stats, &stats.get_main_apps());
+        cached.total_duration += 60;
+        assert_eq!(super::regenerated_legacy_fallback(&cached, &stats), None);
+    }
+
+    #[test]
+    fn legacy_fallback_accepts_historical_tie_order_without_changing_prose() {
+        let stats = HourlyStats::from_activities(vec![
+            sample_activity("Alpha", 60, 60),
+            sample_activity("Beta", 120, 60),
+        ]);
+        let cached = cached_summary(&stats, &["Beta".into(), "Alpha".into()]);
+        assert!(super::regenerated_legacy_fallback(&cached, &stats).is_some());
+        assert_eq!(stats.get_main_apps(), ["Alpha", "Beta"]);
+        let mut prose = cached.clone();
+        prose.summary = "使用 Alpha 完成了项目设计，这是模型撰写的说明。".into();
+        assert_eq!(super::regenerated_legacy_fallback(&prose, &stats), None);
     }
 }

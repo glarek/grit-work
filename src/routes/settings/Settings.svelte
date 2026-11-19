@@ -8,15 +8,13 @@
   import { formatUserError } from '$lib/utils/errorDisplay.ts';
   import { showToast } from '../../lib/stores/toast.ts';
 
-  import { AlertCircle, Check, CheckCircle2, KeyRound, Settings as SettingsIcon, Sparkles, Building2, Camera, SlidersHorizontal, Shield } from 'lucide-svelte';
+  import { AlertCircle, Check, CheckCircle2, KeyRound, Settings as SettingsIcon, Sparkles, Building2, Camera, SlidersHorizontal } from 'lucide-svelte';
 
   import GritSettings from '../grit/GritSettings.svelte';
   import SettingsGeneral from './components/SettingsGeneral.svelte';
   import SettingsSystem from './components/SettingsSystem.svelte';
-  import SettingsPrivacy from './components/SettingsPrivacy.svelte';
 
   type GeneralConfig = ComponentProps<SettingsGeneral>['config'];
-  type PrivacyConfig = ComponentProps<SettingsPrivacy>['config'];
 
   interface LegacyModelConfig {
     provider: string;
@@ -37,7 +35,6 @@
     daily_report_auto_export?: boolean;
     vision_model: LegacyModelConfig;
     app_category_rules: unknown[];
-    privacy: PrivacyConfig['privacy'] & { sensitive_keywords?: string[] };
     storage: {
       screenshot_retention_days: number;
       metadata_cleanup_enabled: boolean;
@@ -52,13 +49,8 @@
   }
 
   type SettingsConfig = GeneralConfig
-    & PrivacyConfig
     & RootSettingsFields
     & { ui_visual_style: string };
-
-  type DraftPrivacySettings = Partial<PrivacyConfig['privacy']> & {
-    sensitive_keywords?: string[];
-  };
 
   type DraftSettingsConfig = Omit<
     SettingsConfig,
@@ -70,7 +62,6 @@
     | 'vision_model'
     | 'storage'
     | 'app_category_rules'
-    | 'privacy'
     | 'ui_visual_style'
   > & {
     ai_provider: LegacyModelConfig | null;
@@ -81,11 +72,10 @@
     vision_model: LegacyModelConfig | null;
     storage: Partial<RootSettingsFields['storage']> | null;
     app_category_rules?: unknown[];
-    privacy: DraftPrivacySettings | null;
     ui_visual_style: string;
   };
 
-  type SettingsTabId = 'ai' | 'spiris' | 'capture' | 'general' | 'privacy';
+  type SettingsTabId = 'ai' | 'spiris' | 'capture' | 'general';
 
   interface SettingsTab {
     id: SettingsTabId;
@@ -100,8 +90,6 @@
   let dirty = false;
   let error: string | null = null;
   let success = false;
-  let runningApps: string[] = [];
-  let recentApps: string[] = [];
   let settingsRuntimePlatform = '';
   let successTimer: ReturnType<typeof setTimeout> | null = null;
   let aiReady = false;
@@ -116,7 +104,6 @@
     { id: 'ai', label: 'AI & rapportering', icon: 'ai' },
     { id: 'spiris', label: 'Spiris', icon: 'spiris' },
     { id: 'capture', label: 'Insamling & lagring', icon: 'capture' },
-    { id: 'privacy', label: 'Integritet', icon: 'privacy' },
   ];
 
   // 加载配置
@@ -194,10 +181,6 @@
         loadedConfig.storage.screenshot_width_mode = 'auto';
       }
       if (!loadedConfig.app_category_rules) loadedConfig.app_category_rules = [];
-      if (!loadedConfig.privacy) loadedConfig.privacy = {};
-      if (!loadedConfig.privacy.app_rules) loadedConfig.privacy.app_rules = [];
-      if (!loadedConfig.privacy.excluded_keywords) loadedConfig.privacy.excluded_keywords = [];
-      delete loadedConfig.privacy.sensitive_keywords;
 
       config = loadedConfig as SettingsConfig;
       baselineConfig = JSON.parse(JSON.stringify(config)) as SettingsConfig;
@@ -208,26 +191,6 @@
       settingsRuntimePlatform = '';
     } finally {
       loading = false;
-    }
-  }
-
-  // 加载运行中的应用
-  async function loadRunningApps() {
-    try {
-      runningApps = await invoke<string[]>('get_running_apps');
-    } catch (e) {
-      console.error('获取运行应用失败:', e);
-      runningApps = [];
-    }
-  }
-
-  // 加载历史应用列表
-  async function loadRecentApps() {
-    try {
-      recentApps = await invoke<string[]>('get_recent_apps');
-    } catch (e) {
-      console.error('获取历史应用失败:', e);
-      recentApps = [];
     }
   }
 
@@ -264,18 +227,6 @@
     }
   }
 
-  function handleSettingsChange(event: CustomEvent<unknown>) {
-    const detail = event.detail;
-    const autosaved = typeof detail === 'object'
-      && detail !== null
-      && 'autosaved' in detail
-      && detail.autosaved === true;
-    if (autosaved && config) {
-      baselineConfig = JSON.parse(JSON.stringify(config)) as SettingsConfig;
-    }
-    dirty = !autosaved;
-  }
-
   function handleGritConnectionState(
     event: CustomEvent<{ aiReady: boolean; credentialSaved: boolean; connectionVerified: boolean }>,
   ) {
@@ -306,8 +257,6 @@
     });
 
     loadConfig();
-    loadRunningApps();
-    loadRecentApps();
 
     return () => {
       unsubscribeCache();
@@ -324,13 +273,13 @@
       </div>
       <div class="page-title-copy">
         <h2>Inställningar</h2>
-        <p>Hantera AI, Spiris, skärmbilder, system och integritet i GRIT Work.</p>
+        <p>Hantera AI, Spiris, skärmbilder och system i GRIT Work.</p>
       </div>
     </div>
 
     <!-- Spara -->
     <div class="settings-save-dock">
-      {#if activeTab === 'general' || activeTab === 'privacy'}
+      {#if activeTab === 'general'}
       <button
         on:click={saveConfig}
         disabled={loading || saving}
@@ -390,8 +339,6 @@
                   <Camera class="h-4 w-4" aria-hidden="true" />
                 {:else if tab.icon === 'general'}
                   <SlidersHorizontal class="h-4 w-4" aria-hidden="true" />
-                {:else if tab.icon === 'privacy'}
-                  <Shield class="h-4 w-4" aria-hidden="true" />
                 {/if}
               </span>
               <span class="flex-1 whitespace-nowrap">{tab.label}</span>
@@ -424,14 +371,6 @@
           </div>
           {#if activeTab === 'general'}
             <SettingsGeneral bind:config runtimePlatform={settingsRuntimePlatform} showAutoReport={false} on:change={() => dirty = true} />
-          {:else if activeTab === 'privacy'}
-            <SettingsPrivacy
-              bind:config
-              {runningApps}
-              {recentApps}
-              on:change={handleSettingsChange}
-              on:refresh-apps={() => { loadRunningApps(); loadRecentApps(); }}
-            />
           {/if}
         </div>
       </div>

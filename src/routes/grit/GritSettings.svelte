@@ -16,6 +16,7 @@
     ShieldCheck,
     Sparkles,
   } from 'lucide-svelte';
+  import AiConnectionTest from './AiConnectionTest.svelte';
   import CaptureSettings from './CaptureSettings.svelte';
   import ImageInterpretationSettings from './ImageInterpretationSettings.svelte';
   import UiSelect from '$lib/components/ui/UiSelect.svelte';
@@ -267,6 +268,7 @@
     } finally {
       emitConnectionState();
       testingConnection = false;
+      notifyGritChanged();
     }
   }
 
@@ -403,6 +405,7 @@
         </div>
 
         <div class="space-y-3">
+          <AiConnectionTest target="report" configKey={settingsForm.provider + ':' + settingsForm.model} disabled={settingsDirty || savingSettings} />
           <div class="text-xs font-medium text-slate-700">
             <div class="mb-1">AI-tjänst</div>
             <UiSelect
@@ -752,7 +755,7 @@
             <div>
               <h2 class="text-base font-semibold text-slate-900">Långtidsarkiv & lokal mapp</h2>
               <p class="text-xs text-slate-500">
-                Ofärdiga rapporter och deras underlag sparas tills de har skickats eller hoppats över.
+                Valfritt. Utan arkivmapp behålls bilder och loggar lokalt. Lokal rensning sker först efter verifierad arkivering.
               </p>
             </div>
             <button

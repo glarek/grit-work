@@ -7,7 +7,9 @@ use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 use work_review_core::analysis::hourly::{generate_fallback_summary, HourlyStats};
 use work_review_core::config::WorkTimeSegment;
-use work_review_core::database::{Activity, DailyStats, Database, HourlyAppBucket};
+use work_review_core::database::{
+    clip_day_evidence, Activity, DailyStats, Database, HourlyAppBucket,
+};
 use work_review_core::error::AppError;
 
 const MAX_ARCHIVE_RANGE_DAYS: i64 = 31;
@@ -16,6 +18,8 @@ const MAX_ARCHIVE_RANGE_DAYS: i64 = 31;
 pub(crate) enum DayActivities {
     /// Caller should keep the existing SQL reader.
     Local,
+    /// Verified archive-assisted projection; may combine a local target day with
+    /// next-day archive evidence. This is not an archive-membership flag.
     Archive(Vec<Activity>),
 }
 
@@ -24,54 +28,103 @@ pub(crate) fn day_activities(
     database: &Database,
     date: &str,
 ) -> Result<DayActivities, AppError> {
-    if let Some(connection) = open_grit_db(data_dir)? {
-        let expired: Option<String> = connection
-            .query_row(
-                "SELECT value FROM kv WHERE key=?",
-                [format!("expired:{date}")],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| AppError::Unknown(e.to_string()))?;
-        if expired.as_deref() == Some("true") {
-            return Ok(DayActivities::Archive(vec![]));
-        }
-    }
     let parsed = parse_day(date)?;
-    let _ = parsed;
-    let local = database
-        .get_activities_in_range(Some(date), Some(date), 10_000)
-        .map_err(|error| AppError::Unknown(error.to_string()))?;
-    if local.len() >= 10_000 {
-        return Err(AppError::Unknown(
-            "该日活动超过读取上限，已拒绝不完整结果".to_string(),
-        ));
+    if expired_flag(data_dir, date)? {
+        return Ok(DayActivities::Archive(vec![]));
     }
-    let archived = archived_flag(data_dir, date)?;
-    if archived {
-        return Ok(DayActivities::Archive(load_verified(data_dir, date)?));
-    }
-    if !local.is_empty() {
+
+    let (mut rows, target_archived) = if archived_flag(data_dir, date)? {
+        (load_verified(data_dir, date)?, true)
+    } else {
+        let local = timestamp_owned_rows(database, date)?;
+        if local.is_empty() {
+            match load_available_archive(data_dir, date)? {
+                Some(rows) => (rows, true),
+                None => (local, false),
+            }
+        } else {
+            (local, false)
+        }
+    };
+
+    // Archives own rows by capture timestamp, so previous-day active intervals
+    // can reside in the NEXT day. Never recurse through day_activities here.
+    let next = parsed
+        .succ_opt()
+        .ok_or_else(|| AppError::Config("Datumet saknar nästa kalenderdag".into()))?
+        .to_string();
+    let next_expired = expired_flag(data_dir, &next)?;
+    let (next_rows, next_archived) = if next_expired {
+        (Vec::new(), false)
+    } else if archived_flag(data_dir, &next)? {
+        // A marker requires successful verification, even if local copies exist.
+        (load_verified(data_dir, &next)?, true)
+    } else if let Some(rows) = load_available_archive(data_dir, &next)? {
+        (rows, true)
+    } else {
+        (timestamp_owned_rows(database, &next)?, false)
+    };
+
+    if !target_archived && !next_archived && !next_expired {
+        // The regular SQL readers include and clip all local active overlaps.
         return Ok(DayActivities::Local);
     }
-    match archive_dir(data_dir)? {
-        Some(dir) if !dir.as_os_str().is_empty() => {
-            let loaded = crate::grit_engine::load_archive(&dir, date).map_err(|error| {
-                AppError::Unknown(format!("归档校验失败，已停止读取 {date}: {error}"))
-            });
-            match loaded {
-                Ok(value) => Ok(DayActivities::Archive(activities_from_archive(value)?)),
-                Err(error) => {
-                    if archive_day_exists(&dir, date) {
-                        Err(error)
-                    } else {
-                        Ok(DayActivities::Local)
-                    }
-                }
-            }
+    rows.extend(next_rows);
+    let rows = clip_day_evidence(date, rows)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::new();
+    for row in rows {
+        let id = row
+            .id
+            .ok_or_else(|| AppError::Unknown("Arkiverat underlag saknar ursprungligt id".into()))?;
+        if seen.insert(id) {
+            unique.push(row);
         }
-        _ => Ok(DayActivities::Local),
     }
+    if unique.len() >= 10_000 {
+        return Err(AppError::Unknown(
+            "Dygnet överskrider läsgränsen; ofullständigt underlag avvisades".into(),
+        ));
+    }
+    Ok(DayActivities::Archive(unique))
+}
+
+fn timestamp_owned_rows(database: &Database, date: &str) -> Result<Vec<Activity>, AppError> {
+    let rows = database.get_activities_in_range(Some(date), Some(date), 10_000)?;
+    if rows.len() >= 10_000 {
+        return Err(AppError::Unknown(
+            "Dygnet överskrider läsgränsen; ofullständigt underlag avvisades".into(),
+        ));
+    }
+    Ok(rows)
+}
+
+fn expired_flag(data_dir: &Path, date: &str) -> Result<bool, AppError> {
+    let Some(connection) = open_grit_db(data_dir)? else {
+        return Ok(false);
+    };
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT value FROM kv WHERE key=?",
+            [format!("expired:{date}")],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| AppError::Unknown(error.to_string()))?;
+    Ok(value.as_deref() == Some("true"))
+}
+
+fn load_available_archive(data_dir: &Path, date: &str) -> Result<Option<Vec<Activity>>, AppError> {
+    let Some(dir) = archive_dir(data_dir)? else {
+        return Ok(None);
+    };
+    if !archive_day_exists(&dir, date) {
+        return Ok(None);
+    }
+    let value = crate::grit_engine::load_archive(&dir, date).map_err(|error| {
+        AppError::Unknown(format!("Arkivet för {date} kunde inte verifieras: {error}"))
+    })?;
+    activities_from_archive(value).map(Some)
 }
 
 pub(crate) fn ensure_archive_range(
@@ -427,6 +480,8 @@ mod tests {
                 let stats = daily_stats_from_activities("2020-01-15", &rows, &[segment()]).unwrap();
                 assert_eq!(stats.total_duration, local_stats.total_duration);
                 assert_eq!(stats.total_duration, 120);
+                assert_eq!(stats.work_time_duration, stats.total_duration);
+                assert_eq!(stats.overtime_duration, 0);
             }
             DayActivities::Local => panic!("archived day must not stay on local rows"),
         }
@@ -628,6 +683,10 @@ mod tests {
         with_stale.push(stale);
         let summaries = hourly_summaries_from_activities("2020-01-15", &with_stale, &data).unwrap();
         assert!(!summaries.is_empty());
+        assert!(summaries[0]["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("Aktiv i "));
         let shots = &summaries[0]["representative_screenshots"];
         assert!(shots.as_array().unwrap().contains(&json!(archived_path)));
         assert!(shots
@@ -657,5 +716,306 @@ mod tests {
         assert_eq!(sql[0].id, Some(907));
         assert_eq!(archived[0].id, Some(907));
         assert_eq!(sql[0].duration, archived[0].duration);
+    }
+    #[test]
+    fn calendar_day_timeline_clips_midnight_duration_and_retains_evidence_id() {
+        let mut row = activity("Editor", "");
+        row.id = Some(345);
+        row.timestamp = Local
+            .with_ymd_and_hms(2020, 1, 16, 0, 10, 0)
+            .unwrap()
+            .timestamp();
+        row.duration = 20 * 60;
+        let db = Database::open_in_memory().unwrap();
+        db.insert_activity_snapshot(&row).unwrap();
+        for date in ["2020-01-15", "2020-01-16"] {
+            let local = db.get_timeline(date, None, None).unwrap();
+            let archived = timeline_page(date, vec![row.clone()], None, None).unwrap();
+            assert_eq!(local.len(), 1);
+            assert_eq!(local[0].id, Some(345));
+            assert_eq!(local[0].duration, 10 * 60);
+            assert_eq!(archived[0].id, local[0].id);
+            assert_eq!(archived[0].duration, local[0].duration);
+            let stats = daily_stats_from_activities(date, &[row.clone()], &[segment()]).unwrap();
+            assert_eq!(stats.total_duration, 10 * 60);
+            assert_eq!(stats.work_time_duration, stats.total_duration);
+        }
+        let raw = db
+            .get_activities_in_range(Some("2020-01-16"), Some("2020-01-16"), 10)
+            .unwrap();
+        assert_eq!(raw[0].id, Some(345));
+        assert_eq!(raw[0].duration, 20 * 60);
+    }
+
+    #[test]
+    fn local_cross_midnight_evidence_keeps_local_reader_authoritative() {
+        let root = std::env::temp_dir().join(format!("grit-day-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let mut row = activity("Editor", "");
+        row.timestamp = Local
+            .with_ymd_and_hms(2020, 1, 16, 0, 10, 0)
+            .unwrap()
+            .timestamp();
+        row.duration = 20 * 60;
+        db.insert_activity_snapshot(&row).unwrap();
+        assert!(matches!(
+            day_activities(&root, &db, "2020-01-15").unwrap(),
+            DayActivities::Local
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    struct AdjacentFixture {
+        root: PathBuf,
+        data: PathBuf,
+        archive: PathBuf,
+        database: Database,
+        metadata: Connection,
+    }
+
+    impl AdjacentFixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("grit-adjacent-{}", uuid::Uuid::new_v4()));
+            let data = root.join("data");
+            let archive = root.join("archive");
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::create_dir_all(&archive).unwrap();
+            let database = Database::open_in_memory().unwrap();
+            let metadata = Connection::open(data.join("grit.db")).unwrap();
+            metadata.execute_batch("CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE days(date TEXT PRIMARY KEY,archived INTEGER NOT NULL DEFAULT 0);").unwrap();
+            let settings = crate::grit::Settings {
+                archive_dir: archive.display().to_string(),
+                ..Default::default()
+            };
+            metadata
+                .execute(
+                    "INSERT INTO kv VALUES('settings',?1)",
+                    [serde_json::to_string(&settings).unwrap()],
+                )
+                .unwrap();
+            Self {
+                root,
+                data,
+                archive,
+                database,
+                metadata,
+            }
+        }
+        fn archive(&self, date: &str, rows: &[Activity]) {
+            crate::grit_engine::archive_day(
+                &self.data,
+                &self.archive,
+                date,
+                &serde_json::to_value(rows).unwrap(),
+            )
+            .unwrap();
+            self.metadata
+                .execute("INSERT OR REPLACE INTO days VALUES(?1,1)", [date])
+                .unwrap();
+        }
+        fn expire(&self, date: &str) {
+            self.metadata
+                .execute(
+                    "INSERT OR REPLACE INTO kv VALUES(?1,'true')",
+                    [format!("expired:{date}")],
+                )
+                .unwrap();
+        }
+        fn read(&self) -> Vec<Activity> {
+            match day_activities(&self.data, &self.database, "2020-01-15").unwrap() {
+                DayActivities::Archive(rows) => rows,
+                DayActivities::Local => self
+                    .database
+                    .get_day_evidence("2020-01-15", 10_000)
+                    .unwrap(),
+            }
+        }
+    }
+
+    impl Drop for AdjacentFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn crossing_midnight() -> Activity {
+        let mut row = activity("Firefox", "");
+        row.id = Some(234);
+        row.timestamp = Local
+            .with_ymd_and_hms(2020, 1, 16, 0, 10, 0)
+            .unwrap()
+            .timestamp();
+        row.duration = 20 * 60;
+        row.browser_url = Some("https://example.com/docs".into());
+        row
+    }
+
+    fn assert_crossing_projection(rows: &[Activity]) {
+        let row = rows.iter().find(|row| row.id == Some(234)).unwrap();
+        assert_eq!(
+            row.timestamp,
+            Local
+                .with_ymd_and_hms(2020, 1, 16, 0, 0, 0)
+                .unwrap()
+                .timestamp()
+        );
+        assert_eq!(row.duration, 10 * 60);
+        assert_eq!(row.browser_url.as_deref(), Some("https://example.com/docs"));
+        assert!(row.screenshot_path.is_empty());
+        assert!(row.screenshot_url.is_none());
+        assert!(row.ocr_text.is_none());
+    }
+
+    #[test]
+    fn archived_target_adds_next_local_overlap_and_keeps_all_views_in_sync() {
+        let fixture = AdjacentFixture::new();
+        let target = activity("Editor", "");
+        fixture.archive("2020-01-15", &[target.clone(), target.clone()]);
+        let crossing = crossing_midnight();
+        fixture
+            .database
+            .insert_activity_snapshot(&crossing)
+            .unwrap();
+        let rows = fixture.read();
+        assert_eq!(rows.len(), 2);
+        assert_crossing_projection(&rows);
+        let local = Database::open_in_memory().unwrap();
+        local.insert_activity_snapshot(&target).unwrap();
+        local.insert_activity_snapshot(&crossing).unwrap();
+        assert_eq!(
+            serde_json::to_value(local.get_day_evidence("2020-01-15", 100).unwrap()).unwrap(),
+            serde_json::to_value(&rows).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(local.get_daily_stats("2020-01-15").unwrap()).unwrap(),
+            serde_json::to_value(daily_stats_from_activities("2020-01-15", &rows, &[]).unwrap())
+                .unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(local.get_hourly_app_breakdown("2020-01-15").unwrap()).unwrap(),
+            serde_json::to_value(hourly_apps_from_activities("2020-01-15", &rows).unwrap())
+                .unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(local.get_timeline("2020-01-15", None, None).unwrap()).unwrap(),
+            serde_json::to_value(timeline_page("2020-01-15", rows, None, None).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn local_target_adds_next_verified_archive_and_deduplicates_original_ids() {
+        let fixture = AdjacentFixture::new();
+        fixture
+            .database
+            .insert_activity_snapshot(&activity("Editor", ""))
+            .unwrap();
+        let crossing = crossing_midnight();
+        fixture.archive("2020-01-16", std::slice::from_ref(&crossing));
+        fixture
+            .database
+            .insert_activity_snapshot(&crossing)
+            .unwrap();
+        let rows = fixture.read();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.iter().filter(|row| row.id == Some(234)).count(), 1);
+        assert_crossing_projection(&rows);
+        // Existing verified archives are usable even before their marker is stored.
+        fixture
+            .metadata
+            .execute("DELETE FROM days WHERE date='2020-01-16'", [])
+            .unwrap();
+        assert_eq!(fixture.read().len(), 2);
+        // A nonexistent third archive must not be looked up recursively.
+        fixture
+            .metadata
+            .execute("INSERT INTO days VALUES('2020-01-17',1)", [])
+            .unwrap();
+        assert_eq!(fixture.read().len(), 2);
+    }
+
+    #[test]
+    fn expired_target_and_next_day_do_not_resurrect_local_or_archived_evidence() {
+        let fixture = AdjacentFixture::new();
+        fixture
+            .database
+            .insert_activity_snapshot(&activity("Editor", ""))
+            .unwrap();
+        let crossing = crossing_midnight();
+        fixture
+            .database
+            .insert_activity_snapshot(&crossing)
+            .unwrap();
+        fixture.archive("2020-01-16", &[crossing]);
+        fixture.expire("2020-01-16");
+        let rows = fixture.read();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, Some(1));
+        fixture.archive("2020-01-15", &[activity("Editor", "")]);
+        assert_eq!(fixture.read().len(), 1);
+        fixture.expire("2020-01-15");
+        assert!(fixture.read().is_empty());
+    }
+
+    #[test]
+    fn marked_next_archive_missing_or_corrupt_fails_even_with_local_evidence() {
+        let fixture = AdjacentFixture::new();
+        fixture
+            .database
+            .insert_activity_snapshot(&activity("Editor", ""))
+            .unwrap();
+        let crossing = crossing_midnight();
+        fixture
+            .database
+            .insert_activity_snapshot(&crossing)
+            .unwrap();
+        fixture
+            .metadata
+            .execute("INSERT INTO days VALUES('2020-01-16',1)", [])
+            .unwrap();
+        assert!(day_activities(&fixture.data, &fixture.database, "2020-01-15").is_err());
+        fixture.archive("2020-01-16", &[crossing]);
+        std::fs::write(
+            fixture.archive.join("grit-work/2020-01-16/activities.json"),
+            b"corrupt",
+        )
+        .unwrap();
+        assert!(day_activities(&fixture.data, &fixture.database, "2020-01-15").is_err());
+    }
+    #[test]
+    fn clipped_next_day_rows_keep_hourly_and_timeline_attribution_consistent() {
+        let fixture = AdjacentFixture::new();
+        fixture.archive("2020-01-15", &[]);
+        let mut first = crossing_midnight();
+        first.id = Some(900);
+        let mut later = first.clone();
+        later.id = Some(200);
+        later.timestamp += 60;
+        later.duration += 60;
+        later.app_name = "Editor".into();
+        fixture.database.insert_activity_snapshot(&first).unwrap();
+        fixture.database.insert_activity_snapshot(&later).unwrap();
+        let rows = fixture.read();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            serde_json::to_value(
+                fixture
+                    .database
+                    .get_hourly_app_breakdown("2020-01-15")
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(hourly_apps_from_activities("2020-01-15", &rows).unwrap())
+                .unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(
+                fixture
+                    .database
+                    .get_timeline("2020-01-15", None, None)
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(timeline_page("2020-01-15", rows, None, None).unwrap()).unwrap()
+        );
     }
 }

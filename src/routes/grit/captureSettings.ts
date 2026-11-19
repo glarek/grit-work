@@ -19,7 +19,7 @@ export function normalizeCapture(raw: unknown): CaptureSettings {
     interval_seconds: Number(v.interval_seconds) || 300,
     display_mode: v.display_mode === 'all' ? 'all' : 'active_window',
     jpeg_quality: Number(v.jpeg_quality) || 85,
-    max_image_width: Number(v.max_image_width) || 1280,
+    max_image_width: Math.max(0, Number(v.max_image_width) || 0),
     width_mode: v.width_mode === 'fixed' ? 'fixed' : 'auto',
   };
 }
@@ -43,7 +43,7 @@ export function estimateCapture(settings: CaptureSettings, monitors: CaptureMoni
     const screen = [...screens].sort((a, b) => b.width * b.height - a.width * a.height)[0];
     width = screen.width; height = screen.height;
   }
-  const ratio = Math.min(1, Math.max(800, maxWidth) / width);
+  const ratio = settings.max_image_width === 0 ? 1 : Math.min(1, Math.max(800, maxWidth) / width);
   const pixels = width * height * ratio * ratio;
   const quality = (Math.min(95, Math.max(30, settings.jpeg_quality)) / 85) ** 2;
   const count = Math.ceil(Math.min(24, Math.max(1, hours)) * 3600 / Math.max(30, settings.interval_seconds));

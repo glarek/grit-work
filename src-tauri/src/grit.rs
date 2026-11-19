@@ -144,6 +144,19 @@ pub struct Report {
     pub summary: String,
     pub rows: Vec<Row>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub basis: Option<ReportBasis>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportBasis {
+    pub created_at: i64,
+    pub activities: usize,
+    pub active_seconds: i64,
+    pub images_completed: usize,
+    pub images_pending: usize,
+    pub images_failed: usize,
+    pub images_with_content: usize,
 }
 #[derive(Serialize, Deserialize)]
 struct Credentials {
@@ -174,9 +187,13 @@ impl CaptureSettings {
         if !(30..=3600).contains(&self.interval_seconds) {
             return Err("Välj ett intervall mellan 30 och 3 600 sekunder.".into());
         }
-        if !(30..=95).contains(&self.jpeg_quality) || !(800..=16384).contains(&self.max_image_width)
+        if !(30..=95).contains(&self.jpeg_quality)
+            || (self.max_image_width != 0 && !(800..=16384).contains(&self.max_image_width))
         {
-            return Err("Bildkvalitet måste vara 30–95 och maxbredd 800–16 384 pixlar.".into());
+            return Err(
+                "Bildkvalitet måste vara 30–95. Maxbredd är 0 (original) eller 800–16 384 pixlar."
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -243,6 +260,259 @@ fn put(db: &Connection, key: &str, v: &impl Serialize) -> Result<(), String> {
     db.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(v).map_err(error)?]).map_err(error)?;
     Ok(())
 }
+const CONNECTION_HEALTH_TTL_SECONDS: i64 = 30 * 60;
+const REQUIRED_SPIRIS_READS: [&str; 6] = [
+    "Core/Projects",
+    "Admin/Users",
+    "Admin/Activities",
+    "Admin/TimeCodes",
+    "Admin/Articles",
+    "Core/TimeReports",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthState {
+    Ok,
+    Error,
+    Untested,
+    Stale,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Health {
+    state: HealthState,
+    checked_at: Option<i64>,
+    message: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionHealth {
+    spiris: Health,
+    ai: Health,
+    ai_image: Option<Health>,
+}
+
+#[derive(Clone, Copy)]
+enum HealthTarget {
+    Spiris,
+    Report,
+    Image,
+}
+impl HealthTarget {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Spiris => "connection_health:v1:spiris",
+            Self::Report => "connection_health:v1:report",
+            Self::Image => "connection_health:v1:image",
+        }
+    }
+    fn success_message(self) -> &'static str {
+        match self {
+            Self::Spiris => "Inloggning och läsning för vald användare verifierade. Rätt att skicka tid är inte testad.",
+            Self::Report => "Rapportmodellen svarade med giltigt format.",
+            Self::Image => "Bildmodellen läste testbilden och svarade med giltigt format.",
+        }
+    }
+    fn failure_message(self) -> &'static str {
+        match self {
+            Self::Spiris => {
+                "Spiris-testet misslyckades eller blev inte komplett. Kör testet i inställningarna."
+            }
+            Self::Report => "Rapportmodellens test misslyckades. Kör testet i inställningarna.",
+            Self::Image => "Bildmodellens test misslyckades. Kör testet i inställningarna.",
+        }
+    }
+}
+
+// Exactly three bounded records; never persist API bodies, CLI output or credentials.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredHealth {
+    generation: String,
+    result: Option<StoredHealthResult>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredHealthResult {
+    checked_at: i64,
+    ok: bool,
+}
+
+fn reset_connection_health(database: &Connection, target: HealthTarget) -> Result<String, String> {
+    let generation = Uuid::new_v4().to_string();
+    put(
+        database,
+        target.key(),
+        &StoredHealth {
+            generation: generation.clone(),
+            result: None,
+        },
+    )?;
+    Ok(generation)
+}
+
+fn record_connection_health(
+    database: &Connection,
+    target: HealthTarget,
+    generation: &str,
+    checked_at: i64,
+    ok: bool,
+) -> Result<(), String> {
+    let tx = database.unchecked_transaction().map_err(error)?;
+    let current: Option<StoredHealth> = get(&tx, target.key())?;
+    if current
+        .as_ref()
+        .is_some_and(|record| record.generation == generation)
+    {
+        put(
+            &tx,
+            target.key(),
+            &StoredHealth {
+                generation: generation.to_string(),
+                result: Some(StoredHealthResult { checked_at, ok }),
+            },
+        )?;
+    }
+    tx.commit().map_err(error)
+}
+
+fn finish_connection_test<T>(
+    database: &Connection,
+    target: HealthTarget,
+    generation: &str,
+    result: Result<T, String>,
+    healthy: impl FnOnce(&T) -> bool,
+    checked_at: i64,
+) -> Result<T, String> {
+    let ok = result.as_ref().is_ok_and(healthy);
+    record_connection_health(database, target, generation, checked_at, ok)?;
+    result
+}
+
+fn health_at(record: Option<StoredHealth>, target: HealthTarget, now: i64) -> Health {
+    let Some(result) = record.and_then(|record| record.result) else {
+        return Health {
+            state: HealthState::Untested,
+            checked_at: None,
+            message: "Ingen aktuell anslutningskontroll. Kör testet i inställningarna.",
+        };
+    };
+    if result.checked_at > now
+        || now.saturating_sub(result.checked_at) >= CONNECTION_HEALTH_TTL_SECONDS
+    {
+        return Health {
+            state: HealthState::Stale,
+            checked_at: Some(result.checked_at),
+            message: "Testresultatet är inte längre aktuellt. Kör testet igen.",
+        };
+    }
+    Health {
+        state: if result.ok {
+            HealthState::Ok
+        } else {
+            HealthState::Error
+        },
+        checked_at: Some(result.checked_at),
+        message: if result.ok {
+            target.success_message()
+        } else {
+            target.failure_message()
+        },
+    }
+}
+
+fn connection_health_from_db(
+    database: Option<&Connection>,
+    now: i64,
+) -> Result<ConnectionHealth, String> {
+    let settings: Settings = database
+        .map(|db| get(db, "settings"))
+        .transpose()?
+        .flatten()
+        .unwrap_or_default();
+    let read = |target: HealthTarget| -> Result<Health, String> {
+        let record = database
+            .map(|db| get(db, target.key()))
+            .transpose()?
+            .flatten();
+        Ok(health_at(record, target, now))
+    };
+    Ok(ConnectionHealth {
+        spiris: read(HealthTarget::Spiris)?,
+        ai: read(HealthTarget::Report)?,
+        ai_image: if settings.image_interpretation.mode == Mode::Ai {
+            Some(read(HealthTarget::Image)?)
+        } else {
+            None
+        },
+    })
+}
+
+fn read_connection_health(dir: &Path, now: i64) -> Result<ConnectionHealth, String> {
+    let path = dir.join("grit.db");
+    if !path.exists() {
+        return connection_health_from_db(None, now);
+    }
+    let database = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| "Anslutningsstatusen kunde inte läsas lokalt.".to_string())?;
+    database
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|_| "Anslutningsstatusen kunde inte läsas lokalt.".to_string())?;
+    let snapshot = database
+        .unchecked_transaction()
+        .map_err(|_| "Anslutningsstatusen kunde inte läsas lokalt.".to_string())?;
+    let status = connection_health_from_db(Some(&snapshot), now)
+        .map_err(|_| "Anslutningsstatusen kunde inte läsas lokalt.".to_string())?;
+    snapshot
+        .commit()
+        .map_err(|_| "Anslutningsstatusen kunde inte läsas lokalt.".to_string())?;
+    Ok(status)
+}
+
+/// Polling reads only local settings and prior explicit test outcomes.
+#[tauri::command]
+pub async fn grit_connection_status(
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<ConnectionHealth, String> {
+    read_connection_health(&local_dir(&state)?, Local::now().timestamp())
+}
+
+fn invalidate_changed_connection_health(
+    database: &Connection,
+    previous: &Settings,
+    next: &Settings,
+) -> Result<(), String> {
+    if previous.user_id != next.user_id {
+        reset_connection_health(database, HealthTarget::Spiris)?;
+    }
+    if previous.provider != next.provider || previous.model != next.model {
+        reset_connection_health(database, HealthTarget::Report)?;
+    }
+    if previous.image_interpretation.mode != next.image_interpretation.mode
+        || previous.image_interpretation.provider != next.image_interpretation.provider
+        || previous.image_interpretation.model != next.image_interpretation.model
+    {
+        reset_connection_health(database, HealthTarget::Image)?;
+    }
+    Ok(())
+}
+
+fn spiris_test_is_healthy(test: &ConnectionTest, user_id: i64) -> bool {
+    user_id > 0
+        && test.authentication.tested
+        && test.authentication.ok
+        && test.reads.len() == REQUIRED_SPIRIS_READS.len()
+        && test.reads.iter().all(|check| check.tested && check.ok)
+        && REQUIRED_SPIRIS_READS.iter().all(|resource| {
+            test.reads
+                .iter()
+                .filter(|check| check.resource == *resource)
+                .count()
+                == 1
+        })
+}
+
 fn invalidate_draft_revisions(db: &Connection) -> Result<(), String> {
     let mut q = db.prepare("SELECT body FROM reports").map_err(error)?;
     let rows = q
@@ -568,15 +838,50 @@ pub async fn grit_test_connection(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<ConnectionTest, String> {
     let database = db(&local_dir(&state)?)?;
-    let settings: Settings = get(&database, "settings")?.unwrap_or_default();
-    let resources = [
-        "Core/Projects",
-        "Admin/Users",
-        "Admin/Activities",
-        "Admin/TimeCodes",
-        "Admin/Articles",
-        "Core/TimeReports",
-    ];
+    let generation = reset_connection_health(&database, HealthTarget::Spiris)?;
+    let settings: Result<Settings, String> =
+        get(&database, "settings").map(|value| value.unwrap_or_default());
+    let user_id = settings
+        .as_ref()
+        .map(|settings| settings.user_id)
+        .unwrap_or(0);
+    let result = async { test_spiris_connection(&settings?).await }.await;
+    let checked_at = result
+        .as_ref()
+        .map(|test| test.checked_at)
+        .unwrap_or_else(|_| Local::now().timestamp());
+    finish_connection_test(
+        &database,
+        HealthTarget::Spiris,
+        &generation,
+        result,
+        |test| spiris_test_is_healthy(test, user_id),
+        checked_at,
+    )
+}
+
+fn selected_user_permission(user_id: i64, users: Result<Vec<Value>, String>) -> PermissionCheck {
+    let verified = user_id > 0
+        && users
+            .as_ref()
+            .is_ok_and(|rows| rows.iter().any(|row| row["id"].as_i64() == Some(user_id)));
+    PermissionCheck {
+        resource: "Admin/Users".into(),
+        ok: verified,
+        tested: true,
+        http_status: None,
+        count: users.as_ref().ok().map(Vec::len),
+        message: if verified {
+            "Vald användare verifierades i Spiris."
+        } else {
+            "Vald användare kunde inte verifieras i Spiris."
+        }
+        .into(),
+    }
+}
+
+async fn test_spiris_connection(settings: &Settings) -> Result<ConnectionTest, String> {
+    let resources = REQUIRED_SPIRIS_READS;
     let c = client()?;
     let token_result = tokio::time::timeout(Duration::from_secs(30), token(&c)).await;
     let t = match token_result {
@@ -590,6 +895,20 @@ pub async fn grit_test_connection(
     };
     let mut reads = Vec::new();
     for path in resources {
+        if path == "Admin/Users" {
+            if settings.user_id <= 0 {
+                reads.push(untested_permission(
+                    path,
+                    "Välj Spiris-användare för att testa anslutningen.",
+                ));
+            } else {
+                reads.push(selected_user_permission(
+                    settings.user_id,
+                    list(&c, &t, path, &[]).await,
+                ));
+            }
+            continue;
+        }
         let mut query = vec![("page", "1".into()), ("pageSize", "1".into())];
         if path == "Admin/Articles" {
             query.push(("type", "time".into()));
@@ -968,13 +1287,15 @@ fn read_day_evidence(
     let (rows, archived) =
         match crate::commands::grit_read::day_activities(dir, &s.database, date).map_err(error)? {
             crate::commands::grit_read::DayActivities::Local => (
-                s.database
-                    .get_activities_in_range(Some(date), Some(date), 10_000)
-                    .map_err(error)?,
+                s.database.get_day_evidence(date, 10_000).map_err(error)?,
                 false,
             ),
             crate::commands::grit_read::DayActivities::Archive(rows) => (rows, true),
         };
+    if rows.len() >= 10_000 {
+        return Err("Dygnet har fler poster än exportgränsen. Underlaget bevaras.".into());
+    }
+    let rows = work_review_core::database::clip_day_evidence(date, rows).map_err(error)?;
     let (ignored_apps, excluded_domains) = crate::commands::collect_privacy_filters(&s);
     let rows =
         crate::commands::filter_activities_by_privacy(rows, &ignored_apps, &excluded_domains);
@@ -1051,7 +1372,8 @@ fn status(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<Status, String> {
         activities: cat.activities,
         time_codes: cat.time_codes,
         credential_saved: credentials().is_ok(),
-        last_error: get::<String>(&db, "capture_error")?.or(get(&db, "last_error")?),
+        last_error: get::<String>(&db, "capture_error")?.or(get::<String>(&db, "last_error")?
+            .filter(|message| !is_unconfigured_archive_notice(message))),
     })
 }
 #[tauri::command]
@@ -1106,8 +1428,11 @@ pub async fn grit_save_settings(
             return Err("Arkivet innehåller tidigare dygn. Flytt av ett befintligt arkiv behöver göras med verifierad migrering; destinationen har inte ändrats.".into());
         }
     }
-    invalidate_draft_revisions(&database)?;
-    put(&database, "settings", &settings)?;
+    let tx = database.unchecked_transaction().map_err(error)?;
+    invalidate_draft_revisions(&tx)?;
+    invalidate_changed_connection_health(&tx, &previous, &settings)?;
+    put(&tx, "settings", &settings)?;
+    tx.commit().map_err(error)?;
     IMAGE_SCHEDULE.lock().map_err(error)?.configure(
         &settings.image_interpretation,
         settings.ai_consent,
@@ -1133,6 +1458,8 @@ pub async fn grit_save_credentials(
         static_token: static_token.trim().into(),
     };
     let serialized = serde_json::to_string(&c).map_err(error)?;
+    let database = db(&local_dir(&state)?)?;
+    reset_connection_health(&database, HealthTarget::Spiris)?;
     let entry = keyring()?;
     entry
         .set_password(&serialized)
@@ -1186,7 +1513,11 @@ pub async fn grit_cancel() -> Result<(), String> {
 }
 
 fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Result<(), String> {
-    let d = past_date(&r.date)?;
+    let d = if strict {
+        past_date(&r.date)?
+    } else {
+        work_date(&r.date)?
+    };
     if r.rows.is_empty() || r.rows.len() > 500 || r.summary.len() > 20_000 {
         return Err("Rapporten måste innehålla 1–500 rader och en rimlig sammanfattning.".into());
     }
@@ -1227,9 +1558,6 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
         if row.description.trim().is_empty() || row.description.chars().count() > 2000 {
             return Err("Varje rad behöver en beskrivning på högst 2 000 tecken.".into());
         }
-        if strict && row.needs_review {
-            return Err("Granska och bekräfta alla osäkra rader innan överföring.".into());
-        }
         if row.project_id == 0 && !strict && row.needs_review {
         } else if !cat
             .projects
@@ -1248,14 +1576,8 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
             }
         }
         if row.manual {
-            if row.manual_reason.trim().is_empty()
-                || row.manual_reason.chars().count() > 2000
-                || !row.evidence_ids.is_empty()
-            {
-                return Err(
-                    "Manuell tid behöver en förklaring och får inte ange automatiskt underlag."
-                        .into(),
-                );
+            if row.manual_reason.chars().count() > 2000 || !row.evidence_ids.is_empty() {
+                return Err("Manuell tid får inte ange automatiskt underlag.".into());
             }
             intervals.push((row.start, row.end));
             continue;
@@ -1302,12 +1624,31 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
     Ok(())
 }
 
-fn work_date(date: &str) -> Result<(), String> {
+fn work_date(date: &str) -> Result<NaiveDate, String> {
     let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(error)?;
     if parsed.to_string() != date || parsed > Local::now().date_naive() {
         return Err("Välj ett giltigt datum till och med idag.".into());
     }
-    Ok(())
+    Ok(parsed)
+}
+
+fn active_seconds(activities: &[Value]) -> i64 {
+    let mut ranges = activities
+        .iter()
+        .filter_map(|a| {
+            let end = a["timestamp"].as_i64()?;
+            let duration = a["duration"].as_i64()?.max(0);
+            (duration > 0).then_some((end.saturating_sub(duration), end))
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    let mut total = 0;
+    let mut last_end = i64::MIN;
+    for (start, end) in ranges {
+        total += end.saturating_sub(start.max(last_end)).max(0);
+        last_end = last_end.max(end);
+    }
+    total
 }
 
 #[tauri::command]
@@ -1320,10 +1661,21 @@ pub async fn grit_day_context(
     let database = db(&dir)?;
     let (ev, archived) = read_day_evidence(state.inner(), &dir, &date)?;
     let activities = ev.as_array().ok_or("Ogiltigt underlag")?;
-    let seconds: i64 = activities
-        .iter()
-        .map(|a| a["duration"].as_i64().unwrap_or(0).max(0))
-        .sum();
+    let seconds = active_seconds(activities);
+    let archived_day = database
+        .query_row("SELECT archived FROM days WHERE date=?", [&date], |row| {
+            row.get::<_, bool>(0)
+        })
+        .optional()
+        .map_err(error)?
+        .unwrap_or(false);
+    let source = if archived_day {
+        "archive"
+    } else if archived {
+        "mixed"
+    } else {
+        "local"
+    };
     let saved_report = report(&database, &date)?;
     let catalog: Catalog = get(&database, "catalog")?.unwrap_or_default();
     let mut allocation = std::collections::BTreeMap::<i64, (i64, bool)>::new();
@@ -1339,7 +1691,7 @@ pub async fn grit_day_context(
         json!({"id":id,"name":project.map(|p|p.name.as_str()).unwrap_or("Ej fördelat projekt"),"minutes":minutes,"needs_review":needs_review || project.is_none()})
     }).collect();
     Ok(
-        json!({"source":if archived {"archive"} else {"local"}, "activities":activities.len(), "minutes":seconds as f64 / 60.0, "report_status":saved_report.map(|r|r.status),"projects":projects}),
+        json!({"source":source, "activities":activities.len(), "minutes":seconds as f64 / 60.0, "report_status":saved_report.map(|r|r.status),"projects":projects}),
     )
 }
 
@@ -1414,7 +1766,7 @@ pub async fn grit_generate(
     date: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Report, String> {
-    prepare_report(date, state.inner()).await
+    prepare_report(date, state.inner(), true).await
 }
 fn require_ai_consent(settings: &Settings) -> Result<(), String> {
     if !settings.ai_consent {
@@ -1639,12 +1991,31 @@ where
     }
 }
 
-async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Report, String> {
+fn insufficient_evidence_message(date: &str, seconds: i64, images: usize) -> String {
+    if seconds > 0 {
+        return format!("Mindre än en minut aktivitet har sparats för {date}. Låt insamlingen fortsätta och försök igen.");
+    }
+    if images > 0 {
+        format!("Det finns {images} bildposter för {date}, men inga aktivitetsloggar med registrerad tid. Bildtolkningarna ger sammanhang men räcker inte för att beräkna timmar. Kontrollera datumet och insamlingen, eller starta en manuell rapport.")
+    } else {
+        format!("Inga aktivitetsloggar har sparats för {date}. Välj Idag om du vill använda pågående insamling, eller starta en manuell rapport.")
+    }
+}
+
+async fn prepare_report(
+    date: String,
+    state: &Arc<Mutex<AppState>>,
+    available_only: bool,
+) -> Result<Report, String> {
     let op = Arc::new(Operation::start()?);
-    past_date(&date)?;
+    work_date(&date)?;
     let dir = state.lock().map_err(error)?.data_dir.clone();
     let db = db(&dir)?;
-    if report(&db, &date)?.is_some_and(|r| !["draft", "failed"].contains(&r.status.as_str())) {
+    let previous = report(&db, &date)?;
+    if previous
+        .as_ref()
+        .is_some_and(|r| !["draft", "failed"].contains(&r.status.as_str()))
+    {
         return Err("Rapporten är låst eller körs redan.".into());
     }
     let settings: Settings = get(&db, "settings")?.unwrap_or_default();
@@ -1654,8 +2025,15 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         return Err("Anslut Spiris och synkronisera projekt först.".into());
     }
     let ev = evidence(state, &dir, &date)?;
-    if ev.as_array().is_none_or(|a| a.is_empty()) {
-        return Err("Inget underlag för datumet.".into());
+    let rows = ev.as_array().ok_or("Ogiltigt aktivitetsunderlag.")?;
+    let seconds = active_seconds(rows);
+    if seconds < 60 {
+        let cached = image_interpretation::load(&dir, Path::new(&settings.archive_dir), &date)?;
+        return Err(insufficient_evidence_message(
+            &date,
+            seconds,
+            cached.as_ref().map_or(0, |d| d.entries.len()),
+        ));
     }
     let mut r = Report {
         date: date.clone(),
@@ -1664,6 +2042,7 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         summary: String::new(),
         rows: vec![],
         error: None,
+        basis: None,
     };
     let cancel = CANCEL
         .get_or_init(|| Arc::new(AtomicBool::new(false)))
@@ -1680,7 +2059,7 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         &ev,
         &settings,
         false,
-        usize::MAX,
+        if available_only { 0 } else { usize::MAX },
         cancel.clone(),
         op.clone(),
     )
@@ -1691,7 +2070,18 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         &date,
         &ev,
         &interpreted,
+        available_only,
     )?;
+    let image_status = image_interpretation::status(&dir, &date, Some(&interpreted), false)?;
+    r.basis = Some(ReportBasis {
+        created_at: Local::now().timestamp(),
+        activities: rows.len(),
+        active_seconds: seconds,
+        images_completed: image_status.completed,
+        images_pending: image_status.pending,
+        images_failed: image_status.failed,
+        images_with_content: image_status.with_content,
+    });
     let workspace = dir.join("jobs").join(Uuid::new_v4().to_string());
     std::fs::create_dir_all(&workspace).map_err(error)?;
     #[cfg(unix)]
@@ -1700,7 +2090,11 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
         std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700))
             .map_err(error)?;
     }
-    save_report(&db, &r)?;
+    // Keep an existing draft intact until a valid replacement is ready, including on crash.
+    let preserve_draft = previous.as_ref().is_some_and(|r| r.status == "draft");
+    if !preserve_draft {
+        save_report(&db, &r)?;
+    }
     let worker_lease = op.clone();
     let workspace_copy = workspace.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -1748,6 +2142,9 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
     match checked {
         Ok(()) => r.status = "draft".into(),
         Err(e) => {
+            if preserve_draft {
+                return Err(e);
+            }
             r.status = "failed".into();
             r.error = Some(e);
         }
@@ -1761,7 +2158,7 @@ pub async fn grit_create_manual_report(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Report, String> {
     let _op = Operation::start()?;
-    past_date(&date)?;
+    work_date(&date)?;
     let database = db(&local_dir(&state)?)?;
     if report(&database, &date)?.is_some_and(|r| r.status != "failed") {
         return Err("Rapporten finns redan. Läs in den för att komplettera.".into());
@@ -1773,6 +2170,7 @@ pub async fn grit_create_manual_report(
         summary: "Manuellt kompletterad arbetsdag".into(),
         rows: vec![],
         error: None,
+        basis: None,
     };
     save_report(&database, &r)?;
     Ok(r)
@@ -1796,6 +2194,7 @@ pub async fn grit_save_draft(
     let ev = evidence(state.inner(), &dir, &report.date)?;
     validate_report(&report, &cat, &ev, false)?;
     apply_rounding(&mut report)?;
+    report.basis = previous.basis;
     report.revision = Uuid::new_v4().to_string();
     report.status = "draft".into();
     report.error = None;
@@ -1807,12 +2206,22 @@ pub struct ArchiveResult {
     archived: usize,
     message: String,
 }
+fn is_unconfigured_archive_notice(message: &str) -> bool {
+    message == "Välj långtidslagring först. Lokalt underlag behålls."
+}
 fn archive_all(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<ArchiveResult, String> {
     let _op = Operation::start()?;
     let db = db(dir)?;
     let settings: Settings = get(&db, "settings")?.unwrap_or_default();
     if settings.archive_dir.is_empty() {
-        return Err("Välj långtidslagring först. Lokalt underlag behålls.".into());
+        // Local-only operation is supported. Never delete evidence without a verified archive.
+        if get::<String>(&db, "last_error")?
+            .as_deref()
+            .is_some_and(is_unconfigured_archive_notice)
+        {
+            put(&db, "last_error", &Option::<String>::None)?;
+        }
+        return Ok(ArchiveResult { archived: 0, message: "Underlaget sparas lokalt. Välj en arkivmapp under Insamling & lagring om du vill använda långtidsarkiv.".into() });
     }
     let archive = Path::new(&settings.archive_dir);
     let mut archived = 0;
@@ -2343,6 +2752,84 @@ async fn interpret_day(
     .map_err(error)?
 }
 #[tauri::command]
+pub async fn grit_test_ai(
+    target: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Value, String> {
+    let health_target = match target.as_str() {
+        "report" => HealthTarget::Report,
+        "image" => HealthTarget::Image,
+        _ => return Err("Okänd AI-testtyp.".into()),
+    };
+    let dir = local_dir(&state)?;
+    let database = db(&dir)?;
+    let generation = reset_connection_health(&database, health_target)?;
+    let settings: Result<Settings, String> =
+        get(&database, "settings").map(|value| value.unwrap_or_default());
+    let result = async {
+        let operation = Arc::new(Operation::start()?);
+        test_ai_connection(target, dir, settings?, operation).await
+    }
+    .await;
+    let checked_at = result
+        .as_ref()
+        .ok()
+        .and_then(|value| value["checked_at"].as_i64())
+        .unwrap_or_else(|| Local::now().timestamp());
+    finish_connection_test(
+        &database,
+        health_target,
+        &generation,
+        result,
+        |value| value["ok"] == true,
+        checked_at,
+    )
+}
+
+async fn test_ai_connection(
+    target: String,
+    dir: PathBuf,
+    settings: Settings,
+    operation: Arc<Operation>,
+) -> Result<Value, String> {
+    let vision = target == "image";
+    let (provider, model) = if vision {
+        (
+            settings.image_interpretation.provider,
+            settings.image_interpretation.model,
+        )
+    } else {
+        (settings.provider, settings.model)
+    };
+    let work = dir
+        .join("jobs")
+        .join(format!("connection-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&work).map_err(|_| "Kunde inte skapa anslutningstest.")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "Kunde inte skydda testjobbet.")?;
+    }
+    let cancel = CANCEL
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .clone();
+    cancel.store(false, Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || {
+        let _operation = operation;
+        let _scratch = ImageScratch(work.clone());
+        let started = std::time::Instant::now();
+        let result = crate::grit_cli::test_provider(&provider, &model, &work, vision, cancel);
+        let message = match &result {
+            Ok(()) if vision => "Modellen läste testbilden och lämnade ett giltigt svar.".to_string(),
+            Ok(()) => "Modellen svarade med rätt format.".to_string(),
+            Err(message) => message.clone(),
+        };
+        json!({"target":target,"provider":provider,"model":model,"checked_at":Local::now().timestamp(),
+            "ok":result.is_ok(),"vision_tested":vision,"elapsed_ms":started.elapsed().as_millis(),"message":message})
+    }).await.map_err(error)
+}
+#[tauri::command]
 pub async fn grit_interpretation_status(
     date: String,
     state: State<'_, Arc<Mutex<AppState>>>,
@@ -2529,7 +3016,7 @@ pub async fn report_task(state: Arc<Mutex<AppState>>) {
                 continue;
             }
         };
-        if let Err(e) = prepare_report(date.clone(), &state).await {
+        if let Err(e) = prepare_report(date.clone(), &state, false).await {
             // Busy races are retried next tick. Other preflight failures have a
             // durable failed queue entry so an offline archive cannot spin CLIs.
             if !BUSY.load(Ordering::SeqCst) {
@@ -2542,6 +3029,7 @@ pub async fn report_task(state: Arc<Mutex<AppState>>) {
                             summary: String::new(),
                             rows: vec![],
                             error: Some(e),
+                            basis: None,
                         };
                         let _ = save_report(&database, &failed);
                     }
@@ -2637,11 +3125,11 @@ mod tests {
         assert_eq!(r.rows[0].submitted_minutes, 30);
     }
     #[test]
-    fn manual_time_requires_explanation_and_still_rejects_overlap() {
+    fn manual_time_uses_diary_without_extra_reason_and_still_rejects_overlap() {
         let (mut r, c, e) = fixture();
         r.rows[0].manual = true;
         r.rows[0].evidence_ids.clear();
-        assert!(validate_report(&r, &c, &json!([]), true).is_err());
+        assert!(validate_report(&r, &c, &json!([]), true).is_ok());
         r.rows[0].manual_reason = "Kundmöte utan dator".into();
         assert!(validate_report(&r, &c, &json!([]), true).is_ok());
         let mut duplicate = r.rows[0].clone();
@@ -2667,6 +3155,47 @@ mod tests {
         assert_eq!(report_csv_cell("a;\"b\""), "\"a;\"\"b\"\"\"");
         assert_eq!(report_csv_cell("Utveckling"), "\"Utveckling\"");
     }
+    #[test]
+    fn today_drafts_validate_and_save_but_future_dates_and_today_submission_do_not() {
+        let (mut report, cat, mut ev) = fixture();
+        let today = Local::now().date_naive();
+        let start = Local
+            .from_local_datetime(&today.and_hms_opt(9, 0, 0).unwrap())
+            .unwrap()
+            .timestamp();
+        report.date = today.to_string();
+        report.rows[0].start = start;
+        report.rows[0].end = start + 3600;
+        ev[0]["timestamp"] = json!(start + 3600);
+        assert!(validate_report(&report, &cat, &ev, false).is_ok());
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute(
+                "CREATE TABLE reports (date TEXT PRIMARY KEY, body TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        save_report(&database, &report).unwrap();
+        assert_eq!(
+            self::report(&database, &report.date).unwrap().unwrap().rows[0].minutes,
+            60
+        );
+        assert!(validate_report(&report, &cat, &ev, true).is_err());
+        report.rows[0].minutes = 61;
+        assert!(validate_report(&report, &cat, &ev, false).is_err());
+        report.date = today.succ_opt().unwrap().to_string();
+        assert!(validate_report(&report, &cat, &ev, false).is_err());
+    }
+    #[test]
+    fn missing_evidence_distinguishes_images_from_logged_time() {
+        assert!(insufficient_evidence_message("2026-11-19", 0, 49).contains("49 bildposter"));
+        assert!(insufficient_evidence_message("2026-11-19", 0, 0).contains("Välj Idag"));
+        assert!(insufficient_evidence_message("2026-11-19", 42, 4).contains("Mindre än en minut"));
+        let (_, cat, _) = fixture();
+        let (r, _, _) = fixture();
+        assert!(validate_report(&r, &cat, &json!([]), false).is_err());
+    }
+
     #[test]
     fn work_date_rejects_future_and_invalid_dates() {
         assert!(work_date(&Local::now().date_naive().to_string()).is_ok());
@@ -2720,6 +3249,7 @@ mod tests {
             summary: "Arbete".into(),
             rows: vec![row],
             error: None,
+            basis: None,
         };
         let c = Catalog {
             projects: vec![Project {
@@ -2899,10 +3429,12 @@ mod tests {
         assert!(validate_report(&r, &c, &e, true).is_err());
     }
     #[test]
-    fn uncertainty_blocks_submission() {
+    fn final_approval_does_not_require_separate_row_checkboxes() {
         let (mut r, c, e) = fixture();
         r.rows[0].needs_review = true;
         assert!(validate_report(&r, &c, &e, false).is_ok());
+        assert!(validate_report(&r, &c, &e, true).is_ok());
+        r.rows[0].project_id = 0;
         assert!(validate_report(&r, &c, &e, true).is_err());
     }
     #[test]
@@ -3148,5 +3680,281 @@ mod style_history_tests {
         .unwrap_err();
         assert!(error.contains("försök igen"));
         assert!(error.contains("stäng av rapporthistorik"));
+    }
+}
+
+#[cfg(test)]
+mod connection_health_tests {
+    use super::*;
+
+    fn database() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            .unwrap();
+        db
+    }
+    fn seed(db: &Connection, target: HealthTarget, ok: bool, at: i64) -> String {
+        let generation = reset_connection_health(db, target).unwrap();
+        record_connection_health(db, target, &generation, at, ok).unwrap();
+        generation
+    }
+    fn all_success(db: &Connection) {
+        for target in [
+            HealthTarget::Spiris,
+            HealthTarget::Report,
+            HealthTarget::Image,
+        ] {
+            seed(db, target, true, 100);
+        }
+    }
+    fn health(db: &Connection, target: HealthTarget, now: i64) -> Health {
+        health_at(get(db, target.key()).unwrap(), target, now)
+    }
+    fn passing_spiris() -> ConnectionTest {
+        ConnectionTest {
+            checked_at: 100,
+            authentication: PermissionCheck {
+                resource: "authentication".into(),
+                ok: true,
+                tested: true,
+                http_status: None,
+                count: None,
+                message: "verified".into(),
+            },
+            reads: REQUIRED_SPIRIS_READS
+                .iter()
+                .map(|resource| permission_result(resource, Ok(json!({"items":[]}))))
+                .collect(),
+            submission_permission: "not_tested",
+        }
+    }
+
+    #[test]
+    fn missing_health_is_untested_and_polling_does_not_create_storage() {
+        let path = std::env::temp_dir().join(format!("grit-health-missing-{}", Uuid::new_v4()));
+        let status = read_connection_health(&path, 100).unwrap();
+        assert_eq!(status.spiris.state, HealthState::Untested);
+        assert_eq!(status.ai.checked_at, None);
+        assert!(status.ai_image.is_none());
+        assert!(!path.exists());
+        assert_eq!(
+            serde_json::to_value(status).unwrap()["spiris"]["state"],
+            "untested"
+        );
+    }
+
+    #[test]
+    fn health_freshness_expires_at_thirty_minutes_and_rejects_future_clock() {
+        let db = database();
+        for ok in [true, false] {
+            seed(&db, HealthTarget::Spiris, ok, 100);
+            assert_eq!(
+                health(&db, HealthTarget::Spiris, 1899).state,
+                if ok {
+                    HealthState::Ok
+                } else {
+                    HealthState::Error
+                }
+            );
+            assert_eq!(
+                health(&db, HealthTarget::Spiris, 1900).state,
+                HealthState::Stale
+            );
+            assert_eq!(
+                health(&db, HealthTarget::Spiris, 99).state,
+                HealthState::Stale
+            );
+            assert_eq!(
+                health(&db, HealthTarget::Spiris, 1900).checked_at,
+                Some(100)
+            );
+        }
+    }
+
+    #[test]
+    fn spiris_success_requires_auth_all_required_reads_and_selected_user() {
+        assert!(spiris_test_is_healthy(&passing_spiris(), 7));
+        assert!(!spiris_test_is_healthy(&passing_spiris(), 0));
+        for index in 0..REQUIRED_SPIRIS_READS.len() {
+            let mut result = passing_spiris();
+            result.reads[index].ok = false;
+            assert!(!spiris_test_is_healthy(&result, 7));
+            result.reads[index].ok = true;
+            result.reads[index].tested = false;
+            assert!(!spiris_test_is_healthy(&result, 7));
+        }
+        let mut result = passing_spiris();
+        result.authentication.tested = false;
+        assert!(!spiris_test_is_healthy(&result, 7));
+        result.authentication.tested = true;
+        result.authentication.ok = false;
+        assert!(!spiris_test_is_healthy(&result, 7));
+        result = passing_spiris();
+        result.reads[0].resource = "Admin/Users".into();
+        assert!(!spiris_test_is_healthy(&result, 7));
+        result = passing_spiris();
+        result.reads.pop();
+        assert!(!spiris_test_is_healthy(&result, 7));
+        assert!(!selected_user_permission(7, Ok(vec![json!({"id":8})])).ok);
+        assert!(!selected_user_permission(7, Err("untrusted upstream body".into())).ok);
+        assert!(selected_user_permission(7, Ok(vec![json!({"id":7})])).ok);
+        assert_eq!(passing_spiris().submission_permission, "not_tested");
+        assert!(HealthTarget::Spiris
+            .success_message()
+            .contains("Rätt att skicka tid är inte testad"));
+    }
+
+    #[test]
+    fn early_and_structured_test_failures_store_only_bounded_outcomes() {
+        let db = database();
+        for target in [
+            HealthTarget::Spiris,
+            HealthTarget::Report,
+            HealthTarget::Image,
+        ] {
+            let generation = reset_connection_health(&db, target).unwrap();
+            let result: Result<Value, String> = Err("UNTRUSTED_UPSTREAM_DIAGNOSTIC".repeat(200));
+            assert!(
+                finish_connection_test(&db, target, &generation, result, |_| true, 100).is_err()
+            );
+            let status = health(&db, target, 100);
+            assert_eq!(status.state, HealthState::Error);
+            assert!(!status.message.contains("UNTRUSTED"));
+            let raw: String = db
+                .query_row("SELECT value FROM kv WHERE key=?", [target.key()], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert!(raw.len() < 200);
+            assert!(!raw.contains("UNTRUSTED"));
+        }
+        let generation = reset_connection_health(&db, HealthTarget::Report).unwrap();
+        finish_connection_test(
+            &db,
+            HealthTarget::Report,
+            &generation,
+            Ok(json!({"ok":false,"message":"UNTRUSTED"})),
+            |value| value["ok"] == true,
+            101,
+        )
+        .unwrap();
+        assert_eq!(
+            health(&db, HealthTarget::Report, 101).state,
+            HealthState::Error
+        );
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM kv", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn relevant_settings_invalidate_only_their_connection_result() {
+        type SettingChange = (fn(&mut Settings), HealthTarget);
+        let changes: [SettingChange; 6] = [
+            (|s| s.user_id = 7, HealthTarget::Spiris),
+            (|s| s.provider = "grok".into(), HealthTarget::Report),
+            (|s| s.model = "different-model".into(), HealthTarget::Report),
+            (
+                |s| s.image_interpretation.mode = Mode::Ai,
+                HealthTarget::Image,
+            ),
+            (
+                |s| s.image_interpretation.provider = "grok".into(),
+                HealthTarget::Image,
+            ),
+            (
+                |s| s.image_interpretation.model = "different-model".into(),
+                HealthTarget::Image,
+            ),
+        ];
+        for (change, expected) in changes {
+            let db = database();
+            all_success(&db);
+            let previous = Settings::default();
+            let mut next = previous.clone();
+            change(&mut next);
+            invalidate_changed_connection_health(&db, &previous, &next).unwrap();
+            for target in [
+                HealthTarget::Spiris,
+                HealthTarget::Report,
+                HealthTarget::Image,
+            ] {
+                assert_eq!(
+                    health(&db, target, 100).state,
+                    if target.key() == expected.key() {
+                        HealthState::Untested
+                    } else {
+                        HealthState::Ok
+                    }
+                );
+            }
+        }
+        let db = database();
+        all_success(&db);
+        let previous = Settings::default();
+        let mut next = previous.clone();
+        next.article_id = 4;
+        next.archive_retention_days = 30;
+        next.image_interpretation.interval_seconds = 600;
+        invalidate_changed_connection_health(&db, &previous, &next).unwrap();
+        for target in [
+            HealthTarget::Spiris,
+            HealthTarget::Report,
+            HealthTarget::Image,
+        ] {
+            assert_eq!(health(&db, target, 100).state, HealthState::Ok);
+        }
+    }
+
+    #[test]
+    fn credential_or_settings_invalidation_and_new_tests_reject_old_completions() {
+        let db = database();
+        let old = seed(&db, HealthTarget::Spiris, true, 100);
+        seed(&db, HealthTarget::Report, true, 100);
+        reset_connection_health(&db, HealthTarget::Spiris).unwrap(); // Same reset used before credential writes.
+        record_connection_health(&db, HealthTarget::Spiris, &old, 101, true).unwrap();
+        assert_eq!(
+            health(&db, HealthTarget::Spiris, 101).state,
+            HealthState::Untested
+        );
+        assert_eq!(
+            health(&db, HealthTarget::Report, 101).state,
+            HealthState::Ok
+        );
+        let older_test = reset_connection_health(&db, HealthTarget::Image).unwrap();
+        let latest_test = reset_connection_health(&db, HealthTarget::Image).unwrap();
+        record_connection_health(&db, HealthTarget::Image, &latest_test, 102, true).unwrap();
+        record_connection_health(&db, HealthTarget::Image, &older_test, 103, false).unwrap();
+        assert_eq!(health(&db, HealthTarget::Image, 103).state, HealthState::Ok);
+        assert_eq!(health(&db, HealthTarget::Image, 103).checked_at, Some(102));
+    }
+
+    #[test]
+    fn image_status_is_optional_and_report_status_never_inherits_image_success() {
+        let root = std::env::temp_dir().join(format!("grit-health-read-{}", Uuid::new_v4()));
+        let db = super::db(&root).unwrap();
+        seed(&db, HealthTarget::Report, false, 100);
+        seed(&db, HealthTarget::Image, true, 100);
+        let mut settings = Settings::default();
+        for mode in [Mode::Off, Mode::Ocr, Mode::Ai] {
+            settings.image_interpretation.mode = mode.clone();
+            put(&db, "settings", &settings).unwrap();
+            let before: i64 = db
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            let status = read_connection_health(&root, 100).unwrap();
+            assert_eq!(status.ai.state, HealthState::Error);
+            assert_eq!(status.ai_image.is_some(), mode == Mode::Ai);
+            if let Some(image) = status.ai_image {
+                assert_eq!(image.state, HealthState::Ok);
+            }
+            let after: i64 = db
+                .query_row("SELECT total_changes()", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(before, after);
+        }
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

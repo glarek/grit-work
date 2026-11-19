@@ -14,6 +14,9 @@ export interface GritImageInterpretationStatus {
   date: string;
   file: string;
   completed: number;
+  with_content?: number;
+  no_text?: number;
+  sparse?: number;
   pending: number;
   failed: number;
   disabled: number;
@@ -80,7 +83,18 @@ export interface GritRow {
   remote_id: number | null;
 }
 
+export interface ReportBasis {
+  created_at: number;
+  activities: number;
+  active_seconds: number;
+  images_completed: number;
+  images_pending: number;
+  images_failed: number;
+  images_with_content: number;
+}
+
 export interface GritReport {
+  basis?: ReportBasis | null;
   date: string;
   revision: string;
   status: GritReportStatus | string;
@@ -363,6 +377,15 @@ export function normalizeGritReport(raw: unknown): GritReport | null {
     summary: toStringOr(raw.summary, ''),
     rows,
     error: typeof raw.error === 'string' && raw.error.trim() ? raw.error : null,
+    basis: isRecord(raw.basis) ? {
+      created_at: toFiniteNumber(raw.basis.created_at, 0),
+      activities: toFiniteNumber(raw.basis.activities, 0),
+      active_seconds: toFiniteNumber(raw.basis.active_seconds, 0),
+      images_completed: toFiniteNumber(raw.basis.images_completed, 0),
+      images_pending: toFiniteNumber(raw.basis.images_pending, 0),
+      images_failed: toFiniteNumber(raw.basis.images_failed, 0),
+      images_with_content: toFiniteNumber(raw.basis.images_with_content, 0),
+    } : null,
   };
 }
 
@@ -668,9 +691,6 @@ export function validateReportForSubmit(
   ).length;
   const zeroMinuteCount = report.rows.filter((r) => (r.minutes || 0) <= 0).length;
   const emptyDescriptionCount = report.rows.filter((r) => !r.description.trim()).length;
-  const missingManualReasonCount = report.rows.filter(
-    (r) => r.manual && !r.manual_reason.trim(),
-  ).length;
 
   if (report.status !== 'draft') {
     if (report.status === 'uploaded') {
@@ -684,6 +704,10 @@ export function validateReportForSubmit(
     } else {
       blockers.push('Spara rapporten som ett giltigt utkast innan den skickas.');
     }
+  }
+
+  if (report.date >= getTodayIsoDate()) {
+    blockers.push('Dagens utkast kan redigeras nu. Överföring till Spiris öppnas när dygnet är avslutat.');
   }
 
   if (!status.credential_saved) {
@@ -704,11 +728,6 @@ export function validateReportForSubmit(
     );
   }
 
-  if (unresolvedReviewCount > 0) {
-    blockers.push(
-      `${unresolvedReviewCount} ${unresolvedReviewCount === 1 ? 'osäker rad måste' : 'osäkra rader måste'} granskas och klarmarkeras.`,
-    );
-  }
 
   if (zeroMinuteCount > 0) {
     blockers.push(
@@ -722,11 +741,7 @@ export function validateReportForSubmit(
     );
   }
 
-  if (missingManualReasonCount > 0) {
-    blockers.push(
-      `${missingManualReasonCount} ${missingManualReasonCount === 1 ? 'manuell rad saknar' : 'manuella rader saknar'} orsak/anledning.`,
-    );
-  }
+
 
   if (!report.revision.trim()) {
     blockers.push('Utkastet saknar revision. Spara utkastet först.');

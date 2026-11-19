@@ -54,5 +54,6 @@ export function formatBrowserUrlForDisplay(rawUrl: unknown): string {
     return '';
   }
 
+  if (['未识别 URL', '未識別 URL', 'Unknown URL'].includes(rawUrl.trim())) return 'Okänd URL';
   return decodeNonAsciiPercentSequences(rawUrl.trim());
 }

@@ -63,8 +63,8 @@ impl ImageSettings {
     fn fingerprint(&self) -> String {
         match self.mode {
             Mode::Off => "off:v1".into(),
-            Mode::Ocr => "windows-ocr:v1".into(),
-            Mode::Ai => format!("ai:v1:{}:{}", self.provider, self.model),
+            Mode::Ocr => "windows-ocr:v2".into(),
+            Mode::Ai => format!("ai:v2:{}:{}", self.provider, self.model),
         }
     }
 }
@@ -124,6 +124,16 @@ pub struct SourceStamp {
     bytes: u64,
     modified_ns: u128,
 }
+/// How much text was observed. The character count is not an accuracy or quality score.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractionVolume {
+    #[default]
+    Unmeasured,
+    NoText,
+    Sparse,
+    TextDetected,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ImageEntry {
@@ -139,6 +149,16 @@ pub struct ImageEntry {
     pub processed_at: Option<i64>,
     pub content: ImageContent,
     pub error: Option<String>,
+    /// Pixel size of the file that was interpreted. Absent on older cache rows.
+    #[serde(default)]
+    pub source_width: Option<u32>,
+    #[serde(default)]
+    pub source_height: Option<u32>,
+    #[serde(default)]
+    pub extraction: ExtractionVolume,
+    /// Set for a finished read with no text or only a short sample. Not a technical failure.
+    #[serde(default)]
+    pub quality_warning: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -158,6 +178,10 @@ pub struct InterpretationStatus {
     pub failed: usize,
     pub disabled: usize,
     pub skipped: usize,
+    /// Completed rows with any text, summary, observation, or region text.
+    pub with_content: usize,
+    pub no_text: usize,
+    pub sparse: usize,
     pub running: bool,
     pub last_error: Option<String>,
     pub mode: Mode,
@@ -197,10 +221,84 @@ fn read_file(path: &Path, date: &str) -> Result<Option<DayFile>, String> {
     if day.schema_version != SCHEMA_VERSION || day.date != date || day.entries.len() > MAX_ENTRIES {
         return Err("Tolkningsfilens version, datum eller antal bilder är ogiltigt.".into());
     }
-    for entry in &day.entries {
+    let mut day = day;
+    for entry in &mut day.entries {
         entry.content.validate()?;
+        // Older files have no extraction field. Classify from stored text and keep that history.
+        if entry.extraction == ExtractionVolume::Unmeasured
+            && matches!(entry.status, EntryStatus::Completed | EntryStatus::Failed)
+        {
+            apply_completed_quality(entry);
+        }
     }
     Ok(Some(day))
+}
+
+/// Volume only. A short identifier is still content. Region text is counted only when
+/// `text` is empty, because a normal OCR line already includes its words.
+fn extraction_volume(content: &ImageContent) -> ExtractionVolume {
+    let text_chars = content.text.trim().chars().count();
+    let region_chars = if text_chars == 0 {
+        content
+            .regions
+            .iter()
+            .map(|region| region.text.trim().chars().count())
+            .sum()
+    } else {
+        0
+    };
+    let summary_chars = content.summary.trim().chars().count()
+        + content
+            .observations
+            .iter()
+            .map(|item| item.trim().chars().count())
+            .sum::<usize>();
+    let observed = text_chars + region_chars + summary_chars;
+    if observed == 0 {
+        ExtractionVolume::NoText
+    } else if observed <= 40 {
+        ExtractionVolume::Sparse
+    } else {
+        ExtractionVolume::TextDetected
+    }
+}
+
+fn quality_warning_for(volume: ExtractionVolume) -> Option<String> {
+    match volume {
+        ExtractionVolume::NoText => {
+            Some("Ingen text lästes. Bilden kan vara tom eller bara innehålla grafik.".into())
+        }
+        ExtractionVolume::Sparse => Some(
+            "Bara en kort text lästes. Teckenlängd säger inte om tolkningen är användbar.".into(),
+        ),
+        ExtractionVolume::TextDetected | ExtractionVolume::Unmeasured => None,
+    }
+}
+
+fn apply_completed_quality(entry: &mut ImageEntry) {
+    if entry.status != EntryStatus::Completed {
+        return;
+    }
+    entry.extraction = extraction_volume(&entry.content);
+    entry.quality_warning = quality_warning_for(entry.extraction);
+}
+
+fn note_source_size(entry: &mut ImageEntry, path: &Path) {
+    if entry.source_width.is_some() && entry.source_height.is_some() {
+        return;
+    }
+    if let Ok((width, height)) = image::image_dimensions(path) {
+        entry.source_width = Some(width);
+        entry.source_height = Some(height);
+    }
+}
+
+pub fn entry_has_content(entry: &ImageEntry) -> bool {
+    entry.status == EntryStatus::Completed
+        && matches!(
+            entry.extraction,
+            ExtractionVolume::Sparse | ExtractionVolume::TextDetected
+        )
 }
 pub fn load(root: &Path, archive: &Path, date: &str) -> Result<Option<DayFile>, String> {
     let local = file_path(root, date)?;
@@ -483,7 +581,12 @@ fn plan(
             processed_at: None,
             content: ImageContent::default(),
             error: None,
+            source_width: cached.and_then(|e| e.source_width),
+            source_height: cached.and_then(|e| e.source_height),
+            extraction: ExtractionVolume::Unmeasured,
+            quality_warning: None,
         };
+        note_source_size(&mut entry, &source.path);
         if settings.mode == Mode::Off {
             entry.status = EntryStatus::Disabled;
         } else if !due {
@@ -523,6 +626,7 @@ fn plan(
                 }
             }
         }
+        apply_completed_quality(&mut entry);
         paths.insert(id, source.path);
         entries.push(entry);
     }
@@ -601,10 +705,12 @@ where
         })();
         match result {
             Ok((content, hash, source_stamp)) => {
-                day.entries[index].content = content;
                 day.entries[index].image_sha256 = Some(hash);
                 day.entries[index].source_stamp = Some(source_stamp);
+                day.entries[index].content = content;
                 day.entries[index].status = EntryStatus::Completed;
+                day.entries[index].error = None;
+                apply_completed_quality(&mut day.entries[index]);
             }
             Err(error) => {
                 day.entries[index].status = EntryStatus::Failed;
@@ -631,6 +737,9 @@ pub fn status(
         failed: 0,
         disabled: 0,
         skipped: 0,
+        with_content: 0,
+        no_text: 0,
+        sparse: 0,
         running,
         last_error: None,
         mode: day
@@ -648,6 +757,19 @@ pub fn status(
                 EntryStatus::Failed => result.failed += 1,
                 _ => result.pending += 1,
             }
+            match entry.extraction {
+                ExtractionVolume::NoText => result.no_text += 1,
+                ExtractionVolume::Sparse => {
+                    result.sparse += 1;
+                    if entry_has_content(entry) {
+                        result.with_content += 1;
+                    }
+                }
+                ExtractionVolume::TextDetected if entry_has_content(entry) => {
+                    result.with_content += 1;
+                }
+                _ => {}
+            }
             if result.last_error.is_none() {
                 result.last_error = entry.error.clone();
             }
@@ -661,6 +783,7 @@ pub fn report_evidence(
     date: &str,
     activities: &Value,
     day: &DayFile,
+    allow_incomplete: bool,
 ) -> Result<Value, String> {
     let mut output = activities.clone();
     for row in output.as_array_mut().ok_or("Ogiltigt underlag.")? {
@@ -672,7 +795,7 @@ pub fn report_evidence(
             let id = format!("{:x}", Sha256::digest(key.as_bytes()));
             day.entries.iter().find(|e| e.image_id == id)
         };
-        if entry.is_some_and(|e| {
+        let incomplete = entry.is_some_and(|e| {
             matches!(
                 e.status,
                 EntryStatus::Pending
@@ -680,15 +803,32 @@ pub fn report_evidence(
                     | EntryStatus::Failed
                     | EntryStatus::AwaitingConsent
             )
-        }) {
+        });
+        if incomplete && !allow_incomplete {
             return Err("Bildtolkningen är inte färdig. Tolka bilderna eller välj Av under Insamling & lagring.".into());
         }
         let payload = entry.map(|e| {
             // Word boxes remain in the durable file for inspection. Sending the
             // same text again inside thousands of regions wastes report context.
-            let mut content = e.content.clone();
+            // Unfinished rows keep their status and quality labels, never cached text.
+            let mut content = if incomplete {
+                ImageContent::default()
+            } else {
+                e.content.clone()
+            };
             content.regions.clear();
-            json!({"image_id":e.image_id,"captured_at":e.captured_at,"method":e.method,"status":e.status,"content":content})
+            json!({
+                "image_id": e.image_id,
+                "captured_at": e.captured_at,
+                "method": e.method,
+                "status": e.status,
+                "content": content,
+                "source_width": e.source_width,
+                "source_height": e.source_height,
+                "extraction": e.extraction,
+                "quality_warning": e.quality_warning,
+                "with_content": !incomplete && entry_has_content(e),
+            })
         }).unwrap_or_else(|| json!({"method":day.configuration.mode,"status":"no_image","content":ImageContent::default()}));
         let obj = row.as_object_mut().ok_or("Ogiltig aktivitet.")?;
         obj.remove("screenshot_path");
@@ -774,7 +914,7 @@ mod tests {
             .entries
             .iter()
             .all(|e| e.status == EntryStatus::Disabled && e.content == ImageContent::default()));
-        let out = report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day).unwrap();
+        let out = report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day, false).unwrap();
         let text = out.to_string();
         assert!(!text.contains("OLD OCR"));
         assert!(!text.contains("screenshot_path"));
@@ -880,7 +1020,7 @@ mod tests {
             .iter()
             .all(|e| e.status == EntryStatus::Completed && e.content == content()));
         assert!(
-            report_evidence(&tmp.0, &archive.0, DATE, &archived_ev, &second)
+            report_evidence(&tmp.0, &archive.0, DATE, &archived_ev, &second, false)
                 .unwrap()
                 .to_string()
                 .contains("DRAWING-42")
@@ -943,7 +1083,7 @@ mod tests {
             .iter()
             .all(|e| e.status == EntryStatus::AwaitingConsent
                 && e.content == ImageContent::default()));
-        assert!(report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day).is_err());
+        assert!(report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day, false).is_err());
     }
     #[test]
     fn failed_ocr_is_not_empty_success_and_needs_explicit_retry() {
@@ -963,13 +1103,17 @@ mod tests {
         run(&tmp.0, &ev, &settings, false, usize::MAX, |_, _| {
             panic!("automatic retry")
         });
-        let recovered = run(&tmp.0, &ev, &settings, true, usize::MAX, |_, _| {
+        let blank = run(&tmp.0, &ev, &settings, true, usize::MAX, |_, _| {
             Ok(ImageContent::default())
         });
-        assert!(recovered
-            .entries
-            .iter()
-            .all(|e| e.status == EntryStatus::Completed && e.content.text.is_empty()));
+        assert!(blank.entries.iter().all(|e| {
+            e.status == EntryStatus::Completed
+                && e.extraction == ExtractionVolume::NoText
+                && e.error.is_none()
+                && e.quality_warning.is_some()
+                && !entry_has_content(e)
+        }));
+        assert!(report_evidence(&tmp.0, Path::new(""), DATE, &ev, &blank, false).is_ok());
     }
     #[test]
     fn max_images_resumes_without_repeating_completed_images() {
@@ -1078,9 +1222,179 @@ mod tests {
         let day = run(&tmp.0, &ev, &settings, false, usize::MAX, |_, _| {
             Ok(content())
         });
-        let out = report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day).unwrap();
+        let out = report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day, false).unwrap();
         assert_eq!(out[3]["image_interpretation"]["status"], "no_image");
         assert_eq!(out[3]["image_interpretation"]["content"]["text"], "");
+        assert_eq!(out[0]["image_interpretation"]["extraction"], "sparse");
+        assert_eq!(out[0]["image_interpretation"]["with_content"], true);
+        assert!(out[0]["image_interpretation"]["quality_warning"].is_string());
+    }
+    #[test]
+    fn incomplete_draft_keeps_completed_text_and_drops_stale_rows() {
+        let tmp = Temp::new();
+        let specs = [
+            ("done.png", EntryStatus::Completed, "KEEP-ID", true),
+            ("wait.png", EntryStatus::Pending, "STALE-PENDING", false),
+            (
+                "work.png",
+                EntryStatus::Processing,
+                "STALE-PROCESSING",
+                false,
+            ),
+            ("bad.png", EntryStatus::Failed, "STALE-FAILED", false),
+            (
+                "ask.png",
+                EntryStatus::AwaitingConsent,
+                "STALE-CONSENT",
+                false,
+            ),
+        ];
+        let mut entries = Vec::new();
+        let mut rows = Vec::new();
+        for (index, (file, status, stale, keep)) in specs.iter().enumerate() {
+            let raw = format!("screenshots/{file}");
+            let (key, _) = source_key(&tmp.0, Path::new(""), DATE, &raw).unwrap();
+            let image_id = format!("{:x}", Sha256::digest(key.as_bytes()));
+            entries.push(ImageEntry {
+                image_id,
+                source_file: raw.clone(),
+                captured_at: index as i64,
+                evidence_ids: vec![index as i64 + 1],
+                method: Mode::Ocr,
+                status: status.clone(),
+                fingerprint: "windows-ocr:v2".into(),
+                image_sha256: None,
+                source_stamp: None,
+                processed_at: Some(1),
+                content: ImageContent {
+                    text: (*stale).into(),
+                    regions: vec![crate::image_ocr::OcrRegion {
+                        text: "REGION-LEAK".into(),
+                        x: 1,
+                        y: 2,
+                        width: 3,
+                        height: 4,
+                    }],
+                    ..ImageContent::default()
+                },
+                error: None,
+                source_width: Some(10),
+                source_height: Some(20),
+                extraction: ExtractionVolume::TextDetected,
+                quality_warning: Some("kort".into()),
+            });
+            rows.push(json!({
+                "id": index + 1,
+                "screenshot_path": raw,
+                "ocr_text": "RAW-OCR-LEAK",
+                "executable_path": "/secret/bin",
+                "keep": keep,
+            }));
+            let _ = keep;
+        }
+        let day = DayFile {
+            schema_version: 1,
+            date: DATE.into(),
+            updated_at: 1,
+            configuration: ImageSettings {
+                mode: Mode::Ocr,
+                ..ImageSettings::default()
+            },
+            entries,
+        };
+        let ev = Value::Array(rows);
+        assert!(report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day, false).is_err());
+        let out = report_evidence(&tmp.0, Path::new(""), DATE, &ev, &day, true).unwrap();
+        let rendered = out.to_string();
+        assert!(!rendered.contains("STALE-"));
+        assert!(!rendered.contains("REGION-LEAK"));
+        assert!(!rendered.contains("RAW-OCR-LEAK"));
+        assert!(!rendered.contains("screenshot_path"));
+        assert!(!rendered.contains("ocr_text"));
+        assert!(!rendered.contains("executable_path"));
+        assert!(!rendered.contains("/secret/bin"));
+        assert_eq!(out[0]["image_interpretation"]["status"], "completed");
+        assert_eq!(out[0]["image_interpretation"]["content"]["text"], "KEEP-ID");
+        assert!(out[0]["image_interpretation"]["content"]["regions"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(out[0]["image_interpretation"]["with_content"], true);
+        for index in 1..5 {
+            let item = &out[index]["image_interpretation"];
+            assert_eq!(item["content"], json!(ImageContent::default()));
+            assert_eq!(item["with_content"], false);
+            assert_eq!(item["extraction"], "text_detected");
+            assert_eq!(item["quality_warning"], "kort");
+            assert_eq!(item["source_width"], 10);
+        }
+        assert_eq!(out[1]["image_interpretation"]["status"], "pending");
+        assert_eq!(out[2]["image_interpretation"]["status"], "processing");
+        assert_eq!(out[3]["image_interpretation"]["status"], "failed");
+        assert_eq!(out[4]["image_interpretation"]["status"], "awaiting_consent");
+    }
+
+    #[test]
+    fn old_completed_empty_ocr_stays_history_and_is_not_usable() {
+        let tmp = Temp::new();
+        let legacy = json!({
+            "schema_version": 1,
+            "date": DATE,
+            "updated_at": 1,
+            "configuration": {"mode":"ocr","interval_seconds":300,"provider":"codex","model":"gpt-6.2-sol"},
+            "entries": [{
+                "image_id": "abc",
+                "source_file": "screenshots/0.png",
+                "captured_at": 1,
+                "evidence_ids": [1],
+                "method": "ocr",
+                "status": "completed",
+                "fingerprint": "windows-ocr:v1",
+                "image_sha256": null,
+                "source_stamp": null,
+                "processed_at": 1,
+                "content": {"text":"","summary":"","observations":[],"regions":[],"language":"sv-SE","confidence":null},
+                "error": null
+            }]
+        });
+        fs::create_dir_all(tmp.0.join("image-interpretations")).unwrap();
+        fs::write(
+            file_path(&tmp.0, DATE).unwrap(),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let day = load(&tmp.0, Path::new(""), DATE).unwrap().unwrap();
+        assert_eq!(day.entries[0].status, EntryStatus::Completed);
+        assert_eq!(day.entries[0].content.language.as_deref(), Some("sv-SE"));
+        assert_eq!(day.entries[0].extraction, ExtractionVolume::NoText);
+        assert!(!entry_has_content(&day.entries[0]));
+        assert!(day.entries[0].quality_warning.is_some());
+        let summary = status(&tmp.0, DATE, Some(&day), false).unwrap();
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.with_content, 0);
+        assert_eq!(summary.no_text, 1);
+        let short = extraction_volume(&ImageContent {
+            text: "Faktura".into(),
+            regions: vec![crate::image_ocr::OcrRegion {
+                text: "Faktura".into(),
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }],
+            ..ImageContent::default()
+        });
+        assert_eq!(short, ExtractionVolume::Sparse);
+        let diagram = extraction_volume(&ImageContent {
+            summary: "Flöde utan bokstäver i bilden.".into(),
+            ..ImageContent::default()
+        });
+        assert_eq!(diagram, ExtractionVolume::Sparse);
+        let long = extraction_volume(&ImageContent {
+            text: "A".repeat(41),
+            ..ImageContent::default()
+        });
+        assert_eq!(long, ExtractionVolume::TextDetected);
     }
     #[test]
     fn corrupted_day_file_and_traversal_fail_closed() {

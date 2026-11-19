@@ -502,5 +502,5 @@ export function translateCategoryLabel(categoryKey: string): string {
 
 export function translateSemanticCategoryLabel(label: string): string {
   const currentLocale = get(locale);
-  return SEMANTIC_LABELS[label]?.[currentLocale] || SEMANTIC_LABELS[label]?.[DEFAULT_LOCALE] || label;
+  return SEMANTIC_LABELS[label]?.[currentLocale] || CATEGORY_LABELS[label]?.[currentLocale] || SEMANTIC_LABELS[label]?.[DEFAULT_LOCALE] || label;
 }

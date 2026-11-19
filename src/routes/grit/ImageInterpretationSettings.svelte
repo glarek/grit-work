@@ -2,6 +2,7 @@
   import { createEventDispatcher, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { Check, Play, RefreshCw, ScanText, X } from 'lucide-svelte';
+  import AiConnectionTest from './AiConnectionTest.svelte';
   import UiSelect from '../../lib/components/ui/UiSelect.svelte';
   import HelpTip from '../../lib/components/ui/HelpTip.svelte';
   import { workDate } from './workflow.ts';
@@ -243,6 +244,7 @@
         </p>
       </div>
 
+      <div class="sm:col-span-2"><AiConnectionTest target="image" configKey={settings.provider + ':' + settings.model} disabled={dirty || saving} /></div>
       {#if !aiConsent}
         <p class="sm:col-span-2 text-xs font-medium text-amber-700">
           Kräver sparat AI-samtycke under fliken AI-rapportering innan AI-bildtolkning körs.
@@ -256,7 +258,7 @@
       <span class="font-mono font-semibold text-slate-800">{status?.date ?? activeDate}</span>
       {#if status}
         <span>
-          · <span class="font-mono">{status.completed}</span> klara,
+          · <span class="font-mono">{status.completed}</span> behandlade,
           <span class="font-mono">{status.pending}</span> väntar,
           <span class="font-mono">{status.failed}</span> fel,
           <span class="font-mono">{status.disabled}</span> av,
@@ -318,6 +320,14 @@
       </button>
     </div>
   </div>
+
+  {#if (status?.no_text ?? 0) > 0 || (status?.sparse ?? 0) > 0}
+    <div role="status" class="rounded-lg bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-900">
+      <strong>{status?.no_text ?? 0} bilder utan läst innehåll, {status?.sparse ?? 0} med lite innehåll.</strong>
+      Kontrollera att skärmbilder sparas i originalupplösning. Äldre nedskalade bilder kan inte återfå förlorade detaljer.
+      Tidrapporten använder även program, fönstertitlar och tidsloggar; tom bildtext betyder inte att inget arbete utförts.
+    </div>
+  {/if}
 
   {#if statusError || status?.last_error}
     <p class="text-xs text-rose-700">{statusError || status?.last_error}</p>

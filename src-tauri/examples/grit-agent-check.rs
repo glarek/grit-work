@@ -7,6 +7,24 @@ fn main() -> Result<(), String> {
     let model = std::env::args().nth(2).unwrap_or("gpt-6.2-sol".into());
     let work = std::env::temp_dir().join(format!("grit-vision-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    if std::env::args().nth(3).as_deref() == Some("--connection") {
+        for vision in [false, true] {
+            let result = grit_cli::test_provider(
+                &provider,
+                &model,
+                &work.join(if vision { "image" } else { "text" }),
+                vision,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            if let Err(error) = result {
+                let _ = std::fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&work);
+        println!("PASS: {provider} text and image connection tests");
+        return Ok(());
+    }
     let image =
         std::path::PathBuf::from(std::env::args().nth(3).ok_or(
             "Usage: grit-agent-check PROVIDER MODEL IMAGE (image must show SAPPHIRE-729)",
