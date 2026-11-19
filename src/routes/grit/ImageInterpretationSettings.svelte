@@ -148,7 +148,7 @@
   }
 </script>
 
-<section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+<section class="grit-field-container space-y-4 rounded-xl border border-slate-200 bg-white p-5">
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div class="space-y-1">
       <div class="flex items-center gap-2">
@@ -169,7 +169,7 @@
     </div>
   </div>
 
-  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+  <div class="grit-cols-2 grid gap-3">
     <div>
       <div class="mb-1 flex min-h-6 items-center gap-1.5">
         <label for="grit-image-interp-mode" class="text-xs font-medium text-slate-700">
@@ -209,7 +209,7 @@
   </div>
 
   {#if settings.mode === 'ai'}
-    <div class="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:grid-cols-2">
+    <div class="grit-cols-2 grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
       <div>
         <div class="mb-1 flex min-h-6 items-center">
           <label for="grit-image-interp-provider" class="text-xs font-medium text-slate-700">
@@ -323,3 +323,19 @@
     <p class="text-xs text-rose-700">{statusError || status?.last_error}</p>
   {/if}
 </section>
+
+<style>
+  .grit-field-container {
+    container-type: inline-size;
+  }
+
+  .grit-cols-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @container (min-width: 580px) {
+    .grit-cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+</style>

@@ -57,7 +57,7 @@
   }
 </script>
 
-<section class="grit-capture space-y-5 rounded-xl border border-slate-200 bg-white p-5" aria-labelledby="capture-title">
+<section class="grit-capture grit-field-container space-y-5 rounded-xl border border-slate-200 bg-white p-5" aria-labelledby="capture-title">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <h2 id="capture-title" class="flex items-center gap-2 text-base font-semibold text-slate-900">
       <Camera class="h-4 w-4 text-slate-600" aria-hidden="true" />
@@ -69,7 +69,7 @@
     </span>
   </div>
 
-  <div class="grid gap-4 sm:grid-cols-2">
+  <div class="grit-cols-2 grid gap-4">
     <div>
       <div class="mb-1.5 flex min-h-6 items-center">
         <label for="capture-interval" class="text-xs font-medium text-slate-700">
@@ -116,7 +116,7 @@
     </button>
 
     {#if showImageOptions}
-      <div transition:slide={{ duration: 180 }} class="mt-4 grid gap-4 sm:grid-cols-3">
+      <div transition:slide={{ duration: 180 }} class="grit-cols-3 mt-4 grid gap-4">
         <div>
           <div class="mb-1.5 flex min-h-6 items-center">
             <label for="capture-jpeg-quality" class="text-xs font-medium text-slate-700">
@@ -260,6 +260,27 @@
 </section>
 
 <style>
+  .grit-field-container {
+    container-type: inline-size;
+  }
+
+  .grit-cols-2,
+  .grit-cols-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @container (min-width: 580px) {
+    .grit-cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @container (min-width: 600px) {
+    .grit-cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
   .grit-capture :is(button, input, select, summary):focus-visible {
     outline: 2px solid #4f46e5;
     outline-offset: 2px;

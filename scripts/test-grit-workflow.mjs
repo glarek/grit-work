@@ -47,6 +47,28 @@ await page.getByRole('button',{name:/Bildinställningar/}).click();
 await assertRowAligned([page.locator('#capture-jpeg-quality'),page.getByRole('combobox',{name:'Bildstorlek',exact:true}),page.locator('#capture-max-width')],'imageAdvancedRow');
 await assertRowAligned([page.getByRole('combobox',{name:'Tolkningsläge',exact:true}),page.locator('#grit-image-interp-interval')],'imageInterpRow');
 await assertRowAligned([page.locator('#grit-archive-dir'),page.getByRole('button',{name:'Välj mapp',exact:true}),page.locator('#grit-archive-retention')],'archiveRow');
+async function assertRowAlignedOrStacked(locators,label){
+ const boxes=await Promise.all(locators.map(async l=>{await l.waitFor();return l.boundingBox();}));
+ for(const b of boxes){assert.ok(b,`${label}: missing boundingBox`);}
+ const base=boxes[0];
+ const sameRow=boxes.slice(1).every(b=>Math.abs(b.y-base.y)<=1);
+ if(sameRow){
+  for(const b of boxes.slice(1)){
+   assert.ok(Math.abs(b.height-base.height)<=1,`${label}: height mismatch (${b.height} vs ${base.height})`);
+  }
+ } else {
+  for(let i=1;i<boxes.length;i++){
+   assert.ok(boxes[i].y>=boxes[i-1].y+boxes[i-1].height-1,`${label}: stacked overlap at ${i}`);
+   assert.ok(Math.abs(boxes[i].width-base.width)<=2,`${label}: stacked width mismatch (${boxes[i].width} vs ${base.width})`);
+  }
+ }
+}
+for(const width of [920,780]){
+ await page.setViewportSize({width,height:900});
+ await assertRowAlignedOrStacked([page.getByRole('spinbutton',{name:'Skärmbildsintervall i sekunder'}),page.getByRole('combobox',{name:'Skärmar att samla in',exact:true})],`captureRow-${width}`);
+ await assertRowAlignedOrStacked([page.getByRole('combobox',{name:'Tolkningsläge',exact:true}),page.locator('#grit-image-interp-interval')],`imageInterpRow-${width}`);
+}
+await page.setViewportSize({width:1360,height:1000});
 await page.getByRole('button',{name:'Skapa tomt underlag',exact:true}).click();
 await page.getByText('2 av',{exact:false}).waitFor();
 

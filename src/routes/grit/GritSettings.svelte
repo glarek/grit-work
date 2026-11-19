@@ -477,7 +477,8 @@
                 <p class="rounded-lg bg-white p-2.5 text-xs text-slate-600">
                   {providerInfo.description}
                 </p>
-                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div class="grit-field-container">
+                  <div class="grit-cols-2 grid gap-3">
                   <div>
                     <div class="mb-1 flex min-h-6 items-center">
                       <label for="grit-ai-model" class="text-xs font-medium text-slate-700">Modell</label>
@@ -502,6 +503,7 @@
                       class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
                     />
                   </div>
+                </div>
                 </div>
               </div>
             {/if}
@@ -745,7 +747,7 @@
           on:save={handleSaveSettings}
         />
 
-        <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+        <section class="grit-field-container space-y-4 rounded-xl border border-slate-200 bg-white p-5">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 class="text-base font-semibold text-slate-900">Långtidsarkiv & lokal mapp</h2>
@@ -764,8 +766,8 @@
             </button>
           </div>
 
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div class="sm:col-span-2">
+          <div class="grit-cols-3 grid gap-3">
+            <div class="grit-col-span-2">
               <div class="mb-1 flex min-h-6 items-center">
                 <label for="grit-archive-dir" class="text-xs font-medium text-slate-700">
                   Arkivmapp (valfri)
@@ -830,6 +832,31 @@
 </div>
 
 <style>
+  .grit-field-container {
+    container-type: inline-size;
+  }
+
+  .grit-cols-2,
+  .grit-cols-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @container (min-width: 580px) {
+    .grit-cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @container (min-width: 600px) {
+    .grit-cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .grit-col-span-2 {
+      grid-column: span 2 / span 2;
+    }
+  }
+
   .grit-settings :is(button, input, select):focus-visible {
     outline: 2px solid #4f46e5;
     outline-offset: 2px;
