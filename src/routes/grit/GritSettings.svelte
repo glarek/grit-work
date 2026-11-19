@@ -30,6 +30,10 @@
     type GritStatus,
   } from './gritTypes.ts';
 
+  const resourceLabels: Record<string,string> = {
+    'Core/Projects':'Projekt', 'Admin/Users':'Användare', 'Admin/Activities':'Aktiviteter',
+    'Admin/TimeCodes':'Tidskoder', 'Admin/Articles':'Artiklar', 'Core/TimeReports':'Tidrapporter',
+  };
   type AuthMode = 'oauth' | 'static';
   type GritSettingsSection = 'all' | 'ai' | 'spiris' | 'capture';
 
@@ -473,7 +477,7 @@
                     />
                   </label>
                   <label class="block text-xs font-medium text-slate-700">
-                    Timeout (sekunder)
+                    Tidsgräns (sekunder)
                     <input
                       type="number"
                       min="30"
@@ -569,7 +573,7 @@
               <ul class="space-y-1 border-t border-slate-200/80 pt-2">
                 {#each connectionResult.reads as check}
                   <li class="flex items-center justify-between gap-2">
-                    <span class="font-medium text-slate-700">{check.resource}</span>
+                    <span class="font-medium text-slate-700">{resourceLabels[check.resource] ?? "Resurs"}</span>
                     <span class="font-mono {check.ok ? 'text-emerald-700' : 'text-rose-700'}">
                       {check.ok ? 'OK' : 'Fel'}{typeof check.count === 'number' ? ` (${check.count})` : ''}{check.message ? ` · ${check.message}` : ''}
                     </span>

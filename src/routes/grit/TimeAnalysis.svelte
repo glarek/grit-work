@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ChevronDown } from 'lucide-svelte';
   import { onMount, onDestroy } from 'svelte';
   import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
@@ -106,7 +107,7 @@
     {#if runningDate}<p role="status" class="mt-3 text-sm text-slate-500 dark:text-[#8b949e]">Bakgrundsanalys pågår för {runningDate}. Du kan lämna vyn.</p>{/if}
     {#if error}<p role="alert" class="mt-3 text-sm text-rose-600 dark:text-rose-400">{error}</p>{/if}
     <details class="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-500 dark:border-[#30363d] dark:text-[#8b949e]">
-      <summary class="cursor-pointer py-1">Om analysen</summary>
+      <summary class="flex items-center gap-2 list-none cursor-pointer py-1"><ChevronDown size={14} />Om analysen</summary>
       <p class="mt-2 max-w-prose leading-relaxed">Modell: <span class="break-all font-mono">{model || 'Inte vald'}</span>. Analysen körs via leverantörens inloggade CLI. Kontrollera slutsatser mot tidslinjen.</p>
     </details>
   </section>
@@ -120,7 +121,7 @@
             <time datetime={new Date(entry.created_at*1000).toISOString()} class="font-mono text-xs text-slate-500 dark:text-[#8b949e]">{new Date(entry.created_at*1000).toLocaleString('sv-SE')}</time>
           </div>
           <p class="mt-3 max-w-prose whitespace-pre-wrap break-words text-sm leading-7 text-slate-700 dark:text-[#adbac7]">{entry.answer}</p>
-          <details class="mt-3 text-xs text-slate-500 dark:text-[#8b949e]"><summary class="cursor-pointer py-1">AI-modell</summary><p class="mt-1 break-all">{entry.provider}: <span class="font-mono">{entry.model}</span></p></details>
+          <details class="mt-3 text-xs text-slate-500 dark:text-[#8b949e]"><summary class="flex items-center gap-2 list-none cursor-pointer py-1"><ChevronDown size={14} />AI-modell</summary><p class="mt-1 break-all">{entry.provider}: <span class="font-mono">{entry.model}</span></p></details>
         </article>
       {/each}
     </section>
