@@ -1,4 +1,4 @@
-# Grit Work development
+# GRIT Work development
 
 When orchestrating agents for Adrian, use the **currently running Herdr instance**, the same workspace and visible sibling panes. Read `~/.codex/skills/herdr-orchestration/SKILL.md` and `herdr --skill`. Never substitute hidden subagents or detached CLI jobs. Preserve worktrees when handing tasks over.
 
