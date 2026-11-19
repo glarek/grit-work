@@ -1,5 +1,11 @@
 //! Grit's durable report workflow. Only this module may write time to Spiris.
-use crate::{grit_engine, AppState};
+use crate::{
+    grit_engine,
+    image_interpretation::{
+        self, DayFile, ImageContent, ImageSettings, InterpretationStatus, Mode,
+    },
+    AppState,
+};
 use chrono::{Local, NaiveDate, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -19,11 +25,11 @@ use uuid::Uuid;
 const API: &str = "https://publicapi.tid.vismaspcs.se/v1";
 static BUSY: AtomicBool = AtomicBool::new(false);
 static CANCEL: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
-static ANALYSIS_DAY: Mutex<Option<String>> = Mutex::new(None);
-struct AnalysisLease;
-impl Drop for AnalysisLease {
+static IMAGE_DAY: Mutex<Option<String>> = Mutex::new(None);
+struct ImageLease;
+impl Drop for ImageLease {
     fn drop(&mut self) {
-        if let Ok(mut day) = ANALYSIS_DAY.lock() {
+        if let Ok(mut day) = IMAGE_DAY.lock() {
             *day = None;
         }
     }
@@ -33,7 +39,7 @@ impl Operation {
     fn start() -> Result<Self, String> {
         BUSY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| {
-                "Ett Grit-jobb körs redan. Vänta eller avbryt rapportjobbet.".to_string()
+                "Ett GRIT-jobb körs redan. Vänta eller avbryt rapportjobbet.".to_string()
             })?;
         Ok(Self)
     }
@@ -62,6 +68,7 @@ pub struct Settings {
     pub archive_retention_days: u32,
     pub ai_consent: bool,
     pub use_report_history: bool,
+    pub image_interpretation: ImageSettings,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -78,6 +85,7 @@ impl Default for Settings {
             archive_retention_days: 90,
             ai_consent: false,
             use_report_history: false,
+            image_interpretation: ImageSettings::default(),
         }
     }
 }
@@ -1053,6 +1061,7 @@ pub async fn grit_save_settings(
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
     let _op = Operation::start()?;
+    settings.image_interpretation.validate()?;
     if !["codex", "grok", "agy"].contains(&settings.provider.as_str())
         || settings.model.is_empty()
         || settings.model.len() > 100
@@ -1146,7 +1155,7 @@ pub async fn grit_get_report(
     date: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Option<Report>, String> {
-    analysis_date(&date)?;
+    work_date(&date)?;
     report(&db(&local_dir(&state)?)?, &date)
 }
 #[tauri::command]
@@ -1282,35 +1291,8 @@ fn validate_report(r: &Report, cat: &Catalog, ev: &Value, strict: bool) -> Resul
     }
     Ok(())
 }
-fn evidence_for_cli(ev: &Value, dir: &Path, settings: &Settings) -> Result<Value, String> {
-    let mut ev_copy = ev.clone();
-    let local_root = dir.canonicalize().map_err(error)?;
-    let archive_root = Path::new(&settings.archive_dir).canonicalize().ok();
-    for a in ev_copy.as_array_mut().ok_or("Ogiltigt underlag")? {
-        if let Some(raw) = a["screenshot_path"].as_str().filter(|s| !s.is_empty()) {
-            let p = Path::new(raw);
-            let full = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                dir.join(p)
-            };
-            let actual = full
-                .canonicalize()
-                .map_err(|_| "En underlagsbild saknas.".to_string())?;
-            if !actual.starts_with(&local_root)
-                && !archive_root
-                    .as_ref()
-                    .is_some_and(|root| actual.starts_with(root))
-            {
-                return Err("Bildsökvägen ligger utanför underlaget.".into());
-            }
-            a["screenshot_path"] = json!(actual);
-        }
-    }
-    Ok(ev_copy)
-}
 
-fn analysis_date(date: &str) -> Result<(), String> {
+fn work_date(date: &str) -> Result<(), String> {
     let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(error)?;
     if parsed.to_string() != date || parsed > Local::now().date_naive() {
         return Err("Välj ett giltigt datum till och med idag.".into());
@@ -1318,21 +1300,12 @@ fn analysis_date(date: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct AnalysisAnswer {
-    question: String,
-    answer: String,
-    provider: String,
-    model: String,
-    created_at: i64,
-}
-
 #[tauri::command]
 pub async fn grit_day_context(
     date: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Value, String> {
-    analysis_date(&date)?;
+    work_date(&date)?;
     let dir = local_dir(&state)?;
     let database = db(&dir)?;
     let (ev, archived) = read_day_evidence(state.inner(), &dir, &date)?;
@@ -1376,7 +1349,7 @@ pub async fn grit_export_report(
     target_path: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), String> {
-    analysis_date(&date)?;
+    work_date(&date)?;
     let database = db(&local_dir(&state)?)?;
     let saved = report(&database, &date)?.ok_or("Ingen sparad tidrapport finns för datumet.")?;
     if ["running", "uploading"].contains(&saved.status.as_str()) {
@@ -1424,106 +1397,6 @@ pub async fn grit_export_report(
         output.push_str("\r\n");
     }
     std::fs::write(target, output).map_err(error)
-}
-
-#[tauri::command]
-pub async fn grit_get_analysis(
-    date: String,
-    state: State<'_, Arc<Mutex<AppState>>>,
-) -> Result<Vec<AnalysisAnswer>, String> {
-    analysis_date(&date)?;
-    Ok(get(&db(&local_dir(&state)?)?, &format!("analysis:{date}"))?.unwrap_or_default())
-}
-
-fn analysis_text(value: &Value) -> Result<&str, String> {
-    let answer = value["summary"]
-        .as_str()
-        .filter(|v| !v.trim().is_empty() && v.len() <= 40_000)
-        .ok_or("Analysen saknar ett giltigt textsvar.")?;
-    if !value["rows"].as_array().is_some_and(|r| r.is_empty()) {
-        return Err(
-            "Analys får inte skapa tidsrader. Använd tidrapporten för rapportförslag.".into(),
-        );
-    }
-    Ok(answer)
-}
-
-#[tauri::command]
-pub async fn grit_analysis_job() -> Result<Option<String>, String> {
-    Ok(ANALYSIS_DAY.lock().map_err(error)?.clone())
-}
-
-#[tauri::command]
-pub async fn grit_analyze(
-    date: String,
-    question: String,
-    state: State<'_, Arc<Mutex<AppState>>>,
-) -> Result<Vec<AnalysisAnswer>, String> {
-    let op = Arc::new(Operation::start()?);
-    analysis_date(&date)?;
-    let question = question.trim().to_string();
-    if question.is_empty() || question.len() > 4000 {
-        return Err("Skriv en fråga på högst 4 000 tecken.".into());
-    }
-    let dir = local_dir(&state)?;
-    let database = db(&dir)?;
-    let settings: Settings = get(&database, "settings")?.unwrap_or_default();
-    require_ai_consent(&settings)?;
-    let cat: Catalog = get(&database, "catalog")?.unwrap_or_default();
-    let ev = evidence(state.inner(), &dir, &date)?;
-    let ev_copy = evidence_for_cli(&ev, &dir, &settings)?;
-    let project_data = json!({"projects":cat.projects, "analysis_question":question});
-    let workspace = dir.join("jobs").join(Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&workspace).map_err(error)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700))
-            .map_err(error)?;
-    }
-    let cancel = CANCEL
-        .get_or_init(|| Arc::new(AtomicBool::new(false)))
-        .clone();
-    cancel.store(false, Ordering::SeqCst);
-    let worker_settings = settings.clone();
-    let work = workspace.clone();
-    *ANALYSIS_DAY.lock().map_err(error)? = Some(date.clone());
-    let analysis_lease = Arc::new(AnalysisLease);
-    let worker_analysis_lease = analysis_lease.clone();
-    let worker_lease = op.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let _lease = worker_lease;
-        let _analysis_lease = worker_analysis_lease;
-        crate::grit_cli::run_agent(
-            &worker_settings.provider,
-            &worker_settings.model,
-            &work,
-            &ev_copy,
-            &project_data,
-            worker_settings.timeout_seconds,
-            cancel,
-        )
-    })
-    .await
-    .map_err(error)
-    .and_then(|r| r);
-    let _ = std::fs::remove_dir_all(workspace);
-    let value = result?;
-    let answer = analysis_text(&value)?;
-    let key = format!("analysis:{date}");
-    let mut history: Vec<AnalysisAnswer> = get(&database, &key)?.unwrap_or_default();
-    history.push(AnalysisAnswer {
-        question,
-        answer: answer.into(),
-        provider: settings.provider,
-        model: settings.model,
-        created_at: Local::now().timestamp(),
-    });
-    if history.len() > 20 {
-        history.drain(..history.len() - 20);
-    }
-    put(&database, &key, &history)?;
-    Ok(history)
 }
 
 #[tauri::command]
@@ -1791,7 +1664,24 @@ async fn prepare_report(date: String, state: &Arc<Mutex<AppState>>) -> Result<Re
     if let Some(writing_style) = writing_style {
         project_data["writing_style"] = writing_style;
     }
-    let ev_copy = evidence_for_cli(&ev, &dir, &settings)?;
+    let interpreted = interpret_day(
+        &dir,
+        &date,
+        &ev,
+        &settings,
+        false,
+        usize::MAX,
+        cancel.clone(),
+        op.clone(),
+    )
+    .await?;
+    let ev_copy = image_interpretation::report_evidence(
+        &dir,
+        Path::new(&settings.archive_dir),
+        &date,
+        &ev,
+        &interpreted,
+    )?;
     let workspace = dir.join("jobs").join(Uuid::new_v4().to_string());
     std::fs::create_dir_all(&workspace).map_err(error)?;
     #[cfg(unix)]
@@ -1921,6 +1811,10 @@ fn archive_all(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<ArchiveResult
         if ev.as_array().is_none_or(|a| a.is_empty()) {
             continue;
         }
+        // Snapshot the reusable JSON companion without invoking OCR/AI during archival.
+        let filtered = evidence(state, dir, &date)?;
+        let idle_cancel = Arc::new(AtomicBool::new(false));
+        interpret_sync(dir, &date, &filtered, &settings, false, 0, idle_cancel)?;
         grit_engine::archive_day(dir, archive, &date, &ev)?;
         // Keep capture and manual database edits outside the final snapshot/delete window.
         let guard = state.lock().map_err(error)?;
@@ -1988,6 +1882,15 @@ fn expire_finished_evidence(
         // The tombstone marker makes readers return an empty evidence view after
         // expiry, while all report bodies and submission receipts remain intact.
         crate::grit_engine::expire_archive(archive, &date)?;
+        // Derived interpretations share evidence retention, not permanent report receipts.
+        if let Some(local_dir) = database.path().and_then(|path| Path::new(path).parent()) {
+            let interpretation = image_interpretation::file_path(local_dir, &date)?;
+            match std::fs::remove_file(interpretation) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err("Kunde inte rensa den utgångna tolkningsfilen.".into()),
+            }
+        }
         put(database, &format!("expired:{date}"), &true)?;
     }
     Ok(())
@@ -2316,6 +2219,201 @@ pub fn recover(dir: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+struct ImageScratch(PathBuf);
+impl Drop for ImageScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn interpret_sync(
+    dir: &Path,
+    date: &str,
+    ev: &Value,
+    settings: &Settings,
+    retry_failed: bool,
+    max_images: usize,
+    cancel: Arc<AtomicBool>,
+) -> Result<DayFile, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(settings.timeout_seconds);
+    image_interpretation::process_day(
+        dir,
+        Path::new(&settings.archive_dir),
+        date,
+        ev,
+        &settings.image_interpretation,
+        settings.ai_consent,
+        retry_failed,
+        max_images,
+        &cancel,
+        |path, options| {
+            if cancel.load(Ordering::SeqCst) {
+                return Err("Bildtolkningen avbröts. Välj Försök igen.".into());
+            }
+            if deadline <= std::time::Instant::now() {
+                cancel.store(true, Ordering::SeqCst);
+                return Err("Bildtolkningen nådde tidsgränsen. Fortsätt med Tolka nu.".into());
+            }
+            match options.mode {
+                Mode::Off => Ok(ImageContent::default()),
+                Mode::Ocr => {
+                    let recognized = crate::image_ocr::recognize(path)?;
+                    Ok(ImageContent {
+                        text: recognized.text,
+                        regions: recognized.regions,
+                        language: recognized.language,
+                        ..ImageContent::default()
+                    })
+                }
+                Mode::Ai => {
+                    require_ai_consent(settings)?;
+                    let work = dir.join("jobs").join(format!("image-{}", Uuid::new_v4()));
+                    std::fs::create_dir_all(&work)
+                        .map_err(|_| "Kunde inte skapa bildtolkningsjobb.")?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o700))
+                            .map_err(|_| "Kunde inte skydda bildtolkningsjobbet.")?;
+                    }
+                    let _scratch = ImageScratch(work.clone());
+                    let timeout = deadline
+                        .saturating_duration_since(std::time::Instant::now())
+                        .as_secs()
+                        .clamp(1, 120);
+                    let result = crate::grit_cli::interpret_image(
+                        &options.provider,
+                        &options.model,
+                        &work,
+                        path,
+                        timeout,
+                        cancel.clone(),
+                    )?;
+                    serde_json::from_value(result).map_err(|_| {
+                        "AI-tolkningen följer inte det gemensamma bildformatet.".into()
+                    })
+                }
+            }
+        },
+    )
+}
+#[allow(clippy::too_many_arguments)]
+async fn interpret_day(
+    dir: &Path,
+    date: &str,
+    ev: &Value,
+    settings: &Settings,
+    retry_failed: bool,
+    max_images: usize,
+    cancel: Arc<AtomicBool>,
+    operation: Arc<Operation>,
+) -> Result<DayFile, String> {
+    let (dir, date, ev, settings) = (
+        dir.to_path_buf(),
+        date.to_string(),
+        ev.clone(),
+        settings.clone(),
+    );
+    *IMAGE_DAY.lock().map_err(error)? = Some(date.clone());
+    let lease = Arc::new(ImageLease);
+    tokio::task::spawn_blocking(move || {
+        let _operation = operation;
+        let _lease = lease;
+        interpret_sync(
+            &dir,
+            &date,
+            &ev,
+            &settings,
+            retry_failed,
+            max_images,
+            cancel,
+        )
+    })
+    .await
+    .map_err(error)?
+}
+#[tauri::command]
+pub async fn grit_interpretation_status(
+    date: String,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<InterpretationStatus, String> {
+    work_date(&date)?;
+    let dir = local_dir(&state)?;
+    let settings: Settings = get(&db(&dir)?, "settings")?.unwrap_or_default();
+    let day = image_interpretation::load(&dir, Path::new(&settings.archive_dir), &date)?;
+    let day = day.filter(|day| day.configuration == settings.image_interpretation);
+    let running = IMAGE_DAY.lock().map_err(error)?.is_some();
+    image_interpretation::status(&dir, &date, day.as_ref(), running)
+}
+#[tauri::command]
+pub async fn grit_interpret_images(
+    date: String,
+    retry_failed: bool,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<InterpretationStatus, String> {
+    let operation = Arc::new(Operation::start()?);
+    work_date(&date)?;
+    let dir = local_dir(&state)?;
+    let settings: Settings = get(&db(&dir)?, "settings")?.unwrap_or_default();
+    let ev = evidence(state.inner(), &dir, &date)?;
+    let cancel = CANCEL
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .clone();
+    cancel.store(false, Ordering::SeqCst);
+    let day = interpret_day(
+        &dir,
+        &date,
+        &ev,
+        &settings,
+        retry_failed,
+        usize::MAX,
+        cancel,
+        operation,
+    )
+    .await?;
+    image_interpretation::status(&dir, &date, Some(&day), false)
+}
+/// Current-day interpretation is incremental; an error is persisted and needs an explicit retry.
+pub async fn image_interpretation_task(state: Arc<Mutex<AppState>>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let Ok(operation) = Operation::start() else {
+            continue;
+        };
+        let operation = Arc::new(operation);
+        let dir = match state.lock() {
+            Ok(s) => s.data_dir.clone(),
+            Err(_) => return,
+        };
+        let date = Local::now().date_naive().to_string();
+        let prepared = (|| {
+            let settings: Settings = get(&db(&dir)?, "settings")?.unwrap_or_default();
+            let ev = evidence(&state, &dir, &date)?;
+            Ok::<_, String>((settings, ev))
+        })();
+        let (settings, ev) = match prepared {
+            Ok(v) => v,
+            Err(e) => {
+                if let Ok(database) = db(&dir) {
+                    let _ = put(&database, "last_error", &Some(e));
+                }
+                continue;
+            }
+        };
+        let cancel = CANCEL
+            .get_or_init(|| Arc::new(AtomicBool::new(false)))
+            .clone();
+        cancel.store(false, Ordering::SeqCst);
+        if let Err(e) =
+            interpret_day(&dir, &date, &ev, &settings, false, 1, cancel, operation).await
+        {
+            if let Ok(database) = db(&dir) {
+                let _ = put(&database, "last_error", &Some(e));
+            }
+        }
+    }
+}
+
 /// Prepare completed days without uploading. A persisted report, including a
 /// failure, stops retries; user-edited drafts are never overwritten by the worker.
 fn next_background_date(
@@ -2507,18 +2605,12 @@ mod tests {
         assert_eq!(report_csv_cell("Utveckling"), "\"Utveckling\"");
     }
     #[test]
-    fn analysis_rejects_report_rows_and_invalid_text() {
-        assert_eq!(
-            analysis_text(&json!({"summary":"Underlag #1 visar arbete.","rows":[]})).unwrap(),
-            "Underlag #1 visar arbete."
-        );
-        assert!(analysis_text(&json!({"summary":"ok","rows":[{"project_id":42}]})).is_err());
-        assert!(analysis_text(&json!({"summary":" ","rows":[]})).is_err());
-        assert!(analysis_text(&json!({"summary":"x".repeat(40_001),"rows":[]})).is_err());
-        assert!(analysis_date(&Local::now().date_naive().to_string()).is_ok());
-        assert!(analysis_date("2099-12-31").is_err());
-        assert!(analysis_date("2026-99-99").is_err());
+    fn work_date_rejects_future_and_invalid_dates() {
+        assert!(work_date(&Local::now().date_naive().to_string()).is_ok());
+        assert!(work_date("2099-12-31").is_err());
+        assert!(work_date("2026-99-99").is_err());
     }
+
     #[test]
     fn capture_settings_validate_and_survive_config_normalization() {
         let mut config = work_review_core::config::AppConfig::default();

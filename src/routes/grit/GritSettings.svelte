@@ -17,6 +17,7 @@
     Sparkles,
   } from 'lucide-svelte';
   import CaptureSettings from './CaptureSettings.svelte';
+  import ImageInterpretationSettings from './ImageInterpretationSettings.svelte';
   import UiSelect from '$lib/components/ui/UiSelect.svelte';
   import HelpTip from '$lib/components/ui/HelpTip.svelte';
   import { notifyGritChanged } from './workflow.ts';
@@ -71,11 +72,18 @@
     };
   }>();
 
+  function cloneSettings(s: GritSettingsModel): GritSettingsModel {
+    return {
+      ...s,
+      image_interpretation: { ...s.image_interpretation },
+    };
+  }
+
   let status: GritStatus | null = initialStatus;
   let settingsForm: GritSettingsModel = initialStatus
-    ? { ...initialStatus.settings }
+    ? cloneSettings(initialStatus.settings)
     : createDefaultSettings();
-  let savedSettings = { ...settingsForm };
+  let savedSettings: GritSettingsModel = cloneSettings(settingsForm);
 
   function emitConnectionState(): void {
     dispatch('connectionState', {
@@ -98,8 +106,8 @@
     const clean = JSON.stringify(settingsForm) === JSON.stringify(savedSettings);
     status = next;
     if (clean || force) {
-      settingsForm = { ...next.settings };
-      savedSettings = { ...next.settings };
+      settingsForm = cloneSettings(next.settings);
+      savedSettings = cloneSettings(next.settings);
     }
     if (!next.credential_saved || (verifiedUserId !== null && next.settings.user_id !== verifiedUserId)) {
       connectionVerified = false;
@@ -135,6 +143,8 @@
   }
 
   $: providerInfo = PROVIDER_LABELS[settingsForm.provider];
+  $: imageProviderInfo = PROVIDER_LABELS[settingsForm.image_interpretation.provider];
+  $: settingsDirty = JSON.stringify(settingsForm) !== JSON.stringify(savedSettings);
   $: userOptions = [
     { value: '0', label: 'Välj användare...' },
     ...(status?.users ?? []).map((u) => ({ value: String(u.id), label: u.name })),
@@ -411,17 +421,17 @@
           <label for="gritsettings-settingsForm-ai_consent" class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition {settingsForm.ai_consent
             ? 'border-emerald-200 bg-emerald-50/40'
             : 'border-amber-200 bg-amber-50/40'}">
-            <UiCheckbox id="gritsettings-settingsForm-ai_consent" bind:checked={settingsForm.ai_consent} label={`Informerat samtycke till AI-analys (${providerInfo.name})`} />
+            <UiCheckbox id="gritsettings-settingsForm-ai_consent" bind:checked={settingsForm.ai_consent} label="Samtycke till valda AI-tjänster" />
             <div>
               <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
-                <span>Informerat samtycke till AI-analys ({providerInfo.name})</span>
+                <span>Samtycke till valda AI-tjänster</span>
                 <HelpTip
                   label="Om AI-samtycke"
-                  text="Skärmbilder och aktivitetsloggar skickas till vald inloggad CLI-leverantör ({providerInfo.name} · {providerInfo.vendor}, utan API-nycklar) och tillåter bakgrundsförberedelse."
+                  text={`Tidrapportens AI skickar aktivitetsloggar och sparade bildtolkningar till ${providerInfo.name} (${providerInfo.vendor}). Endast när AI-bildtolkning är vald under Insamling & lagring skickas även skärmbilder till ${imageProviderInfo.name} (${imageProviderInfo.vendor}).`}
                 />
               </div>
               <p class="mt-0.5 text-xs text-slate-600">
-                Krävs för att skapa tidrapportutkast med AI.
+                Krävs för tidrapportens AI ({providerInfo.name}) och för valfri AI-bildtolkning ({imageProviderInfo.name}).
               </p>
             </div>
           </label>
@@ -468,24 +478,30 @@
                   {providerInfo.description}
                 </p>
                 <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <label class="block text-xs font-medium text-slate-700">
-                    Modell
+                  <div>
+                    <div class="mb-1 flex min-h-6 items-center">
+                      <label for="grit-ai-model" class="text-xs font-medium text-slate-700">Modell</label>
+                    </div>
                     <input
+                      id="grit-ai-model"
                       type="text"
                       bind:value={settingsForm.model}
-                      class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+                      class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
                     />
-                  </label>
-                  <label class="block text-xs font-medium text-slate-700">
-                    Tidsgräns (sekunder)
+                  </div>
+                  <div>
+                    <div class="mb-1 flex min-h-6 items-center">
+                      <label for="grit-ai-timeout" class="text-xs font-medium text-slate-700">Tidsgräns (sekunder)</label>
+                    </div>
                     <input
+                      id="grit-ai-timeout"
                       type="number"
                       min="30"
                       step="30"
                       bind:value={settingsForm.timeout_seconds}
-                      class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+                      class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
                     />
-                  </label>
+                  </div>
                 </div>
               </div>
             {/if}
@@ -655,26 +671,32 @@
 
           {#if authMode === 'oauth'}
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label class="block text-xs font-medium text-slate-700">
-                App-id
+              <div>
+                <div class="mb-1 flex min-h-6 items-center">
+                  <label for="grit-oauth-appid" class="text-xs font-medium text-slate-700">App-id</label>
+                </div>
                 <input
+                  id="grit-oauth-appid"
                   type="password"
                   autocomplete="off"
                   bind:value={applicationId}
                   placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange App-id'}
-                  class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+                  class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 />
-              </label>
-              <label class="block text-xs font-medium text-slate-700">
-                Apphemlighet
+              </div>
+              <div>
+                <div class="mb-1 flex min-h-6 items-center">
+                  <label for="grit-oauth-secret" class="text-xs font-medium text-slate-700">Apphemlighet</label>
+                </div>
                 <input
+                  id="grit-oauth-secret"
                   type="password"
                   autocomplete="off"
                   bind:value={secret}
                   placeholder={status.credential_saved ? '•••••••• (sparad)' : 'Ange Apphemlighet'}
-                  class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+                  class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
                 />
-              </label>
+              </div>
             </div>
           {:else}
             <label class="block text-xs font-medium text-slate-700">
@@ -715,6 +737,14 @@
           on:saved={handleCaptureSaved}
         />
 
+        <ImageInterpretationSettings
+          bind:settings={settingsForm.image_interpretation}
+          aiConsent={savedSettings.ai_consent}
+          dirty={settingsDirty}
+          saving={savingSettings}
+          on:save={handleSaveSettings}
+        />
+
         <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -736,44 +766,50 @@
 
           <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div class="sm:col-span-2">
-              <label class="block text-xs font-medium text-slate-700">
-                Arkivmapp (valfri)
-                <div class="mt-1 flex gap-2">
-                  <input
-                    type="text"
-                    bind:value={settingsForm.archive_dir}
-                    placeholder={status.local_dir || 'Lokal arbetsmapp'}
-                    class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
-                  />
-                  <button
-                    type="button"
-                    on:click={handlePickArchiveDir}
-                    class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                  >
-                    <FolderOpen class="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>Välj mapp</span>
-                  </button>
-                </div>
-              </label>
+              <div class="mb-1 flex min-h-6 items-center">
+                <label for="grit-archive-dir" class="text-xs font-medium text-slate-700">
+                  Arkivmapp (valfri)
+                </label>
+              </div>
+              <div class="flex items-center gap-2">
+                <input
+                  id="grit-archive-dir"
+                  type="text"
+                  bind:value={settingsForm.archive_dir}
+                  placeholder={status.local_dir || 'Lokal arbetsmapp'}
+                  class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+                />
+                <button
+                  type="button"
+                  on:click={handlePickArchiveDir}
+                  class="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  <FolderOpen class="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Välj mapp</span>
+                </button>
+              </div>
             </div>
 
-            <label class="block text-xs font-medium text-slate-700">
-              <span class="inline-flex items-center gap-1.5">
-                <span>Arkivlagring (dagar)</span>
+            <div>
+              <div class="mb-1 flex min-h-6 items-center gap-1.5">
+                <label for="grit-archive-retention" class="text-xs font-medium text-slate-700">
+                  Arkivlagring (dagar)
+                </label>
                 <HelpTip
                   label="Om arkivlagring"
                   text="Standard: 90 dagar. Ofärdiga rapporter och deras underlag sparas alltid tills de har skickats eller hoppats över."
                 />
-              </span>
+              </div>
               <input
+                id="grit-archive-retention"
                 type="number"
                 min="1"
                 max="3650"
                 step="1"
                 bind:value={settingsForm.archive_retention_days}
-                class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+                class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
               />
-            </label>
+            </div>
           </div>
 
           <div class="flex justify-end">

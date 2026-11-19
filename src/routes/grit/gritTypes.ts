@@ -1,6 +1,27 @@
 import { normalizeCapture, normalizeMonitors, type CaptureSettings, type CaptureMonitor } from './captureSettings.ts';
 export type GritProvider = 'codex' | 'grok' | 'agy';
 
+export type GritImageInterpretationMode = 'off' | 'ocr' | 'ai';
+
+export interface GritImageInterpretationSettings {
+  mode: GritImageInterpretationMode;
+  interval_seconds: number;
+  provider: GritProvider;
+  model: string;
+}
+
+export interface GritImageInterpretationStatus {
+  date: string;
+  file: string;
+  completed: number;
+  pending: number;
+  failed: number;
+  disabled: number;
+  skipped: number;
+  running: boolean;
+  last_error: string | null;
+}
+
 export type GritReportStatus =
   | 'running'
   | 'draft'
@@ -23,6 +44,7 @@ export interface GritSettings {
   time_code_id: number;
   billable: boolean;
   timeout_seconds: number;
+  image_interpretation: GritImageInterpretationSettings;
 }
 
 export interface GritProject {
@@ -139,6 +161,12 @@ export function createDefaultSettings(): GritSettings {
     time_code_id: 0,
     billable: false,
     timeout_seconds: 600,
+    image_interpretation: {
+      mode: 'off',
+      interval_seconds: 300,
+      provider: 'codex',
+      model: PROVIDER_DEFAULT_MODELS.codex,
+    },
   };
 }
 
@@ -184,6 +212,33 @@ export function normalizeGritSettings(raw: unknown): GritSettings {
 
   const model = toStringOr(raw.model, '').trim() || getDefaultModelForProvider(provider);
 
+  const rawImageInterp = isRecord(raw.image_interpretation) ? raw.image_interpretation : null;
+  const rawImageMode = rawImageInterp ? toStringOr(rawImageInterp.mode, '') : '';
+  const imageMode: GritImageInterpretationMode =
+    rawImageMode === 'off' || rawImageMode === 'ocr' || rawImageMode === 'ai'
+      ? rawImageMode
+      : defaults.image_interpretation.mode;
+  const rawImageProvider = rawImageInterp ? toStringOr(rawImageInterp.provider, '') : '';
+  const imageProvider: GritProvider =
+    rawImageProvider === 'codex' || rawImageProvider === 'grok' || rawImageProvider === 'agy'
+      ? rawImageProvider
+      : defaults.image_interpretation.provider;
+  const imageModel =
+    (rawImageInterp ? toStringOr(rawImageInterp.model, '').trim() : '') ||
+    getDefaultModelForProvider(imageProvider);
+  const imageInterval = Math.min(
+    3600,
+    Math.max(
+      30,
+      Math.trunc(
+        toFiniteNumber(
+          rawImageInterp?.interval_seconds,
+          defaults.image_interpretation.interval_seconds,
+        ),
+      ),
+    ),
+  );
+
   return {
     archive_dir: toStringOr(raw.archive_dir, defaults.archive_dir),
     archive_retention_days: Math.max(
@@ -206,6 +261,12 @@ export function normalizeGritSettings(raw: unknown): GritSettings {
       10,
       Math.trunc(toFiniteNumber(raw.timeout_seconds, defaults.timeout_seconds)),
     ),
+    image_interpretation: {
+      mode: imageMode,
+      interval_seconds: imageInterval,
+      provider: imageProvider,
+      model: imageModel,
+    },
   };
 }
 

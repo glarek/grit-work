@@ -70,9 +70,14 @@
   </div>
 
   <div class="grid gap-4 sm:grid-cols-2">
-    <label class="text-xs font-medium text-slate-700">
-      Intervall (sekunder)
+    <div>
+      <div class="mb-1.5 flex min-h-6 items-center">
+        <label for="capture-interval" class="text-xs font-medium text-slate-700">
+          Intervall (sekunder)
+        </label>
+      </div>
       <input
+        id="capture-interval"
         aria-label="Skärmbildsintervall i sekunder"
         type="number"
         min="30"
@@ -80,13 +85,13 @@
         step="1"
         bind:value={draft.interval_seconds}
         on:input={() => (dirty = true)}
-        class="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+        class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
       />
-      <span class="mt-1 block font-normal text-slate-500">30–3600 sekunder. Standard: 300.</span>
-    </label>
+      <p class="mt-1 text-xs text-slate-500">30–3600 sekunder. Standard: 300.</p>
+    </div>
 
     <div class="text-xs font-medium text-slate-700">
-      <div class="mb-1.5 flex items-center gap-1.5">
+      <div class="mb-1.5 flex min-h-6 items-center gap-1.5">
         <span>Skärmar att samla in</span>
         <HelpTip label="Om skärmval" text="Alla skärmar slås samman till en gemensam bild." />
       </div>
@@ -112,21 +117,26 @@
 
     {#if showImageOptions}
       <div transition:slide={{ duration: 180 }} class="mt-4 grid gap-4 sm:grid-cols-3">
-        <label class="text-xs font-medium text-slate-700">
-          JPEG-kvalitet (%)
+        <div>
+          <div class="mb-1.5 flex min-h-6 items-center">
+            <label for="capture-jpeg-quality" class="text-xs font-medium text-slate-700">
+              JPEG-kvalitet (%)
+            </label>
+          </div>
           <input
+            id="capture-jpeg-quality"
             type="number"
             min="30"
             max="95"
             bind:value={draft.jpeg_quality}
             on:input={() => (dirty = true)}
-            class="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+            class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
           />
-          <span class="mt-1 block font-normal text-slate-500">Högre kvalitet tar mer plats.</span>
-        </label>
+          <p class="mt-1 text-xs text-slate-500">Högre kvalitet tar mer plats.</p>
+        </div>
 
         <div class="text-xs font-medium text-slate-700">
-          <div class="mb-1.5">Bildstorlek</div>
+          <div class="mb-1.5 flex min-h-6 items-center">Bildstorlek</div>
           <UiSelect
             label="Bildstorlek"
             bind:value={draft.width_mode}
@@ -135,19 +145,24 @@
           />
         </div>
 
-        <label class="text-xs font-medium text-slate-700">
-          Maxbredd (pixlar)
+        <div>
+          <div class="mb-1.5 flex min-h-6 items-center">
+            <label for="capture-max-width" class="text-xs font-medium text-slate-700">
+              Maxbredd (pixlar)
+            </label>
+          </div>
           <input
+            id="capture-max-width"
             type="number"
             min="800"
             max="16384"
             step="1"
             bind:value={draft.max_image_width}
             on:input={() => (dirty = true)}
-            class="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
+            class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900"
           />
-          <span class="mt-1 block font-normal text-slate-500">Gäller hela bilden.</span>
-        </label>
+          <p class="mt-1 text-xs text-slate-500">Gäller hela bilden.</p>
+        </div>
       </div>
     {/if}
   </div>

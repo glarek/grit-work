@@ -65,7 +65,7 @@
     <section class="page-card about-brand-card">
       <div class="about-brand-identity flex flex-col items-center">
         <div class="about-brand-mark">
-          <img src="/icons/256x256.png" alt="GRIT Work" class="h-16 w-16 rounded-lg object-cover" />
+          <img src="/icons/256x256.png" alt="GRIT Work" class="h-16 w-16 rounded-lg object-contain" style="image-rendering: pixelated;" />
         </div>
 
         <div class="about-brand-copy">

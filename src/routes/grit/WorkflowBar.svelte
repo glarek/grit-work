@@ -57,10 +57,9 @@
     if (typeof window !== 'undefined') window.removeEventListener('grit-changed', refresh);
   });
 
-  const links: Array<{ path: string; label: string; icon: 'overview' | 'timeline' | 'analyze' | 'report' }> = [
+  const links: Array<{ path: string; label: string; icon: 'overview' | 'timeline' | 'report' }> = [
     { path: '/overview', label: 'Översikt', icon: 'overview' },
     { path: '/timeline', label: 'Tidslinje', icon: 'timeline' },
-    { path: '/ask', label: 'Analysera', icon: 'analyze' },
     { path: '/report', label: 'Tidrapport', icon: 'report' },
   ];
 

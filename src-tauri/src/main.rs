@@ -26,6 +26,8 @@ mod grit;
 mod grit_cli;
 mod grit_engine;
 mod idle_detector;
+mod image_interpretation;
+mod image_ocr;
 mod linux_session;
 mod localhost_api;
 mod monitor;
@@ -1325,6 +1327,10 @@ fn reset_recording_session(
     *last_browser_url = None;
     *last_capture_time = now;
     overlay_sessions.clear();
+}
+
+fn legacy_capture_ocr_enabled() -> bool {
+    false
 }
 
 fn should_run_ocr(elapsed_since_ocr: Option<Duration>, screenshot_interval: u64) -> bool {
@@ -2798,7 +2804,9 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
 
                 // 新建与合并共用 OCR 冷却，窗口切换仍保留截图。
                 // ponytail: 冷却期内的短活动可能没有 OCR；需要逐条索引时再加有界后台队列。
-                let should_run_ocr = screenshots_enabled
+                // GRIT's explicit image interpretation worker owns OCR. Capture only saves images.
+                let should_run_ocr = legacy_capture_ocr_enabled()
+                    && screenshots_enabled
                     && should_run_ocr(
                         last_ocr_time.map(|last| last.elapsed()),
                         screenshot_interval,
@@ -4691,6 +4699,10 @@ async fn main() {
             // 先发布句柄，再注册后台电源通知，避免恢复事件找不到应用。
             let _ = APP_HANDLE.set(app.handle().clone());
 
+            let image_state = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                grit::image_interpretation_task(image_state).await;
+            });
             let grit_report_state = state.inner().clone();
             tauri::async_runtime::spawn(async move {
                 grit::report_task(grit_report_state).await;
@@ -4737,9 +4749,8 @@ async fn main() {
             grit::grit_save_capture_settings,
             grit::grit_status,
             grit::grit_day_context,
-            grit::grit_get_analysis,
-            grit::grit_analyze,
-            grit::grit_analysis_job,
+            grit::grit_interpretation_status,
+            grit::grit_interpret_images,
             grit::grit_export_report,
             grit::grit_save_settings,
             grit::grit_save_credentials,

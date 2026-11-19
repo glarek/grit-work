@@ -251,6 +251,17 @@ pub fn clean_archived_day(
             if entry.archived != shot.archived_str {
                 return Err(format!("archive source mismatch: {}", entry.source));
             }
+            // The local interpretation cache may be newer than the sealed copy.
+            // verify_day already hashed the archived file. Keep the local cache.
+            if is_image_interpretation(
+                &plan.data_dir,
+                date,
+                &entry.source,
+                &plan.day_dir,
+                &entry.archived,
+            ) {
+                continue;
+            }
             // A previous clean may already have removed the local file. Compare
             // bytes only when the source is still present; the manifest hash was
             // verified against the archived copy.
@@ -264,6 +275,16 @@ pub fn clean_archived_day(
             }
             continue;
         }
+        if is_image_interpretation(
+            &plan.data_dir,
+            date,
+            &entry.source,
+            &plan.day_dir,
+            &entry.archived,
+        ) {
+            // The archived copy was hashed above. A newer local cache stays.
+            continue;
+        }
         if !is_daily_ocr(
             &plan.data_dir,
             date,
@@ -272,7 +293,7 @@ pub fn clean_archived_day(
             &entry.archived,
         ) {
             return Err(format!(
-                "archive source is not a screenshot or daily ocr log: {}",
+                "archive source is not a screenshot or daily companion: {}",
                 entry.source
             ));
         }
@@ -285,8 +306,14 @@ pub fn clean_archived_day(
         {
             continue;
         }
-        // A daily log that appeared after the archive was sealed is not a source.
+        // A companion that appeared after the archive was sealed is not a source.
         if is_daily_ocr(
+            &plan.data_dir,
+            date,
+            &shot.source_str,
+            &plan.day_dir,
+            &shot.archived_str,
+        ) || is_image_interpretation(
             &plan.data_dir,
             date,
             &shot.source_str,
@@ -305,6 +332,15 @@ pub fn clean_archived_day(
     let mut removed = 0;
     for entry in &manifest.sources {
         let source = PathBuf::from(&entry.source);
+        if is_image_interpretation(
+            &plan.data_dir,
+            date,
+            &entry.source,
+            &plan.day_dir,
+            &entry.archived,
+        ) {
+            continue;
+        }
         if resolve_inside(&plan.data_dir, &source)? != lexical_abs(&source)? {
             return Err(format!("source escapes data_dir: {}", entry.source));
         }
@@ -460,6 +496,25 @@ fn prepare(
             sha256: Some(sha256),
         });
     }
+    // Optional per-day interpretation cache. Other JSON files are not companions.
+    let interpretation_rel = PathBuf::from("image-interpretations").join(format!("{date}.json"));
+    let interpretation_source = data_dir.join(&interpretation_rel);
+    reject_symlink_chain(&interpretation_source, true)?;
+    if let Some(sha256) = hash_source_if_present(&interpretation_source)? {
+        if overlaps(&interpretation_source, &archive_dir)
+            || overlaps(&interpretation_source, &day_dir)
+        {
+            return Err("image interpretation overlaps archive".into());
+        }
+        let archived = day_dir.join(&interpretation_rel);
+        shots.push(PlannedShot {
+            source: interpretation_source.clone(),
+            source_str: path_str(&interpretation_source)?,
+            archived_rel: interpretation_rel,
+            archived_str: path_str(&archived)?,
+            sha256: Some(sha256),
+        });
+    }
     Ok(ArchivePlan {
         data_dir,
         day_dir,
@@ -470,8 +525,43 @@ fn prepare(
 }
 
 fn is_daily_ocr(data_dir: &Path, date: &str, source: &str, day_dir: &Path, archived: &str) -> bool {
-    let expected_source = data_dir.join("ocr_logs").join(format!("{date}.txt"));
-    let expected_archived = day_dir.join("ocr_logs").join(format!("{date}.txt"));
+    same_companion(
+        data_dir,
+        day_dir,
+        "ocr_logs",
+        &format!("{date}.txt"),
+        source,
+        archived,
+    )
+}
+
+fn is_image_interpretation(
+    data_dir: &Path,
+    date: &str,
+    source: &str,
+    day_dir: &Path,
+    archived: &str,
+) -> bool {
+    same_companion(
+        data_dir,
+        day_dir,
+        "image-interpretations",
+        &format!("{date}.json"),
+        source,
+        archived,
+    )
+}
+
+fn same_companion(
+    data_dir: &Path,
+    day_dir: &Path,
+    directory: &str,
+    file_name: &str,
+    source: &str,
+    archived: &str,
+) -> bool {
+    let expected_source = data_dir.join(directory).join(file_name);
+    let expected_archived = day_dir.join(directory).join(file_name);
     Path::new(source) == expected_source && Path::new(archived) == expected_archived
 }
 
@@ -700,26 +790,28 @@ fn read_activities(day_dir: &Path, manifest: &ArchiveManifest) -> Result<Value, 
         referenced.insert(entry.source.clone());
     }
     let ocr_rel = format!("ocr_logs/{}.txt", manifest.date);
+    let interpretation_rel = format!("image-interpretations/{}.json", manifest.date);
     for entry in &manifest.sources {
         if referenced.contains(&entry.source) {
             continue;
         }
         let archived = PathBuf::from(&entry.archived);
         if lexical_abs(&archived)? != archived || !archived.starts_with(day_dir) {
-            return Err("archived ocr log escapes archive day".into());
+            return Err("archived companion escapes archive day".into());
         }
         let rel = archived
             .strip_prefix(day_dir)
-            .map_err(|_| "archived ocr log escapes archive day")?;
-        if rel_key(rel) != ocr_rel {
+            .map_err(|_| "archived companion escapes archive day")?;
+        let key = rel_key(rel);
+        if key != ocr_rel && key != interpretation_rel {
             return Err("source map does not match archived activities".into());
         }
         let hashed = manifest
             .files
-            .get(&ocr_rel)
-            .ok_or("no checksum for daily ocr log")?;
+            .get(&key)
+            .ok_or("no checksum for daily companion")?;
         if hashed != &entry.sha256 || sha256_file(&archived)? != entry.sha256 {
-            return Err("checksum mismatch for daily ocr log".into());
+            return Err("checksum mismatch for daily companion".into());
         }
     }
     Ok(value)
@@ -1304,5 +1396,103 @@ mod tests {
         assert!(error.contains("no manifest"));
         assert_eq!(fs::read(tomb.join("orphan.bin")).unwrap(), b"left");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn image_interpretation_is_archived_and_the_local_cache_stays() {
+        let root = scratch();
+        let data = root.join("data");
+        let archive = root.join("archive");
+        fs::write(data.join("pic.png"), b"img").unwrap();
+        fs::create_dir_all(data.join("ocr_logs")).unwrap();
+        fs::create_dir_all(data.join("image-interpretations")).unwrap();
+        let log = data.join("ocr_logs").join(format!("{DAY}.txt"));
+        fs::write(&log, b"raw-ocr").unwrap();
+        let cache = data
+            .join("image-interpretations")
+            .join(format!("{DAY}.json"));
+        fs::write(&cache, b"{\"images\":[]}").unwrap();
+        let wrong = data.join("image-interpretations").join("2020-01-16.json");
+        fs::write(&wrong, b"{\"other\":true}").unwrap();
+        fs::write(data.join("image-interpretations").join("notes.json"), b"{}").unwrap();
+        let activities = json!([{"screenshot_path": "pic.png", "ocr_text": "from-db"}]);
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        let day = archive.join("grit-work").join(DAY);
+        let archived = day
+            .join("image-interpretations")
+            .join(format!("{DAY}.json"));
+        assert_eq!(fs::read(&archived).unwrap(), b"{\"images\":[]}");
+        assert!(!day
+            .join("image-interpretations")
+            .join("2020-01-16.json")
+            .exists());
+        assert!(!day
+            .join("image-interpretations")
+            .join("notes.json")
+            .exists());
+        assert!(load_archive(&archive, DAY).is_ok());
+        fs::write(&cache, b"{\"images\":[\"newer\"]}").unwrap();
+        assert_eq!(
+            clean_archived_day(&data, &archive, DAY, &activities).unwrap(),
+            2
+        );
+        assert!(!data.join("pic.png").exists());
+        assert!(!log.exists());
+        assert_eq!(fs::read(&cache).unwrap(), b"{\"images\":[\"newer\"]}");
+        assert_eq!(fs::read(&wrong).unwrap(), b"{\"other\":true}");
+        assert_eq!(fs::read(&archived).unwrap(), b"{\"images\":[]}");
+        expire_archive(&archive, DAY).unwrap();
+        assert!(!archived.exists());
+        assert_eq!(fs::read(&cache).unwrap(), b"{\"images\":[\"newer\"]}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tampered_archived_interpretation_blocks_cleanup_and_old_archives_load() {
+        let root = scratch();
+        let data = root.join("data");
+        let archive = root.join("archive");
+        fs::write(data.join("pic.png"), b"img").unwrap();
+        fs::create_dir_all(data.join("image-interpretations")).unwrap();
+        let cache = data
+            .join("image-interpretations")
+            .join(format!("{DAY}.json"));
+        fs::write(&cache, b"{\"v\":1}").unwrap();
+        let activities = json!([{"screenshot_path": "pic.png"}]);
+        archive_day(&data, &archive, DAY, &activities).unwrap();
+        let archived = archive
+            .join("grit-work")
+            .join(DAY)
+            .join("image-interpretations")
+            .join(format!("{DAY}.json"));
+        fs::write(&archived, b"{\"v\":2}").unwrap();
+        assert!(clean_archived_day(&data, &archive, DAY, &activities).is_err());
+        assert_eq!(fs::read(data.join("pic.png")).unwrap(), b"img");
+        assert_eq!(fs::read(&cache).unwrap(), b"{\"v\":1}");
+
+        let root2 = scratch();
+        let data2 = root2.join("data");
+        let archive2 = root2.join("archive");
+        fs::write(data2.join("pic.png"), b"img").unwrap();
+        archive_day(&data2, &archive2, DAY, &activities).unwrap();
+        assert!(load_archive(&archive2, DAY).is_ok());
+        assert!(!archive2
+            .join("grit-work")
+            .join(DAY)
+            .join("image-interpretations")
+            .exists());
+        fs::create_dir_all(data2.join("image-interpretations")).unwrap();
+        let later = data2
+            .join("image-interpretations")
+            .join(format!("{DAY}.json"));
+        fs::write(&later, b"{\"after\":true}").unwrap();
+        assert_eq!(
+            clean_archived_day(&data2, &archive2, DAY, &activities).unwrap(),
+            1
+        );
+        assert!(!data2.join("pic.png").exists());
+        assert_eq!(fs::read(&later).unwrap(), b"{\"after\":true}");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&root2);
     }
 }

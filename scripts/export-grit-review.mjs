@@ -31,10 +31,11 @@ await shot('07-spiris','Spiris och åtkomstkontroll','Testet kontrollerar autent
 await page.locator('.settings-tab-rail').getByRole('button',{name:'Insamling & lagring',exact:true}).click();
 await page.getByRole('combobox',{name:'Skärmar att samla in',exact:true}).click();await page.getByRole('option',{name:/Alla skärmar/}).click();
 await shot('08-insamling','Insamling och lagring','Intervall, skärmar och utrymmesuppskattning. Den lokala bildmappen öppnas direkt från inställningarna.');
-await page.getByRole('link',{name:'Tidsanalys',exact:true}).click();await page.getByRole('textbox',{name:'Fråga om arbetsdagen'}).fill('Vilka projekt arbetade jag med?');await page.getByRole('button',{name:'Starta analys',exact:true}).click();await page.getByText('Underlaget visar 60 minuter arbete med ORBIT.',{exact:false}).waitFor();
-await shot('09-analys','Tidsanalys','Frågor utgår från samma arbetsdag och underlag. Analys ändrar inga tidrader och skickar ingen tid till Spiris.');
+await page.getByRole('combobox',{name:'Tolkningsläge',exact:true}).click();await page.getByRole('option',{name:'AI-bildtolkning',exact:true}).click();await page.locator('#grit-image-interp-mode').scrollIntoViewIfNeeded();
+await shot('09-bildtolkning','Bildtolkning','Välj mellan Av, Lokal OCR (Windows) eller AI-bildtolkning med eget intervall. Tolkningar sparas lokalt i image-interpretations/YYYY-MM-DD.json.',page.getByRole('heading',{name:'Bildtolkning',exact:true}).locator('xpath=ancestor::section[1]'));
+await shot('10-arkiv','Långtidsarkiv och lokal mapp','Gemensam baslinje för arkivmapp, mappval och lagringstid. Lokal rensning sker först efter verifierat arkiv.',page.getByRole('heading',{name:'Långtidsarkiv & lokal mapp',exact:true}).locator('xpath=ancestor::section[1]'));
 await page.goto(base+'?onboarding');await page.evaluate(()=>localStorage.removeItem('grit-onboarding-v1'));await page.reload();await page.getByText('Kom igång med GRIT Work').waitFor();
-await shot('10-onboarding','Första starten','Ange Spiris-uppgifter och ta ställning till AI-samtycke, eller välj uttryckligen Avvakta.',page.getByRole('dialog'));
+await shot('11-onboarding','Första starten','Ange Spiris-uppgifter och ta ställning till AI-samtycke, eller välj uttryckligen Avvakta.',page.getByRole('dialog'));
 if(errors.length)throw Error(errors.join('\n'));
 if(await page.evaluate(()=>window.testCalls.includes('grit_submit')))throw Error('Unexpected submission');
 const image=path=>'data:image/png;base64,'+readFileSync(path).toString('base64');

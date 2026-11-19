@@ -2,7 +2,7 @@ export function installReviewFixture() {
  return ()=>{
  if (!location.search.includes('onboarding')) localStorage.setItem('grit-onboarding-v1','deferred');
  const d=new Date();d.setDate(d.getDate()-1);d.setHours(9,0,0,0);const start=Math.floor(d.getTime()/1000);const date=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
- const settings={archive_dir:'Z:\\GRIT Work Arkiv',provider:'codex',model:'gpt-6.2-sol',user_id:1,article_id:3,activity_id:2,time_code_id:4,billable:false,timeout_seconds:600,archive_retention_days:90,ai_consent:!location.search.includes('onboarding')};
+ const settings={archive_dir:'Z:\\GRIT Work Arkiv',provider:'codex',model:'gpt-6.2-sol',user_id:1,article_id:3,activity_id:2,time_code_id:4,billable:false,timeout_seconds:600,archive_retention_days:90,ai_consent:!location.search.includes('onboarding'),use_report_history:false,image_interpretation:{mode:'off',interval_seconds:300,provider:'codex',model:'gpt-6.2-sol'}};
  let report={date,revision:'review-1',status:'draft',summary:'Arbetade med ORBIT: förbättrade återförsök vid uppladdning och verifierade felhanteringen.',rows:[{id:'row-1',project_id:42,article_id:0,activity_id:0,time_code_id:0,start,end:start+3600,minutes:60,description:'SAPPHIRE-729: förbättrade återförsök och verifierade felhantering.',evidence_ids:[1,2,3],needs_review:false,remote_id:null}],error:null};
  const status={capture:{interval_seconds:300,display_mode:'active_window',jpeg_quality:85,max_image_width:2560,width_mode:'fixed'},monitors:[{name:'Skärm 1',width:2560,height:1440,x:0,y:0,scale_factor:1},{name:'Skärm 2',width:1920,height:1080,x:2560,y:0,scale_factor:1}],settings,local_dir:'C:\\Users\\Example\\AppData\\Local\\grit-work',yesterday:date,pending_dates:[],projects:[{id:42,name:'ORBIT',number:'42',active:true}],users:[{id:1,name:'Testanvändare'}],articles:[{id:3,name:'Arbetstid'}],activities:[{id:2,name:'Utveckling'}],time_codes:[{id:4,name:'Normal arbetstid'}],credential_saved:!location.search.includes('onboarding'),report,last_error:null};
  if(location.search.includes('review')) {
@@ -10,16 +10,34 @@ export function installReviewFixture() {
   const descriptions=['Samordnat elprojektering och uppdaterat ritningsunderlag efter avstämning.','Kontrollerat kabeldimensionering och dokumenterat ändringar i gruppförteckningen.','Tagit fram underlag inför byggmöte och stämt av öppna frågor.','Gått igenom granskningssynpunkter och justerat bygghandlingar.','Projekteringsmöte med konstruktör. Följt upp gränsdragningar.','Uppdaterat interna mallar för tekniska beskrivningar.','Reviderat belysningsplan och samordnat placeringar med arkitekt.','Dokumenterat dagens beslut och förberett nästa granskningsleverans.'];
   report={...report,summary:'Projektering och samordning i ORBIT och LINDEN. Intern mallförbättring.',rows:descriptions.map((description,i)=>({...report.rows[0],id:'review-'+i,project_id:[42,42,43,43,42,44,43,42][i],start:start+i*1800,end:start+(i+1)*1800,minutes:30,description,needs_review:i===2}))};
  }
- let analysisHistory=[]; let analysisJob=null;
+ const interpretationStatusByDate={};
+ function getInterpStatus(targetDate){
+  if(!interpretationStatusByDate[targetDate]){
+   interpretationStatusByDate[targetDate]={date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:2,failed:0,disabled:0,skipped:0,running:false,last_error:null};
+  }
+  return {...interpretationStatusByDate[targetDate]};
+ }
  window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:()=>{}};
  window.testCalls=[]; window.testCallArgs=[];
  window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:()=>0,convertFileSrc:p=>p,invoke:async(cmd,args)=>{
   window.testCalls.push(cmd); window.testCallArgs.push({cmd,args});
   if(cmd==='grit_day_context')return {source:'archive',activities:3,minutes:60,report_status:report.status,projects:[{id:42,name:'ORBIT',minutes:60,needs_review:false}]};
-  if(cmd==='grit_get_analysis')return analysisHistory;
-  if(cmd==='grit_analysis_job')return analysisJob;
-  if(cmd==='grit_analyze'){analysisJob=args.date; await new Promise(resolve=>setTimeout(resolve,window.analysisDelay||0)); analysisHistory=[...analysisHistory,{question:args.question,answer:'Underlaget visar 60 minuter arbete med ORBIT. Kontrollera projektfördelningen mot tidslinjen före rapportering. Underlag: #1, #2, #3.',provider:settings.provider,model:settings.model,created_at:start+3600}];analysisJob=null;return analysisHistory;}
-  if(cmd==='grit_save_settings'){Object.assign(settings,args.settings);return null;}
+  if(cmd==='grit_interpretation_status')return getInterpStatus(args.date);
+  if(cmd==='grit_interpret_images'){
+   const targetDate=args.date;
+   const mode=settings.image_interpretation?.mode||'off';
+   if(mode==='ai' && !settings.ai_consent){
+    const err='AI-samtycke krävs innan AI-bildtolkning körs.';
+    interpretationStatusByDate[targetDate]={date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:0,failed:2,disabled:0,skipped:0,running:false,last_error:err};
+    throw new Error(err);
+   }
+   interpretationStatusByDate[targetDate]=mode==='off'
+    ? {date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:0,pending:0,failed:0,disabled:2,skipped:0,running:false,last_error:null}
+    : {date:targetDate,file:`image-interpretations/${targetDate}.json`,completed:2,pending:0,failed:0,disabled:0,skipped:0,running:false,last_error:null};
+   return getInterpStatus(targetDate);
+  }
+  if(cmd==='grit_cancel')return null;
+  if(cmd==='grit_save_settings'){Object.assign(settings,args.settings,{image_interpretation:{...(args.settings?.image_interpretation??settings.image_interpretation)}});return null;}
   if(cmd==='get_timeline')return [{id:1,timestamp:start+3600,duration:3600,app_name:'Editor',window_title:'ORBIT · SAPPHIRE-729',screenshot_path:'',ocr_text:null,category:'work',browser_url:null,executable_path:null,semantic_category:null,semantic_confidence:null}];
   if(['get_hourly_summaries','get_categories','get_custom_semantic_categories','get_semantic_categories','get_hourly_app_breakdown'].includes(cmd))return [];
   if(['get_today_stats','get_daily_stats','get_overview_stats'].includes(cmd))return {total_duration:3600,screenshot_count:3,app_usage:[{app_name:'Editor',duration:3600,count:3}],category_usage:[{category:'work',duration:3600}],browser_duration:0,domain_usage:[],domain_total_count:0,browser_usage:[],work_time_duration:3600,overtime_duration:0,hourly_activity_distribution:[]};

@@ -156,7 +156,7 @@ test('GritSettings and GritWork UI expose consent gating, retention=90, manual g
   assert.match(settingsSource, /settingsForm\.use_report_history/);
   assert.match(settingsSource, /Använd min skrivstil från Spiris/);
   assert.match(settingsSource, /settingsForm\.archive_retention_days/);
-  assert.match(settingsSource, /Informerat samtycke/);
+  assert.match(settingsSource, /Samtycke till valda AI-tjänster/);
 
   assert.match(workSource, /computeProjectRounding/);
   assert.match(workSource, /grit_create_manual_report/);
@@ -199,4 +199,61 @@ test('computeUnassignedGaps detects gaps strictly between first and last interva
 
   // Single interval produces no gaps (no assumed 8h or shift start/end)
   assert.deepEqual(computeUnassignedGaps([rows[0]!]), []);
+});
+
+test('image_interpretation defaults, normalization, and interval clamping (30..3600)', async () => {
+  const defaults = createDefaultSettings();
+  assert.deepEqual(defaults.image_interpretation, {
+    mode: 'off',
+    interval_seconds: 300,
+    provider: 'codex',
+    model: 'gpt-6.2-sol',
+  });
+
+  const clampedLow = normalizeGritSettings({
+    image_interpretation: {
+      mode: 'ocr',
+      interval_seconds: 5,
+      provider: 'grok',
+      model: '',
+    },
+  });
+  assert.deepEqual(clampedLow.image_interpretation, {
+    mode: 'ocr',
+    interval_seconds: 30,
+    provider: 'grok',
+    model: 'grok-4.7-build-fast',
+  });
+
+  const clampedHigh = normalizeGritSettings({
+    image_interpretation: {
+      mode: 'ai',
+      interval_seconds: 9999,
+      provider: 'agy',
+      model: 'custom-vision-model',
+    },
+  });
+  assert.deepEqual(clampedHigh.image_interpretation, {
+    mode: 'ai',
+    interval_seconds: 3600,
+    provider: 'agy',
+    model: 'custom-vision-model',
+  });
+
+  const [settingsSource, imageInterpSource, sidebarSource, workflowSource] = await Promise.all([
+    readFile(new URL('./GritSettings.svelte', import.meta.url), 'utf8'),
+    readFile(new URL('./ImageInterpretationSettings.svelte', import.meta.url), 'utf8'),
+    readFile(new URL('../../lib/components/Sidebar.svelte', import.meta.url), 'utf8'),
+    readFile(new URL('./WorkflowBar.svelte', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(settingsSource, /<ImageInterpretationSettings/);
+  assert.match(imageInterpSource, /grit_interpretation_status/);
+  assert.match(imageInterpSource, /grit_interpret_images/);
+  assert.match(imageInterpSource, /grit_cancel/);
+  assert.match(imageInterpSource, /Tolka nu/);
+  assert.match(imageInterpSource, /Försök igen/);
+  assert.match(imageInterpSource, /Spara bildtolkning/);
+  assert.doesNotMatch(sidebarSource, /Tidsanalys|\/ask/);
+  assert.doesNotMatch(workflowSource, /Analysera|\/ask/);
 });

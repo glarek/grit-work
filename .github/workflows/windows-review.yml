@@ -1,4 +1,4 @@
-name: Grit Work Windows review
+name: GRIT Work Windows review
 on:
   push:
     branches: [grit/initial-app]
@@ -30,6 +30,13 @@ jobs:
       - run: npm run build
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets -- --test-threads=1
+      - run: cargo build -p work-review --example grit-ocr-check
+      - uses: actions/upload-artifact@v6
+        with:
+          name: GRIT-Work-Windows-OCR-check
+          path: target/debug/examples/grit-ocr-check.exe
+          if-no-files-found: error
+          retention-days: 14
       - run: npm run tauri:build -- --bundles nsis
       - uses: actions/upload-artifact@v6
         with:
