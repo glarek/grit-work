@@ -355,6 +355,16 @@
 
   onMount(() => {
     void refreshStatus();
+    const onUserChanged = (event: Event) => {
+      const userId = (event as CustomEvent<{ userId: number }>).detail.userId;
+      // Preserve unsaved AI/capture edits while adopting the explicit profile selection.
+      settingsForm = { ...settingsForm, user_id: userId };
+      savedSettings = { ...savedSettings, user_id: userId };
+      invalidateVerification();
+      void refreshStatus();
+    };
+    window.addEventListener('grit-user-changed', onUserChanged);
+    return () => window.removeEventListener('grit-user-changed', onUserChanged);
   });
 </script>
 

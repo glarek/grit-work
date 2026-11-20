@@ -63,7 +63,7 @@ impl ImageSettings {
     fn fingerprint(&self) -> String {
         match self.mode {
             Mode::Off => "off:v1".into(),
-            Mode::Ocr => "windows-ocr:v2".into(),
+            Mode::Ocr => "windows-ocr:v3".into(),
             Mode::Ai => format!("ai:v2:{}:{}", self.provider, self.model),
         }
     }
@@ -96,6 +96,12 @@ impl ImageContent {
             || self.summary.chars().count() > 4000
             || self.observations.len() > 32
             || self.regions.len() > 2000
+            || self.regions.iter().any(|region| {
+                region.width == 0
+                    || region.height == 0
+                    || region.x.checked_add(region.width).is_none()
+                    || region.y.checked_add(region.height).is_none()
+            })
             || self.language.as_ref().is_some_and(|s| s.len() > 64)
             || self
                 .confidence
@@ -224,10 +230,9 @@ fn read_file(path: &Path, date: &str) -> Result<Option<DayFile>, String> {
     let mut day = day;
     for entry in &mut day.entries {
         entry.content.validate()?;
-        // Older files have no extraction field. Classify from stored text and keep that history.
-        if entry.extraction == ExtractionVolume::Unmeasured
-            && matches!(entry.status, EntryStatus::Completed | EntryStatus::Failed)
-        {
+        // Volume is derived metadata. Recompute it with the current Unicode rules
+        // without rewriting the stored evidence or changing failure/retry states.
+        if entry.status == EntryStatus::Completed {
             apply_completed_quality(entry);
         }
     }
@@ -237,21 +242,32 @@ fn read_file(path: &Path, date: &str) -> Result<Option<DayFile>, String> {
 /// Volume only. A short identifier is still content. Region text is counted only when
 /// `text` is empty, because a normal OCR line already includes its words.
 fn extraction_volume(content: &ImageContent) -> ExtractionVolume {
-    let text_chars = content.text.trim().chars().count();
+    // Measure visible content without mutating the original evidence. OCR and AI
+    // can return only BOM, direction marks or terminal controls on an empty image.
+    let visible_chars =
+        |text: &str| {
+            text.chars().filter(|ch| {
+        !ch.is_whitespace() && !ch.is_control()
+            && !matches!(ch, '\u{00ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}'
+                | '\u{e0100}'..='\u{e01ef}')
+    }).count()
+        };
+    let text_chars = visible_chars(&content.text);
     let region_chars = if text_chars == 0 {
         content
             .regions
             .iter()
-            .map(|region| region.text.trim().chars().count())
+            .map(|region| visible_chars(&region.text))
             .sum()
     } else {
         0
     };
-    let summary_chars = content.summary.trim().chars().count()
+    let summary_chars = visible_chars(&content.summary)
         + content
             .observations
             .iter()
-            .map(|item| item.trim().chars().count())
+            .map(|item| visible_chars(item))
             .sum::<usize>();
     let observed = text_chars + region_chars + summary_chars;
     if observed == 0 {
@@ -1412,5 +1428,382 @@ mod tests {
         assert!(load(&tmp.0, Path::new(""), DATE).is_err());
         assert!(file_path(&tmp.0, "../2026-11-18").is_err());
         assert!(source_key(&tmp.0, Path::new(""), DATE, "../secret.png").is_err());
+    }
+}
+
+#[cfg(test)]
+mod text_robustness_tests {
+    use super::*;
+
+    fn corpus() -> Vec<Value> {
+        serde_json::from_str(include_str!("../../tests/fixtures/ocr-text-corpus.json")).unwrap()
+    }
+
+    /// Read-only review of supplied day files. Keep private OCR outside fixtures,
+    /// logs and provider prompts; print only counts and a source checksum.
+    #[test]
+    #[ignore = "Set GRIT_OCR_REVIEW_FILES to a platform-separated list of local day JSON files"]
+    fn supplied_day_files_are_lossless_report_evidence() {
+        let paths = std::env::var_os("GRIT_OCR_REVIEW_FILES").expect("Set GRIT_OCR_REVIEW_FILES");
+        let mut summaries = Vec::new();
+        for path in std::env::split_paths(&paths) {
+            let date = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("Missing date");
+            let root = path.parent().expect("Missing parent");
+            file_path(root, date).expect("Invalid date");
+            let before = fs::read(&path).expect("Cannot read supplied file");
+            let original: DayFile = serde_json::from_slice(&before)
+                .unwrap_or_else(|_| panic!("Day file has an invalid schema"));
+            let loaded = read_file(&path, date)
+                .expect("Production reader rejected day file")
+                .unwrap();
+            loaded
+                .configuration
+                .validate()
+                .expect("Invalid day configuration");
+            assert_eq!(original.entries.len(), loaded.entries.len());
+            let encoded = serde_json::to_vec(&loaded).unwrap();
+            let decoded: DayFile = serde_json::from_slice(&encoded).unwrap();
+            assert!(decoded == loaded, "JSON round-trip changed day evidence");
+
+            // The uploaded cache does not contain activity durations or pixels.
+            // Zero-duration probe rows exercise evidence attachment and batching
+            // without inventing work time or attempting to re-OCR absent images.
+            let rows: Vec<Value> = loaded.entries.iter().enumerate().map(|(i, entry)| {
+                json!({"id":i,"timestamp":entry.captured_at,"duration":0,"screenshot_path":entry.source_file})
+            }).collect();
+            let payload = report_evidence(root, Path::new(""), date, &json!(rows), &loaded, false)
+                .expect("Production report evidence rejected day file");
+            let payload_rows = payload.as_array().unwrap();
+            for (i, entry) in loaded.entries.iter().enumerate() {
+                assert!(
+                    entry.content == original.entries[i].content,
+                    "Reader changed OCR content"
+                );
+                assert!(
+                    entry.status == original.entries[i].status,
+                    "Reader changed retry status"
+                );
+                let report_content = &payload_rows[i]["image_interpretation"]["content"];
+                assert!(
+                    payload_rows[i]["image_interpretation"]["image_id"] == entry.image_id,
+                    "Source image identity did not match"
+                );
+                assert!(
+                    report_content["text"] == entry.content.text,
+                    "Report lost OCR text"
+                );
+                assert!(
+                    report_content["summary"] == entry.content.summary,
+                    "Report lost summary"
+                );
+                assert!(
+                    report_content["observations"] == json!(entry.content.observations),
+                    "Report lost observations"
+                );
+                assert_eq!(report_content["regions"].as_array().unwrap().len(), 0);
+            }
+            let batches = crate::grit_cli::build_batches(payload_rows)
+                .expect("Report batching rejected day file");
+            let mut seen = std::collections::HashSet::new();
+            for batch in &batches {
+                assert!(
+                    batch
+                        .iter()
+                        .map(|row| serde_json::to_vec(row).unwrap().len())
+                        .sum::<usize>()
+                        <= 120_000
+                );
+                for row in batch {
+                    let i = row["id"].as_u64().unwrap() as usize;
+                    assert!(seen.insert(i), "Report duplicated a probe row");
+                    assert!(*row == payload_rows[i], "Batching changed report evidence");
+                }
+            }
+            assert_eq!(seen.len(), loaded.entries.len());
+            assert!(
+                fs::read(&path).unwrap() == before,
+                "Review must never rewrite supplied files"
+            );
+            let state = status(root, date, Some(&loaded), false).unwrap();
+            let languages: std::collections::BTreeSet<_> = loaded
+                .entries
+                .iter()
+                .filter_map(|e| e.content.language.clone())
+                .collect();
+            let summary = json!({
+                "date":date,"bytes":before.len(),"sha256":format!("{:x}",Sha256::digest(&before)),
+                "entries":loaded.entries.len(),"completed":state.completed,"skipped":state.skipped,
+                "with_content":state.with_content,"failed":state.failed,"languages":languages,
+                "text_characters":loaded.entries.iter().map(|e|e.content.text.chars().count()).sum::<usize>(),
+                "regions":loaded.entries.iter().map(|e|e.content.regions.len()).sum::<usize>(),
+                "report_batches":batches.len(),"source_unchanged":true,"round_trip_exact":true,
+                "report_text_exact":true,"recognition_retested":false
+            });
+            println!("{summary}");
+            summaries.push(summary);
+        }
+        assert!(!summaries.is_empty(), "No supplied files were reviewed");
+        if let Some(path) = std::env::var_os("GRIT_OCR_REVIEW_REPORT") {
+            fs::write(path, serde_json::to_vec_pretty(&summaries).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn unicode_corpus_survives_processing_storage_archive_and_report_evidence() {
+        let root = std::env::temp_dir().join(format!("grit-ocr-corpus-{}", uuid::Uuid::new_v4()));
+        let archive = root.with_extension("archive");
+        fs::create_dir_all(&archive).unwrap();
+        fs::create_dir_all(root.join("screenshots")).unwrap();
+        let date = "2026-11-18";
+        let path = "screenshots/Årsrapport – Öresund ①.png";
+        fs::write(root.join(path), b"synthetic image, no private data").unwrap();
+        let text = corpus()
+            .iter()
+            .map(|case| case["text"].as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = ImageContent {
+            text: text.clone(),
+            summary: "ÅÄÖ – 🧑‍💻".into(),
+            observations: vec![text.clone()],
+            regions: vec![OcrRegion {
+                text: text.clone(),
+                x: 1,
+                y: 2,
+                width: 30,
+                height: 40,
+            }],
+            language: Some("sv-SE".into()),
+            confidence: None,
+        };
+        let activities = json!([{"id":1,"timestamp":1000,"duration":300,"app_name":"Editor","window_title":text,"screenshot_path":path,"ocr_text":"obsolete"}]);
+        let settings = ImageSettings {
+            mode: Mode::Ocr,
+            ..ImageSettings::default()
+        };
+        let day = process_day(
+            &root,
+            Path::new(""),
+            date,
+            &activities,
+            &settings,
+            true,
+            false,
+            1,
+            &Arc::new(AtomicBool::new(false)),
+            |_, _| Ok(content.clone()),
+        )
+        .unwrap();
+        assert_eq!(day.entries[0].status, EntryStatus::Completed);
+        let loaded = load(&root, Path::new(""), date).unwrap().unwrap();
+        assert_eq!(loaded.entries[0].content, content);
+        let evidence =
+            report_evidence(&root, Path::new(""), date, &activities, &loaded, false).unwrap();
+        assert_eq!(
+            evidence[0]["image_interpretation"]["content"]["text"],
+            content.text
+        );
+        assert!(evidence[0].get("ocr_text").is_none());
+        assert_eq!(
+            evidence[0]["image_interpretation"]["content"]["regions"],
+            json!([])
+        );
+        crate::grit_engine::archive_day(&root, &archive, date, &activities).unwrap();
+        crate::grit_engine::clean_archived_day(&root, &archive, date, &activities).unwrap();
+        // Synthetic evidence is deleted only after archive verification by production code.
+        fs::remove_file(file_path(&root, date).unwrap()).unwrap();
+        let recovered = load(&root, &archive, date).unwrap().unwrap();
+        assert_eq!(recovered.entries[0].content, content);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(archive).unwrap();
+    }
+
+    #[test]
+    fn text_limits_count_unicode_scalars_without_slicing_utf8() {
+        for token in ["å", "漢", "🧑", "\u{0000}"] {
+            let mut content = ImageContent {
+                text: token.repeat(60_000),
+                ..ImageContent::default()
+            };
+            assert!(content.validate().is_ok());
+            assert_eq!(
+                serde_json::from_slice::<ImageContent>(&serde_json::to_vec(&content).unwrap())
+                    .unwrap(),
+                content
+            );
+            content.text.push('x');
+            assert!(content.validate().is_err());
+        }
+        let mut content = ImageContent {
+            summary: "ö".repeat(4000),
+            ..ImageContent::default()
+        };
+        assert!(content.validate().is_ok());
+        content.summary.push('ö');
+        assert!(content.validate().is_err());
+        for confidence in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.01, 1.01] {
+            assert!(ImageContent {
+                confidence: Some(confidence),
+                ..ImageContent::default()
+            }
+            .validate()
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn invisible_characters_are_not_reported_as_observed_text() {
+        for text in [
+            "",
+            " \t\r\n\u{00a0}\u{202f}",
+            "\u{feff}\u{200b}\u{200c}\u{200d}\u{2060}\u{202e}\u{202c}",
+            "\0\u{0007}\u{001b}\u{007f}",
+            "\u{fe0f}",
+        ] {
+            let content = ImageContent {
+                text: text.into(),
+                ..ImageContent::default()
+            };
+            assert_eq!(
+                extraction_volume(&content),
+                ExtractionVolume::NoText,
+                "{text:?}"
+            );
+            assert_eq!(
+                content.text, text,
+                "Classification must not rewrite evidence"
+            );
+        }
+        for text in ["Å", "±", "Ø12", "漢", "👷🏽‍♀️", "\u{feff}A-101"] {
+            assert_eq!(
+                extraction_volume(&ImageContent {
+                    text: text.into(),
+                    ..ImageContent::default()
+                }),
+                ExtractionVolume::Sparse
+            );
+        }
+    }
+
+    #[test]
+    fn cached_invisible_only_text_is_reclassified_without_rewriting_evidence() {
+        let root =
+            std::env::temp_dir().join(format!("grit-ocr-reclassify-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("screenshots")).unwrap();
+        fs::write(root.join("screenshots/image.png"), b"synthetic").unwrap();
+        let activities = json!([{"id":1,"timestamp":1000,"duration":300,"screenshot_path":"screenshots/image.png"}]);
+        let settings = ImageSettings {
+            mode: Mode::Ocr,
+            ..ImageSettings::default()
+        };
+        let mut day = process_day(
+            &root,
+            Path::new(""),
+            "2026-11-18",
+            &activities,
+            &settings,
+            true,
+            false,
+            1,
+            &Arc::new(AtomicBool::new(false)),
+            |_, _| {
+                Ok(ImageContent {
+                    text: "\u{feff}\u{200b}".into(),
+                    ..ImageContent::default()
+                })
+            },
+        )
+        .unwrap();
+        day.entries[0].extraction = ExtractionVolume::Sparse;
+        persist(&root, &day).unwrap();
+        let before = fs::read(file_path(&root, &day.date).unwrap()).unwrap();
+        let loaded = load(&root, Path::new(""), &day.date).unwrap().unwrap();
+        assert_eq!(loaded.entries[0].content, day.entries[0].content);
+        assert_eq!(loaded.entries[0].extraction, ExtractionVolume::NoText);
+        assert!(!entry_has_content(&loaded.entries[0]));
+        assert_eq!(
+            fs::read(file_path(&root, &day.date).unwrap()).unwrap(),
+            before
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_regions_cannot_be_persisted_as_valid_content() {
+        for (x, y, width, height) in [
+            (0, 0, 0, 2),
+            (0, 0, 2, 0),
+            (u32::MAX, 0, 2, 2),
+            (0, u32::MAX, 2, 2),
+        ] {
+            let content = ImageContent {
+                regions: vec![OcrRegion {
+                    text: "Å".into(),
+                    x,
+                    y,
+                    width,
+                    height,
+                }],
+                ..ImageContent::default()
+            };
+            assert!(
+                content.validate().is_err(),
+                "invalid region: {x},{y},{width},{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_json_and_overlong_content_fail_without_automatic_retry() {
+        for text in [r#"{"text":"\ud800"}"#, "{\"text\":\"\0\"}", "{\"text\":"] {
+            assert!(serde_json::from_str::<ImageContent>(text).is_err());
+        }
+        assert!(serde_json::from_slice::<ImageContent>(b"{\"text\":\"\xff\"}").is_err());
+        let root = std::env::temp_dir().join(format!("grit-ocr-invalid-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("screenshots")).unwrap();
+        fs::write(root.join("screenshots/image.png"), b"synthetic").unwrap();
+        let settings = ImageSettings {
+            mode: Mode::Ocr,
+            ..ImageSettings::default()
+        };
+        let activities = json!([{"id":1,"timestamp":1000,"duration":300,"screenshot_path":"screenshots/image.png"}]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let day = process_day(
+            &root,
+            Path::new(""),
+            "2026-11-18",
+            &activities,
+            &settings,
+            true,
+            false,
+            1,
+            &cancel,
+            |_, _| {
+                Ok(ImageContent {
+                    text: "🧑".repeat(60_001),
+                    ..ImageContent::default()
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(day.entries[0].status, EntryStatus::Failed);
+        assert_eq!(day.entries[0].content, ImageContent::default());
+        process_day(
+            &root,
+            Path::new(""),
+            "2026-11-18",
+            &activities,
+            &settings,
+            true,
+            false,
+            1,
+            &cancel,
+            |_, _| panic!("Failure must require explicit retry"),
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 }

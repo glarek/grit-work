@@ -1380,6 +1380,35 @@ fn status(state: &Arc<Mutex<AppState>>, dir: &Path) -> Result<Status, String> {
 pub async fn grit_status(state: State<'_, Arc<Mutex<AppState>>>) -> Result<Status, String> {
     status(state.inner(), &local_dir(&state)?)
 }
+
+// Keep profile selection independent of the full settings form. Changing the
+// reporting identity invalidates every outstanding draft approval atomically.
+fn select_user(database: &Connection, user_id: i64) -> Result<(), String> {
+    let tx = database.unchecked_transaction().map_err(error)?;
+    let catalog: Catalog = get(&tx, "catalog")?.unwrap_or_default();
+    if user_id <= 0 || !catalog.users.iter().any(|user| user.id == user_id) {
+        return Err("Välj en användare från det synkroniserade Spiris-registret.".into());
+    }
+    let previous: Settings = get(&tx, "settings")?.unwrap_or_default();
+    if previous.user_id == user_id {
+        return Ok(());
+    }
+    let mut settings = previous.clone();
+    settings.user_id = user_id;
+    invalidate_draft_revisions(&tx)?;
+    invalidate_changed_connection_health(&tx, &previous, &settings)?;
+    put(&tx, "settings", &settings)?;
+    tx.commit().map_err(error)
+}
+
+#[tauri::command]
+pub async fn grit_select_user(
+    user_id: i64,
+    state: State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    let _op = Operation::start()?;
+    select_user(&db(&local_dir(&state)?)?, user_id)
+}
 #[tauri::command]
 pub async fn grit_save_settings(
     settings: Settings,
@@ -1698,8 +1727,10 @@ pub async fn grit_day_context(
 }
 
 fn report_csv_cell(value: &str) -> String {
-    let risky =
-        value.trim_start().starts_with(['=', '+', '-', '@']) || value.starts_with(['\t', '\r']);
+    let visible_start = value.trim_start_matches(|ch: char| {
+        ch.is_whitespace() || ch.is_control() || matches!(ch, '\u{feff}' | '\u{200b}')
+    });
+    let risky = visible_start.starts_with(['=', '+', '-', '@']) || value.starts_with(['\t', '\r']);
     format!(
         "\"{}{}\"",
         if risky { "'" } else { "" },
@@ -3300,6 +3331,120 @@ mod tests {
     }
 
     #[test]
+    fn profile_selection_preserves_settings_and_invalidates_only_draft_approvals() {
+        let database = Connection::open_in_memory().unwrap();
+        database.execute_batch("CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE reports(date TEXT PRIMARY KEY,body TEXT NOT NULL);").unwrap();
+        let (draft, mut catalog, _) = fixture();
+        catalog.users = vec![
+            Choice {
+                id: 7,
+                name: "Person A".into(),
+            },
+            Choice {
+                id: 9,
+                name: "Person B".into(),
+            },
+        ];
+        put(&database, "catalog", &catalog).unwrap();
+        let mut settings = Settings {
+            user_id: 7,
+            provider: "grok".into(),
+            model: "custom-model".into(),
+            archive_retention_days: 42,
+            ..Settings::default()
+        };
+        put(&database, "settings", &settings).unwrap();
+        save_report(&database, &draft).unwrap();
+        let mut uploaded = draft.clone();
+        uploaded.date = "2026-01-11".into();
+        uploaded.status = "uploaded".into();
+        save_report(&database, &uploaded).unwrap();
+        for target in [
+            HealthTarget::Spiris,
+            HealthTarget::Report,
+            HealthTarget::Image,
+        ] {
+            let generation = reset_connection_health(&database, target).unwrap();
+            record_connection_health(&database, target, &generation, 100, true).unwrap();
+        }
+        let ai_before: Value = get(&database, HealthTarget::Report.key()).unwrap().unwrap();
+        let image_before: Value = get(&database, HealthTarget::Image.key()).unwrap().unwrap();
+        for invalid in [-1, 0, 8] {
+            assert!(select_user(&database, invalid).is_err());
+            assert_eq!(
+                report(&database, &draft.date).unwrap().unwrap().revision,
+                draft.revision
+            );
+            assert_eq!(
+                get::<Settings>(&database, "settings")
+                    .unwrap()
+                    .unwrap()
+                    .user_id,
+                7
+            );
+        }
+        select_user(&database, 7).unwrap();
+        assert_eq!(
+            report(&database, &draft.date).unwrap().unwrap().revision,
+            draft.revision
+        );
+        select_user(&database, 9).unwrap();
+        settings.user_id = 9;
+        assert_eq!(
+            get::<Value>(&database, "settings").unwrap().unwrap(),
+            serde_json::to_value(settings).unwrap()
+        );
+        assert_ne!(
+            report(&database, &draft.date).unwrap().unwrap().revision,
+            draft.revision
+        );
+        assert_eq!(
+            report(&database, &uploaded.date).unwrap().unwrap().revision,
+            uploaded.revision
+        );
+        assert_eq!(
+            get::<Value>(&database, HealthTarget::Report.key())
+                .unwrap()
+                .unwrap(),
+            ai_before
+        );
+        assert_eq!(
+            get::<Value>(&database, HealthTarget::Image.key())
+                .unwrap()
+                .unwrap(),
+            image_before
+        );
+        assert_eq!(
+            health_at(
+                get(&database, HealthTarget::Spiris.key()).unwrap(),
+                HealthTarget::Spiris,
+                101
+            )
+            .state,
+            HealthState::Untested
+        );
+    }
+
+    #[test]
+    fn profile_selection_rolls_back_if_a_draft_cannot_be_invalidated() {
+        let database = Connection::open_in_memory().unwrap();
+        database.execute_batch("CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE reports(date TEXT PRIMARY KEY,body TEXT NOT NULL); INSERT INTO reports VALUES ('2026-01-01','invalid report');").unwrap();
+        let mut catalog = Catalog::default();
+        catalog.users.push(Choice {
+            id: 9,
+            name: "Person B".into(),
+        });
+        put(&database, "catalog", &catalog).unwrap();
+        let settings = Settings::default();
+        put(&database, "settings", &settings).unwrap();
+        assert!(select_user(&database, 9).is_err());
+        assert_eq!(
+            get::<Value>(&database, "settings").unwrap().unwrap(),
+            serde_json::to_value(settings).unwrap()
+        );
+    }
+
+    #[test]
     fn reporting_metadata_is_optional_for_drafts_but_required_for_submission() {
         let (mut r, c, e) = fixture();
         r.rows[0].activity_id = 0;
@@ -3976,5 +4121,49 @@ mod connection_health_tests {
         }
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod csv_unicode_robustness_tests {
+    use super::*;
+
+    #[test]
+    fn csv_quotes_preserve_the_entire_ocr_corpus_in_one_cell() {
+        let corpus: Vec<Value> =
+            serde_json::from_str(include_str!("../../tests/fixtures/ocr-text-corpus.json"))
+                .unwrap();
+        for case in corpus {
+            let raw = case["text"].as_str().unwrap();
+            let cell = report_csv_cell(raw);
+            assert!(cell.starts_with('"') && cell.ends_with('"'));
+            let decoded = cell[1..cell.len() - 1].replace("\"\"", "\"");
+            assert!(
+                decoded == raw || decoded == format!("'{raw}"),
+                "{}",
+                case["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn csv_formula_prefixes_cannot_hide_behind_ocr_control_characters() {
+        for prefix in [
+            "",
+            " ",
+            "\t",
+            "\r\n",
+            "\u{feff}",
+            "\u{200b}",
+            "\0",
+            "\u{feff}\t ",
+        ] {
+            for formula in ["=1+1", "+SUM(A1)", "-1+2", "@SUM(A1)"] {
+                assert!(
+                    report_csv_cell(&format!("{prefix}{formula}")).starts_with("\"'"),
+                    "{prefix:?}{formula}"
+                );
+            }
+        }
     }
 }

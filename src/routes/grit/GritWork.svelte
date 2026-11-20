@@ -476,8 +476,19 @@
     closeRowEditor();
   }
 
+  function guardUserChange(event: Event): void {
+    if (dirtyDraft || savingDraft || submitting || generating) event.preventDefault();
+  }
+
+  function handleUserChanged(): void {
+    confirmSubmitOpen = false;
+    void loadStatusAndReport(selectedDate);
+  }
+
   onMount(() => {
     void loadStatusAndReport(selectedDate);
+    window.addEventListener('grit-user-changing', guardUserChange);
+    window.addEventListener('grit-user-changed', handleUserChanged);
     dayTimer = setInterval(() => {
       todayDate = getTodayIsoDate();
       void pollActiveReport();
@@ -485,6 +496,8 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('grit-user-changing', guardUserChange);
+    window.removeEventListener('grit-user-changed', handleUserChanged);
     if (dayTimer !== null) clearInterval(dayTimer);
     stopPolling();
   });

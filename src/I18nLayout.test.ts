@@ -29,7 +29,7 @@ test('侧边栏不提供语言切换，关于入口为 Om', async () => {
   assert.doesNotMatch(source, /value: 'en', label: 'EN'/);
   assert.doesNotMatch(source, /value: 'zh-TW', label: 'TW'/);
   assert.doesNotMatch(source, /value: 'ar', label: 'AR'/);
-  assert.match(source, /label:\s*'Om'/);
+  assert.match(source, /href="\/about"[^>]*>[\s\S]*?Om GRIT Work<\/a>/);
   assert.match(source, /GRIT Work/);
 });
 

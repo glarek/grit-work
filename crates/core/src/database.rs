@@ -8799,3 +8799,94 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod ocr_unicode_storage_tests {
+    use super::*;
+
+    #[test]
+    fn ocr_unicode_corpus_round_trips_through_sqlite_and_json_without_data_loss() {
+        let db = Database::open_in_memory().unwrap();
+        let corpus: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../tests/fixtures/ocr-text-corpus.json"))
+                .unwrap();
+        for (i, case) in corpus.iter().enumerate() {
+            let raw = case["text"].as_str().unwrap();
+            let activity = Activity {
+                id: None,
+                timestamp: 1_700_000_000 + i as i64 * 60,
+                app_name: "Synthetic OCR test".into(),
+                window_title: raw.into(),
+                screenshot_path: "screenshots/Årsrapport Öresund.png".into(),
+                ocr_text: None,
+                category: "development".into(),
+                duration: 60,
+                browser_url: None,
+                executable_path: None,
+                semantic_category: None,
+                semantic_confidence: None,
+                screenshot_url: None,
+            };
+            let id = db.insert_activity(&activity).unwrap();
+            db.update_activity_ocr(id, Some(raw.to_string()), &[])
+                .unwrap();
+            let read = db.get_activity_by_id(id).unwrap().unwrap();
+            assert_eq!(read.ocr_text.as_deref(), Some(raw), "{}", case["id"]);
+            assert_eq!(read.window_title, raw);
+            let encoded = serde_json::to_vec(&read).unwrap();
+            let decoded: Activity = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(decoded.ocr_text.as_deref(), Some(raw));
+            db.merge_activity(
+                id,
+                60,
+                Some(raw),
+                "unused.png",
+                activity.timestamp + 60,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                db.get_activity_by_id(id)
+                    .unwrap()
+                    .unwrap()
+                    .ocr_text
+                    .unwrap(),
+                format!("{raw}\n---\n{raw}")
+            );
+        }
+        assert_eq!(
+            db.get_activities_in_range(None, None, 100).unwrap().len(),
+            corpus.len()
+        );
+    }
+
+    #[test]
+    fn megabyte_ocr_payload_is_stored_without_utf8_truncation() {
+        let db = Database::open_in_memory().unwrap();
+        let text = "Å漢🧑\0\n".repeat(100_000);
+        let activity = Activity {
+            id: None,
+            timestamp: 1_700_000_000,
+            app_name: "OCR test".into(),
+            window_title: "Large synthetic document".into(),
+            screenshot_path: String::new(),
+            ocr_text: Some(text.clone()),
+            category: "development".into(),
+            duration: 60,
+            browser_url: None,
+            executable_path: None,
+            semantic_category: None,
+            semantic_confidence: None,
+            screenshot_url: None,
+        };
+        let id = db.insert_activity(&activity).unwrap();
+        assert_eq!(
+            db.get_activity_by_id(id)
+                .unwrap()
+                .unwrap()
+                .ocr_text
+                .unwrap(),
+            text
+        );
+    }
+}

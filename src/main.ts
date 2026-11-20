@@ -1,6 +1,5 @@
-import '@fontsource-variable/figtree/wght.css';
-import '@fontsource-variable/jetbrains-mono/wght.css';
 import './app.css';
+import './dashboard.css';
 import App from './App.svelte';
 
 const target = document.getElementById('app');

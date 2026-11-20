@@ -2,8 +2,7 @@
   import { location, link } from 'svelte-spa-router';
   import { invoke } from '@tauri-apps/api/core';
   import { onDestroy, onMount } from 'svelte';
-  import { ClipboardCheck, LayoutGrid, Clock3, Settings, Info, Pause, Play, Camera, LoaderCircle } from 'lucide-svelte';
-  import ConnectionBadges from './ConnectionBadges.svelte';
+  import { ClipboardCheck, LayoutGrid, Clock3, Info, Pause, Play, Camera, LoaderCircle } from 'lucide-svelte';
   import type { GritImageInterpretationStatus } from '../../routes/grit/gritTypes';
 
   export let isRecording = true;
@@ -22,11 +21,9 @@
   let tickTimer: ReturnType<typeof setInterval> | null = null;
 
   const items = [
-    { path: '/', label: 'Tidrapporter', icon: ClipboardCheck },
-    { path: '/overview', label: 'Översikt', icon: LayoutGrid },
+    { path: '/', label: 'Översikt', icon: LayoutGrid },
+    { path: '/report', label: 'Tidrapporter', icon: ClipboardCheck },
     { path: '/timeline', label: 'Tidslinje', icon: Clock3 },
-    { path: '/settings', label: 'Inställningar', icon: Settings },
-    { path: '/about', label: 'Om', icon: Info },
   ];
 
   function getLocalTodayIso(): string {
@@ -117,7 +114,21 @@
     <img src="/icons/256x256.png" alt="" width="32" height="32" style="image-rendering: pixelated;" />
     <strong>GRIT Work</strong>
   </div>
+  <p class="sidebar-section-label">ARBETSPLATS</p>
+  <nav aria-label="Huvudnavigation" class="grit-main-nav mb-6">
+    {#each items as item}
+      {@const active = item.path === '/' ? $location === '/' || $location === '/overview' : $location.startsWith(item.path)}
+      <a href={item.path} use:link aria-current={active ? 'page' : undefined} title={item.label}>
+        <svelte:component this={item.icon} size={17} />
+        <span>{item.label}</span>
+      </a>
+    {/each}
+  </nav>
+  <div class="sidebar-bottom">
+    <a class="sidebar-about" href="/about" use:link><Info size={15} /> Om GRIT Work</a>
+    <p class="sidebar-section-label">INSAMLING IDAG</p>
   <div class="capture-state">
+    <span class="capture-compact" title={`${count ?? '—'} bilder idag · ${interpLabel}`} aria-label={`${count ?? '—'} bilder idag · ${interpLabel}`}><Camera size={14} /><span>{count ?? '—'}</span></span>
     <div class="flex items-center justify-between gap-2">
       <span class="flex items-center gap-2 text-xs">
         <LoaderCircle
@@ -151,16 +162,7 @@
       <p role="alert" class="mt-2 text-xs text-red-700">{error}</p>
     {/if}
   </div>
-  <nav aria-label="Huvudnavigation" class="grit-main-nav mb-6">
-    {#each items as item}
-      {@const active = item.path === '/' ? $location === '/' || $location === '/report' : $location.startsWith(item.path)}
-      <a href={item.path} use:link aria-current={active ? 'page' : undefined} title={item.label}>
-        <svelte:component this={item.icon} size={17} />
-        <span>{item.label}</span>
-      </a>
-    {/each}
-  </nav>
-  <ConnectionBadges />
+  </div>
 </div>
 
 <style>

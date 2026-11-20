@@ -8,7 +8,7 @@ const base=process.env.GRIT_TEST_URL || 'http://127.0.0.1:5182/';
 const out='all-artifacts/interface-review';mkdirSync(out,{recursive:true});
 const pages=[];
 async function shot(name,title,caption,locator=page){await page.waitForTimeout(250);const path=`${out}/${name}.png`;await locator.screenshot({path});pages.push({path,title,caption});}
-await page.goto(base+'?review');await page.getByRole('button',{name:'Föregående dag',exact:true}).click();await page.locator('.grit-row').first().waitFor();await page.evaluate(()=>document.fonts.ready);
+await page.goto(base+'?review#/report');await page.getByRole('button',{name:'Föregående dag',exact:true}).click();await page.locator('.grit-row').first().waitFor();await page.evaluate(()=>document.fonts.ready);
 await shot('01-dagsvy','Dagens tidrapport','Projekt, timmar och dagbok på en rad. Klick öppnar redigering. Exemplet visar åtta syntetiska tidrader.');
 await page.locator('.grit-row').first().click();await page.getByRole('heading',{name:'Redigera tidrad'}).waitFor();
 await shot('02-radredigering','Redigera en tidrad','Projekt, timmar, dagbok och rapporteringsval samlas i en popup. Avbryt lämnar raden oförändrad.',page.getByRole('dialog'));

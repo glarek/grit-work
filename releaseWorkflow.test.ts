@@ -126,7 +126,8 @@ test('Windows 便携包应在独立暂存目录打包空Data并校验ZIP内容',
   assert.match(script, /CreateDirectory\(\(Join-Path \$staging 'Data'\)\)/);
   assert.match(script, /Copy-Item -LiteralPath \$exe\.FullName/);
   assert.match(script, /CreateFromDirectory\(\$staging, \$temporaryArchive\)/);
-  assert.match(script, /'Data\/', 'PORTABLE_README\.txt', 'Work_Review\.exe'/);
+  assert.match(script, /\$exe\.Name -notin @\('grit-work\.exe', 'Work_Review\.exe'\)/);
+  assert.match(script, /'Data\/', 'PORTABLE_README\.txt', \$exe\.Name, 'install-ocr-languages\.ps1', 'setup-ocr\.cmd'/);
   assert.match(script, /Compare-Object \$expected \$entries/);
   assert.doesNotMatch(script, /Copy-Item[^\n]*-Recurse/);
   assert.ok(script.indexOf('Move-Item -LiteralPath $temporaryArchive') > script.indexOf('Compare-Object $expected $entries'));

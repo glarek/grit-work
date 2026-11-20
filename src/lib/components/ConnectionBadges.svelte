@@ -2,7 +2,11 @@
   import { onDestroy, onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { AlertCircle, AlertTriangle, CheckCircle2, Clock3 } from 'lucide-svelte';
-  import HelpTip from '$lib/components/ui/HelpTip.svelte';
+  import { Tooltip } from 'bits-ui';
+  import type { GritProvider } from '../../routes/grit/gritTypes';
+  export let provider: GritProvider | null = null;
+  $: providerName = provider === 'codex' ? 'Codex' : provider === 'grok' ? 'Grok' : provider === 'agy' ? 'Antigravity' : 'AI';
+  $: providerIcon = provider ? `/icons/connections/${provider}.${provider === 'grok' ? 'png' : 'svg'}` : null;
 
   type HealthState = 'ok' | 'error' | 'untested' | 'stale';
 
@@ -73,14 +77,6 @@
     if (state === 'error') return `${prefix} Fel`;
     if (state === 'stale') return `${prefix} Inaktuell`;
     return `${prefix} Ej testad`;
-  }
-
-  function stateTextClass(state: HealthState, unavailable: boolean): string {
-    if (unavailable) return 'text-slate-600';
-    if (state === 'ok') return 'text-emerald-700';
-    if (state === 'error') return 'text-rose-700';
-    if (state === 'stale') return 'text-amber-700';
-    return 'text-slate-600';
   }
 
   function stateIcon(state: HealthState, unavailable: boolean) {
@@ -169,22 +165,19 @@
         .join(' ') + offlineNote;
 </script>
 
-<div class="mt-auto pt-3" data-connection-badges>
-  <div class="space-y-1.5 text-xs">
-    <div class="flex items-center justify-between gap-1.5 rounded-lg bg-slate-100/80 px-2.5 py-1.5">
-      <span class="inline-flex min-w-0 items-center gap-1.5 font-medium {stateTextClass(spirisHealth.state, unavailable)}">
-        <svelte:component this={stateIcon(spirisHealth.state, unavailable)} size={14} class="shrink-0" aria-hidden="true" />
-        <span class="truncate">{stateLabel('Spiris', spirisHealth.state, unavailable)}</span>
-      </span>
-      <HelpTip label="Om Spiris-status" text={spirisTooltip} />
-    </div>
-
-    <div class="flex items-center justify-between gap-1.5 rounded-lg bg-slate-100/80 px-2.5 py-1.5">
-      <span class="inline-flex min-w-0 items-center gap-1.5 font-medium {stateTextClass(aiAggregateState, unavailable)}">
-        <svelte:component this={stateIcon(aiAggregateState, unavailable)} size={14} class="shrink-0" aria-hidden="true" />
-        <span class="truncate">{stateLabel('AI', aiAggregateState, unavailable)}</span>
-      </span>
-      <HelpTip label="Om AI-status" text={aiTooltip} />
-    </div>
-  </div>
+<div class="connection-icons" data-connection-badges aria-label="Anslutningar">
+  <Tooltip.Root openDelay={150}>
+    <Tooltip.Trigger class="connection-icon" aria-label={stateLabel(providerName, aiAggregateState, unavailable)}>
+      {#if providerIcon}<img class:monochrome={provider === 'codex'} src={providerIcon} alt={providerName} width="22" height="22" />{:else}<span class="connection-fallback">AI</span>{/if}
+      <span class="connection-health" data-state={unavailable ? 'untested' : aiAggregateState}><svelte:component this={stateIcon(aiAggregateState, unavailable)} size={12} /></span>
+    </Tooltip.Trigger>
+    <Tooltip.Content sideOffset={8} class="ui-tooltip">{aiTooltip}</Tooltip.Content>
+  </Tooltip.Root>
+  <Tooltip.Root openDelay={150}>
+    <Tooltip.Trigger class="connection-icon" aria-label={stateLabel('Spiris', spirisHealth.state, unavailable)}>
+      <img src="/icons/connections/spiris.png" alt="Spiris" width="23" height="23" />
+      <span class="connection-health" data-state={unavailable ? 'untested' : spirisHealth.state}><svelte:component this={stateIcon(spirisHealth.state, unavailable)} size={12} /></span>
+    </Tooltip.Trigger>
+    <Tooltip.Content sideOffset={8} class="ui-tooltip">{spirisTooltip}</Tooltip.Content>
+  </Tooltip.Root>
 </div>

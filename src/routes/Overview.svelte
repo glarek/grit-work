@@ -5,7 +5,12 @@
   import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type Event as TauriEvent } from '@tauri-apps/api/event';
-  import StatsCard from '../lib/components/StatsCard.svelte';
+  import DashboardSummary from '../lib/components/DashboardSummary.svelte';
+  import DashboardProjects from '../lib/components/DashboardProjects.svelte';
+  import type { DayContext } from './grit/dayContext';
+  let dashboardContext: DayContext | null = null;
+  let dashboardContextError = '';
+  $: dashboardDate = overviewMode === 'today' ? getLocalDateString() : selectedDateFrom;
   import UiDialog from '$lib/components/ui/UiDialog.svelte';
   import AppUsageChart from '../lib/components/AppUsageChart.svelte';
   import ActivityHourlyChart from '../lib/components/ActivityHourlyChart.svelte';
@@ -261,7 +266,7 @@
   let unlisten: (() => void) | null = null;
   let componentDestroyed = false;
   let currentTime = new Date();
-  let overviewMode: OverviewMode = 'date';
+  let overviewMode: OverviewMode = get(workDate) === getLocalDateString() ? 'today' : 'date';
   let selectedCompositionCategory: string | null = null;
   let selectedDateFrom = get(workDate);
   let selectedDateTo = get(workDate);
@@ -1435,8 +1440,8 @@
   }}
 />
 
-<div class="page-shell" data-locale={currentLocale}>
-  <WorkflowBar date={overviewMode === "today" ? getLocalDateString() : selectedDateFrom} current="/overview" showProjects />
+<div class="page-shell dashboard-overview" data-locale={currentLocale}>
+  <WorkflowBar date={dashboardDate} current="/overview" bind:context={dashboardContext} bind:error={dashboardContextError} />
   <!-- 页面标题 -->
   <div class="page-header">
     <div class="page-title-group">
@@ -1525,74 +1530,7 @@
 
   <div class="overview-editorial-shell">
   <!-- 洞察条：仅 today 模式、数据非空且上周同日基线可用时组句显示 -->
-  {#if overviewMode === 'today' && insightSentence}
-    <!-- 窄屏精修：flex-wrap 允许洞察句换行,链接自动下移到第二行,避免最小窗口横向溢出 -->
-    <div class="mb-4 flex flex-wrap items-center gap-3.5 rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50 via-white to-white px-5 py-3.5 dark:border-blue-900/40 dark:from-blue-950/35 dark:via-[#161b22] dark:to-[#161b22]">
-      <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-500 dark:bg-blue-900/40 dark:text-blue-300">
-        <svg class="h-[17px] w-[17px]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M12 2.5l2 6.4 6.5 2.1-6.5 2.1-2 6.4-2-6.4L3.5 11l6.5-2.1zM19 15.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" />
-        </svg>
-      </span>
-      <p class="min-w-0 flex-1 basis-52 text-sm text-slate-600 dark:text-[#adbac7]">{insightSentence}</p>
-      <a
-        href="#/report"
-        class="shrink-0 whitespace-nowrap text-[13px] font-semibold text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
-      >
-        {t('overview.insightWeekLink')}
-      </a>
-    </div>
-  {/if}
-
-  <div class="overview-summary-grid grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-    {#if loading || !stats}
-      {#each [1,2,3,4] as _}
-        <div class="min-h-[116px] rounded-lg border border-slate-100 bg-white p-5 animate-pulse dark:border-[#30363d]/60 dark:bg-[#21262d]/80">
-          <div class="flex h-full items-center justify-between gap-4">
-            <div class="flex-1">
-              <div class="h-3 rounded bg-slate-200 dark:bg-[#30363d] w-20"></div>
-              <div class="mt-6 h-8 w-1/2 rounded bg-slate-200 dark:bg-[#30363d]"></div>
-            </div>
-            <div class="h-11 w-11 rounded-lg bg-slate-100 dark:bg-[#30363d] shrink-0"></div>
-          </div>
-        </div>
-      {/each}
-    {:else}
-      <!-- 改版 KPI：总投入 / 工作时长 / 专注峰值 / 娱乐占比（原浏览器时长、应用数两卡移除） -->
-      <!-- data-kpi-card：供 ui-style-c 紧凑样式精准命中数值/标签，不误伤 subtitle -->
-      <StatsCard
-        title={overviewTotalActivityTitle}
-        value={formatDurationLocalized(stats.total_duration, { compact: true })}
-        icon="duration"
-        color="indigo"
-        subtitle={totalDeltaSubtitle}
-        dataKpiCard
-      />
-      <StatsCard
-        title="Webbläsartid"
-        value={formatDurationLocalized(stats.browser_duration || 0, { compact: true })}
-        icon="browser"
-        color="emerald"
-        subtitle={`${stats.domain_total_count || 0} webbplatser`}
-        dataKpiCard
-      />
-      <StatsCard
-        title={t('overview.peakFocus')}
-        value={peakWindowValue}
-        icon="focus"
-        color="blue"
-        subtitle={peakWindowSubtitle}
-        dataKpiCard
-      />
-      <StatsCard
-        title="Aktiva appar"
-        value={String(stats.app_usage?.length || 0)}
-        icon="apps"
-        color="violet"
-        subtitle={stats.app_usage?.[0]?.app_name || 'Inga appar'}
-        dataKpiCard
-      />
-    {/if}
-  </div>
+  <DashboardSummary duration={stats?.total_duration ?? 0} browserDuration={stats?.browser_duration ?? 0} appCount={stats?.app_usage?.length ?? 0} peak={peakWindowValue} title={overviewTotalActivityTitle} loading={loading || !stats} date={dashboardDate} context={dashboardContext} contextError={dashboardContextError} />
 
   {#if error}
     <div class="page-banner-error mb-4">
@@ -1605,7 +1543,7 @@
   {/if}
 
   <!-- week/date 模式：「按天投入」卡（置于节奏卡上方；today 模式不显示） -->
-  {#if overviewMode !== 'today'}
+  {#if overviewMode === 'week' || (overviewMode === 'date' && selectedDateFrom !== selectedDateTo)}
     <div class="page-card overview-panel overview-panel-subtle mb-4">
       <div class="mb-3 flex items-baseline justify-between gap-3">
         <h3 class="page-section-title !mb-0">{t('overview.dailyInvest')}</h3>
@@ -1653,6 +1591,7 @@
   {/if}
 
   <!-- 主视觉：节奏卡 = 分类构成条 + 既有按小时活跃度图 -->
+  <div class="dashboard-chart-grid">
   <div class="page-card overview-panel overview-panel-featured mb-4">
     <div class="mb-3 flex items-center justify-between gap-3">
       <h3 class="page-section-title !mb-0">{rhythmCardTitle}</h3>
@@ -1769,6 +1708,27 @@
       />
     {/if}
   </div>
+
+  <DashboardProjects context={dashboardContext} error={dashboardContextError} date={dashboardDate} />
+  </div>
+
+  {#if overviewMode === 'today' && insightSentence}
+    <!-- 窄屏精修：flex-wrap 允许洞察句换行,链接自动下移到第二行,避免最小窗口横向溢出 -->
+    <div class="dashboard-insight mb-4 flex flex-wrap items-center gap-3.5 rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50 via-white to-white px-5 py-3.5 dark:border-blue-900/40 dark:from-blue-950/35 dark:via-[#161b22] dark:to-[#161b22]">
+      <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-500 dark:bg-blue-900/40 dark:text-blue-300">
+        <svg class="h-[17px] w-[17px]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 2.5l2 6.4 6.5 2.1-6.5 2.1-2 6.4-2-6.4L3.5 11l6.5-2.1zM19 15.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" />
+        </svg>
+      </span>
+      <p class="min-w-0 flex-1 basis-52 text-sm text-slate-600 dark:text-[#adbac7]">{insightSentence}</p>
+      <a
+        href="#/report"
+        class="shrink-0 whitespace-nowrap text-[13px] font-semibold text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+      >
+        {t('overview.insightWeekLink')}
+      </a>
+    </div>
+  {/if}
 
   <div class="overview-section-grid">
     <!-- 常驻网站：domain_usage 前 6，按域名聚合；点击行打开既有浏览器详情弹窗 -->

@@ -6,6 +6,7 @@
   export let title: string;
   export let description = '';
   export let dismissible = true;
+  export let contentClass = '';
   let focusBeforeOpen: HTMLElement | null = null;
   let wasOpen = false;
   async function restoreFocus() {
@@ -29,7 +30,7 @@
 {#if open}
   <div {...$portalled} use:$portalled.action>
     <div {...$overlay} use:$overlay.action class="ui-dialog-overlay"></div>
-    <div {...$content} use:$content.action class="ui-dialog-content">
+    <div {...$content} use:$content.action class="ui-dialog-content {contentClass}">
       <div class="ui-dialog-heading"><h2 {...$heading} use:$heading.action class="text-xl font-semibold">{title}</h2>
         {#if dismissible}<button {...$close} use:$close.action aria-label="Stäng" class="ui-icon-button"><X size={18} /></button>{/if}
       </div>

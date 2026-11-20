@@ -4,22 +4,15 @@
   import GritIcon from './GritIcon.svelte';
   import { selectWorkDate } from './workflow.ts';
   import { getStatusBadgeMeta } from './gritTypes.ts';
+  import type { DayContext } from './dayContext';
 
   export let date: string;
   export const current: string = '';
   export let archived = false;
   export let showProjects = false;
 
-  type DayContext = {
-    source: string;
-    activities: number;
-    minutes: number;
-    report_status: string | null;
-    projects?: { id: number; name: string; minutes: number; needs_review: boolean }[];
-  };
-
-  let context: DayContext | null = null;
-  let error = '';
+  export let context: DayContext | null = null;
+  export let error = '';
   let sequence = 0;
   let mounted = false;
   let lastDate = '';

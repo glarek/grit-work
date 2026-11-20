@@ -115,16 +115,15 @@ test('常驻网站应按需加载完整摘要并在卡片内展开，同时保�
   assert.match(source, /data-domain-summary/);
 });
 
-test('概览总时长 KPI 应使用紧凑格式并保持单行', async () => {
-  const [overviewSource, statsCardSource] = await Promise.all([
+test('Dashboard shows compact durations from the collected activity', async () => {
+  const [overview, summary] = await Promise.all([
     readFile(new URL('./Overview.svelte', import.meta.url), 'utf8'),
-    readFile(new URL('../lib/components/StatsCard.svelte', import.meta.url), 'utf8'),
+    readFile(new URL('../lib/components/DashboardSummary.svelte', import.meta.url), 'utf8'),
   ]);
-
-  assert.match(overviewSource, /formatDurationLocalized\(stats\.total_duration, \{ compact: true \}\)/);
-  assert.match(overviewSource, /formatDurationLocalized\(stats\.browser_duration \|\| 0, \{ compact: true \}\)/);
-  assert.match(statsCardSource, /tabular-nums/);
-  assert.match(statsCardSource, /lucide-svelte/);
+  assert.match(overview, /duration=\{stats\?\.total_duration \?\? 0\}/);
+  assert.match(overview, /browserDuration=\{stats\?\.browser_duration \?\? 0\}/);
+  assert.match(summary, /formatDurationLocalized\(duration, \{ compact: true \}\)/);
+  assert.match(summary, /formatDurationLocalized\(browserDuration, \{ compact: true \}\)/);
 });
 
 test('小时应用明细只应接受最后一次日期范围请求的结果', async () => {
@@ -213,7 +212,7 @@ test('概览改版应提供可选择的分类构成条、分类摘要与按天�
   }
 
   assert.match(source, /invoke(?:<[^>]+>)?\('get_range_daily_totals'/);
-  assert.match(source, /\{#if overviewMode !== 'today'\}/);
+  assert.match(source, /overviewMode === 'week' \|\| \(overviewMode === 'date' && selectedDateFrom !== selectedDateTo\)/);
   assert.match(source, /overview\.dailyInvest/);
   assert.match(source, /overview\.heaviestDay/);
 });

@@ -2325,7 +2325,7 @@
   }
 
   .timeline-entry-time {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-family: var(--font-ui);
     font-size: 0.82rem;
     letter-spacing: 0.08em;
     color: #57534e;

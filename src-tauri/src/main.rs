@@ -4754,6 +4754,7 @@ async fn main() {
             grit::grit_interpret_images,
             grit::grit_export_report,
             grit::grit_save_settings,
+            grit::grit_select_user,
             grit::grit_save_credentials,
             grit::grit_sync_spiris,
             grit::grit_test_connection,

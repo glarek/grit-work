@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-test('GRIT Work forces Quiet Pro and light appearance even for legacy settings',async()=>{
- const [app,settings,css]=await Promise.all(['./App.svelte','./routes/settings/Settings.svelte','./app.css'].map(p=>readFile(new URL(p,import.meta.url),'utf8')));
- assert.match(app,/function applyTheme[\s\S]*?theme = 'light'/);
- assert.match(app,/function applyUiVisualStyle[\s\S]*?uiVisualStyle = 'a'/);
+test('Dashboard theme follows the persistent user preference and uses local Urbanist',async()=>{
+ const [app,settings,css,appearance,main]=await Promise.all(['./App.svelte','./routes/settings/Settings.svelte','./dashboard.css','./lib/stores/appearance.ts','./main.ts'].map(p=>readFile(new URL(p,import.meta.url),'utf8')));
+ assert.match(app,/applyDashboardTheme\(\$dashboardTheme\)/);
+ assert.doesNotMatch(app,/applyTheme\(config.theme|theme = 'light'/);
+ assert.match(appearance,/localStorage.setItem/);
+ assert.match(appearance,/classList.toggle\('dark'/);
  assert.doesNotMatch(settings,/import SettingsAppearance|id:\s*'appearance'/);
- assert.match(css,/box-shadow:none !important/);
- assert.match(css,/Figtree Variable/);assert.match(css,/JetBrains Mono Variable/);
+ assert.match(css,/font-family: Urbanist/);
+ assert.match(css,/urbanist-latin-variable.woff2/);
+ assert.match(main,/import '.\/dashboard.css'/);
 });

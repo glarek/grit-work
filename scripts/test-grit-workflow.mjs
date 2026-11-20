@@ -5,7 +5,7 @@ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH ||
 const page=await browser.newPage({viewport:{width:1360,height:1000}});page.setDefaultTimeout(15000);
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
 await page.addInitScript(installReviewFixture());
-await page.goto(process.env.GRIT_TEST_URL || 'http://127.0.0.1:5182/');
+await page.goto((process.env.GRIT_TEST_URL || 'http://127.0.0.1:5182/')+'#/report');
 await page.getByRole('button',{name:'Rapportera till Spiris',exact:true}).waitFor();
 // Today is selectable and a draft can be regenerated without submitting time.
 assert.equal(await page.getByRole('button',{name:'Idag',exact:true}).isDisabled(),true);
@@ -28,7 +28,7 @@ await page.getByRole('button',{name:'Föregående dag',exact:true}).click();
 const originalDate=(await page.getByRole('button',{name:'Välj arbetsdag',exact:true}).innerText()).trim();
 for(const nav of ['Tidslinje','Översikt']){
  await page.getByRole('link',{name:nav,exact:true}).click();
- await page.getByRole('heading',{name:nav==='Översikt'?'Arbetsöversikt':nav,exact:true}).waitFor();
+ await page.locator('.app-shell-main-scroll').getByRole('heading',{name:nav==='Översikt'?'Arbetsöversikt':nav,exact:true}).waitFor();
  assert.match(await page.locator('.grit-workflow').innerText(),new RegExp(originalDate));
 }
 assert.equal(await page.getByRole('link',{name:'Tidsanalys',exact:true}).count(),0);
@@ -131,7 +131,7 @@ await page.getByRole('link',{name:'Tidrapporter',exact:true}).click();
 assert.equal((await page.getByRole('button',{name:'Välj arbetsdag',exact:true}).innerText()).trim(),originalDate);
 assert.equal(await page.evaluate(()=>window.testCalls.some(c=>['grit_submit','generate_report','ask_agent','grit_analyze'].includes(c))),false);
 // The last half hour can be edited and saved without moving it into the next day.
-await page.goto((process.env.GRIT_TEST_URL || 'http://127.0.0.1:5182/')+'?midnight');
+await page.goto((process.env.GRIT_TEST_URL || 'http://127.0.0.1:5182/')+'?midnight#/report');
 await page.getByRole('button',{name:'Föregående dag',exact:true}).click();
 await page.locator('.grit-row').first().click();
 await page.getByText('Tidsintervall och underlag',{exact:true}).click();

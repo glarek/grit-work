@@ -4,6 +4,9 @@
   import { wrap } from 'svelte-spa-router/wrap';
   import Onboarding from './routes/grit/Onboarding.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
+  import WorkspaceToolbar from './lib/components/WorkspaceToolbar.svelte';
+  import { dashboardTheme, applyDashboardTheme } from './lib/stores/appearance';
+  $: applyDashboardTheme($dashboardTheme);
   import Toast from './lib/components/Toast.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
   import { invoke } from '@tauri-apps/api/core';
@@ -335,7 +338,7 @@
   }
 
   const routes = {
-    '/': wrap({ asyncComponent: () => import('./routes/grit/GritWork.svelte') }),
+    '/': wrap({ asyncComponent: () => import('./routes/Overview.svelte') }),
     '/overview': wrap({ asyncComponent: () => import('./routes/Overview.svelte') }),
     '/timeline': wrap({ asyncComponent: () => import('./routes/timeline/Timeline.svelte') }),
     '/timeline/summary/:date': wrap({ asyncComponent: () => import('./routes/timeline/Summary.svelte') }),
@@ -348,8 +351,6 @@
 
   let onboardingOpen = localStorage.getItem('grit-onboarding-v1') === null;
   function finishOnboarding(choice: string) { localStorage.setItem('grit-onboarding-v1', choice); onboardingOpen = false; }
-  let theme: Theme = 'light';
-  let isDark = false;
   let isRecording = true;
   let isPaused = false;
   let platform = '';
@@ -360,16 +361,6 @@
   let uiVisualStyle: UiVisualStyle = 'a';
   let unsubscribeLocale: () => void = () => {};
   $: currentLocale = $locale;
-
-  function detectSystemTheme(): boolean {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
-  }
-
-  function applyTheme(newTheme: Theme): void {
-    theme = 'light';
-    isDark = false;
-    document.documentElement.classList.remove('dark');
-  }
 
   function normalizeUiVisualStyle(value: unknown): UiVisualStyle {
     const nextStyle = typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -515,11 +506,9 @@
         config = await getRuntimeConfig();
         runtimeConfig = config;
         cache.setConfig(config);
-        applyTheme(config.theme || 'system');
         applyUiVisualStyle(config.ui_visual_style || 'c');
       } catch (e) {
         console.error('加载配置失败:', e);
-        applyTheme('system');
         applyUiVisualStyle('c');
         config = { work_end_hour: 18 };
         runtimeConfig = config;
@@ -543,20 +532,9 @@
       }
       if (disposed) return;
 
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-      const handleSystemThemeChange = () => {
-        if (theme === 'system') applyTheme('system');
-      };
-      mediaQuery.addEventListener('change', handleSystemThemeChange);
-      pendingCleanup.push(() => mediaQuery.removeEventListener('change', handleSystemThemeChange));
-
       const unsubscribeCache = cache.subscribe((state) => {
         if (!isRuntimeConfig(state.config)) return;
         runtimeConfig = state.config;
-
-        if (state.config.theme && state.config.theme !== theme) {
-          applyTheme(state.config.theme);
-        }
 
         if (state.config.ui_visual_style && state.config.ui_visual_style !== uiVisualStyle) {
           applyUiVisualStyle(state.config.ui_visual_style);
@@ -691,7 +669,7 @@
     <svelte:component this={AvatarWindowComponent} />
   {/if}
 {:else}
-<div class="app-shell ui-style-{uiVisualStyle} platform-{platform || 'web'} flex h-screen overflow-hidden relative">
+<div class="app-shell grit-dashboard ui-style-{uiVisualStyle} platform-{platform || 'web'} flex h-screen overflow-hidden relative">
   <div class="app-shell-ambient pointer-events-none absolute inset-0 z-0 opacity-80">
     <div class="absolute inset-x-0 top-0 h-40 bg-[radial-gradient(circle_at_top,rgba(99,102,241,0.14),transparent_62%)] dark:bg-[radial-gradient(circle_at_top,rgba(99,102,241,0.18),transparent_62%)]"></div>
     <div class="absolute -right-16 top-24 h-48 w-48 rounded-full bg-indigo-200/20 blur-3xl dark:bg-indigo-500/12"></div>
@@ -782,6 +760,7 @@
     <!-- 右侧主内容区域 -->
     <section class="app-shell-main-frame min-h-0">
       <div class="app-shell-main relative h-full flex flex-col overflow-hidden">
+        <WorkspaceToolbar />
         <main class="app-shell-main-scroll flex-1 overflow-auto">
           {#key currentLocale}
             <Router {routes} />

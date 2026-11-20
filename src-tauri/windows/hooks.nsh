@@ -6,8 +6,43 @@
 Var GritPrevInstall
 Var GritExistingRun
 Var GritUserDisabled
+Var GritOcrExit
+Var GritOcrPowerShell
+Var GritOcrArguments
+
+!include "x64.nsh"
+!define GRIT_OCR_SCRIPT "${__FILEDIR__}\install-ocr-languages.ps1"
+
+!macro GRIT_ENSURE_OCR_LANGUAGES
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=install-ocr-languages.ps1 "${GRIT_OCR_SCRIPT}"
+  StrCpy $GritOcrPowerShell "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+  ${If} ${RunningX64}
+    StrCpy $GritOcrPowerShell "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  ${EndIf}
+  StrCpy $GritOcrArguments ""
+  ${If} ${Silent}
+    ; Unattended deployment must already be elevated if a language is missing.
+    StrCpy $GritOcrArguments "-NoElevation"
+  ${EndIf}
+  DetailPrint "Kontrollerar svenska och engelska OCR-språk. Hämtning via Windows Update kan ta flera minuter."
+  nsExec::ExecToLog '$\"$GritOcrPowerShell$\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$PLUGINSDIR\install-ocr-languages.ps1$\" $GritOcrArguments'
+  Pop $GritOcrExit
+  ${If} $GritOcrExit == 3010
+    SetRebootFlag true
+    DetailPrint "Starta om Windows för att slutföra installationen av OCR-språken."
+  ${ElseIf} $GritOcrExit != 0
+    IfSilent +2
+      MessageBox MB_OK|MB_ICONSTOP "Svenska och engelska OCR-språk kunde inte installeras (kod $GritOcrExit). Kontrollera internetanslutning och Windows Update och tillåt administratörssteget. Kör sedan installationen igen."
+    SetErrorLevel 1
+    Abort "OCR-språken saknas. Installationen avbröts."
+  ${EndIf}
+  SetOutPath "$INSTDIR"
+!macroend
 
 !macro NSIS_HOOK_PREINSTALL
+  !insertmacro GRIT_ENSURE_OCR_LANGUAGES
   StrCpy $GritPrevInstall ""
   StrCpy $GritExistingRun ""
   StrCpy $GritUserDisabled 0

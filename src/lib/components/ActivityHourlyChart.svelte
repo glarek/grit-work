@@ -222,16 +222,18 @@
                 {#each buckets as bucket}
                   {@const height = bucket.duration > 0 ? Math.max((bucket.duration / axisMax) * 100, 6) : 2}
                   {@const isPeak = bucket.duration > 0 && bucket.hour === peakBucket.hour}
+                  {@const hasSegments = categoryMode && (categoryBreakdown?.[bucket.hour]?.length ?? 0) > 0}
                   <div class="relative flex h-full min-w-0 flex-col justify-end">
                     <button
                       type="button"
-                      class={`w-full overflow-hidden transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-sky-300 dark:focus:ring-sky-500 ${selectedHour === bucket.hour ? 'ring-2 ring-sky-300 dark:focus:ring-sky-500' : ''} ${categoryMode && bucket.duration > 0 ? '' : isPeak ? 'bg-sky-500 dark:bg-sky-400' : 'bg-slate-300 dark:bg-[#484f58]'}`}
+                      class={`activity-hourly-bar-button w-full overflow-hidden transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-sky-300 dark:focus:ring-sky-500 ${selectedHour === bucket.hour ? 'ring-2 ring-sky-300 dark:focus:ring-sky-500' : ''} ${hasSegments ? '' : isPeak ? 'bg-sky-500 dark:bg-sky-400' : 'bg-slate-300 dark:bg-[#484f58]'}`}
                       style={`height: ${height}%; opacity: ${bucket.duration > 0 ? 1 : 0.35}; border-top-left-radius: var(--radius-md); border-top-right-radius: var(--radius-md);`}
                       title={`${formatHourRangeLabel(bucket.hour)} · ${formatDurationLocalized(bucket.duration)}`}
                       aria-pressed={selectedHour === bucket.hour}
+                      data-stacked={hasSegments}
                       on:click={() => selectHour(bucket.hour)}
                     >
-                      {#if categoryMode && bucket.duration > 0}
+                      {#if hasSegments && bucket.duration > 0}
                         <div class="flex h-full w-full flex-col justify-end overflow-hidden" style="border-top-left-radius: var(--radius-md); border-top-right-radius: var(--radius-md);">
                           {#each (categoryBreakdown?.[bucket.hour] || []) as seg}
                             <div

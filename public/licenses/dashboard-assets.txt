@@ -1,0 +1,12 @@
+Urbanist variable font: Fontsource / Urbanist by Corey Hu. SIL OFL 1.1, see Urbanist-OFL.txt.
+https://www.npmjs.com/package/@fontsource-variable/urbanist
+Urbanist is a visual match to the Sportia reference, not a confirmed identification of its designer's font.
+
+Connection icons (brand marks belong to their respective owners):
+Codex: https://unpkg.com/@lobehub/icons-static-svg@latest/icons/codex.svg (LobeHub community rendering of the product mark)
+Grok: https://grok.com/images/apple-touch-icon.png
+Antigravity: https://antigravity.google/assets/image/brand/antigravity-icon__full-color.svg
+Spiris: https://assets.spiris.se/favicons/apple-touch-icon.png
+
+Profile avatars: original deterministic SVG illustrations, not portraits.
+Design reference: https://dribbble.com/shots/20422049-Sportia-Sport-Soccer-Dashboard

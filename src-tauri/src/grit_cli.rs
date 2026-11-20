@@ -186,6 +186,12 @@ fn read_bounded(path: &Path) -> Result<String, String> {
     Ok(s)
 }
 fn parse_output(s: &str) -> Result<Value, String> {
+    // Windows tools sometimes prefix UTF-8 output with a BOM. Strip only the
+    // transport prefix, never BOMs or other characters inside JSON string values.
+    let s = s
+        .trim_start()
+        .strip_prefix('\u{feff}')
+        .unwrap_or(s.trim_start());
     if let Ok(v) = serde_json::from_str::<Value>(s) {
         return extract_report(&v).ok_or("Agentens svar saknar rapportschemat.".into());
     }
@@ -509,7 +515,7 @@ fn split_bucket_by_images(logs: Vec<Value>, max_images: usize) -> Vec<Vec<Value>
     sub_batches
 }
 
-fn build_batches(all: &[Value]) -> Result<Vec<Vec<Value>>, String> {
+pub(crate) fn build_batches(all: &[Value]) -> Result<Vec<Vec<Value>>, String> {
     // Split long days into two-hour windows, preserving all logs and pictures.
     let mut buckets: BTreeMap<i64, Vec<Value>> = BTreeMap::new();
     for a in all {
@@ -1371,5 +1377,69 @@ mod grok_image_path_tests {
         ] {
             assert!(verify_grok_image_reads(&format!("{call}\n{bad}"), &images).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod unicode_robustness_tests {
+    use super::*;
+
+    #[test]
+    fn provider_json_wrappers_preserve_untrusted_unicode_and_control_characters() {
+        let corpus: Vec<Value> =
+            serde_json::from_str(include_str!("../../tests/fixtures/ocr-text-corpus.json"))
+                .unwrap();
+        for case in corpus {
+            let content = json!({"text":case["text"],"summary":"åäö","observations":[case["text"]],"regions":[],"language":"sv-SE","confidence":null});
+            for wrapped in [
+                content.clone(),
+                json!({"result":content.to_string()}),
+                json!({"structured_output":content}),
+            ] {
+                let encoded = wrapped.to_string();
+                assert_eq!(parse_output(&encoded).unwrap(), content, "{}", case["id"]);
+                assert_eq!(
+                    parse_output(&format!("\u{feff}{encoded}")).unwrap(),
+                    content,
+                    "BOM: {}",
+                    case["id"]
+                );
+            }
+            let encoded = content.to_string();
+            let chunks: Vec<String> = encoded
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(7)
+                .map(|c| c.iter().collect())
+                .collect();
+            let stream = chunks
+                .iter()
+                .map(|s| json!({"type":"text","data":s}).to_string())
+                .chain(std::iter::once(json!({"type":"end"}).to_string()))
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            assert_eq!(parse_output(&stream).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn long_unicode_batches_preserve_every_character_and_observe_byte_limits() {
+        let logs:Vec<Value>=(0..25).map(|id|json!({"id":id,"timestamp":7000,"duration":60,"image_interpretation":{"content":{"text":"Å漢🧑\0".repeat(1000)}}})).collect();
+        let batches = build_batches(&logs).unwrap();
+        assert!(batches.len() > 1);
+        assert_eq!(batches.concat(), logs);
+        for batch in batches {
+            assert!(
+                batch
+                    .iter()
+                    .map(|row| serde_json::to_vec(row).unwrap().len())
+                    .sum::<usize>()
+                    <= 120_000
+            );
+        }
+        let oversized = json!({"timestamp":7000,"duration":60,"text":"🧑".repeat(60_000)});
+        assert!(build_batches(&[oversized])
+            .unwrap_err()
+            .contains("för stor"));
     }
 }

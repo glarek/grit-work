@@ -53,11 +53,21 @@ pub(crate) struct WordBox {
 }
 
 pub fn recognize(path: &Path) -> Result<OcrOutput, String> {
-    recognize_platform(path)
+    recognize_platform(path, None)
+}
+
+/// Use a specific packaged recognizer, with no fallback to a different language.
+/// Also used by the Windows integration harness to exercise both dependencies.
+#[allow(dead_code)]
+pub fn recognize_in_language(path: &Path, language: &str) -> Result<OcrOutput, String> {
+    if !["sv-SE", "en-US"].contains(&language) {
+        return Err("Välj OCR-språket sv-SE eller en-US.".into());
+    }
+    recognize_platform(path, Some(language))
 }
 
 #[cfg(not(windows))]
-fn recognize_platform(_path: &Path) -> Result<OcrOutput, String> {
+fn recognize_platform(_path: &Path, _language: Option<&str>) -> Result<OcrOutput, String> {
     Err("OCR via Windows.Media.Ocr stöds inte på den här plattformen.".to_string())
 }
 
@@ -78,8 +88,12 @@ pub(crate) fn plan_tiles(
         return Err("Bilden är för stor för OCR.".to_string());
     }
 
-    let columns = width.div_ceil(max_dimension);
-    let rows = height.div_ceil(max_dimension);
+    // Native OCR can cut a drawing identifier at a tile boundary. Keep a
+    // shared strip at native resolution and merge words by their source boxes.
+    let overlap = 256.min(max_dimension / 4);
+    let step = max_dimension - overlap;
+    let columns = width.saturating_sub(max_dimension).div_ceil(step) + 1;
+    let rows = height.saturating_sub(max_dimension).div_ceil(step) + 1;
     let tile_count = columns.saturating_mul(rows);
     if tile_count > max_tiles {
         return Err("Bilden är för stor för OCR utan att förminska texten.".to_string());
@@ -88,8 +102,8 @@ pub(crate) fn plan_tiles(
     let mut tiles = Vec::with_capacity(tile_count as usize);
     for row in 0..rows {
         for column in 0..columns {
-            let x = column.saturating_mul(max_dimension);
-            let y = row.saturating_mul(max_dimension);
+            let x = column.saturating_mul(step);
+            let y = row.saturating_mul(step);
             let width = max_dimension.min(width.saturating_sub(x));
             let height = max_dimension.min(height.saturating_sub(y));
             if width == 0 || height == 0 {
@@ -169,7 +183,7 @@ fn validate_decoded_size(width: u32, height: u32) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn recognize_platform(path: &Path) -> Result<OcrOutput, String> {
+fn recognize_platform(path: &Path, requested_language: Option<&str>) -> Result<OcrOutput, String> {
     use std::time::Instant;
 
     use image::imageops::crop_imm;
@@ -213,17 +227,18 @@ fn recognize_platform(path: &Path) -> Result<OcrOutput, String> {
     let max_dimension = OcrEngine::MaxImageDimension()
         .map_err(|_| "Windows OCR kunde inte läsa motorns bildgräns.".to_string())?;
     let tiles = plan_tiles(width, height, max_dimension, MAX_TILES)?;
-    let (engine, language) = select_engine()?;
-    let mut text_parts = Vec::new();
+    let (engine, language) = select_engine(requested_language)?;
+    let single_tile = tiles.len() == 1;
+    let mut native_text = String::new();
     let mut regions = Vec::new();
     let started = Instant::now();
 
-    for tile in tiles {
+    for (tile_index, tile) in tiles.into_iter().enumerate() {
         if started.elapsed() >= TOTAL_WAIT {
             return Err("OCR avbröts eftersom den sammanlagda tidsgränsen överskreds.".to_string());
         }
         let view = crop_imm(&rgba, tile.x, tile.y, tile.width, tile.height).to_image();
-        let gray = image::DynamicImage::ImageRgba8(view).to_luma8();
+        let gray = grayscale_on_white(view);
         let bitmap = gray_bitmap(gray.as_raw(), tile.width, tile.height)?;
         let operation = engine
             .RecognizeAsync(&bitmap)
@@ -232,14 +247,14 @@ fn recognize_platform(path: &Path) -> Result<OcrOutput, String> {
             operation,
             TILE_WAIT.min(TOTAL_WAIT.saturating_sub(started.elapsed())),
         )?;
-        let tile_text = result
-            .Text()
-            .map_err(|_| "Windows OCR returnerade ingen text.".to_string())?
-            .to_string();
-        if !tile_text.trim().is_empty() {
-            text_parts.push(tile_text);
+        if single_tile {
+            // Preserve the engine's spacing and reading order, including RTL, when
+            // there are no overlapping tile results to reconcile.
+            native_text = result
+                .Text()
+                .map_err(|_| "Windows OCR returnerade ingen text.".to_string())?
+                .to_string();
         }
-
         let lines = result
             .Lines()
             .map_err(|_| "Windows OCR returnerade inga textrader.".to_string())?;
@@ -279,23 +294,124 @@ fn recognize_platform(path: &Path) -> Result<OcrOutput, String> {
                     width,
                     height,
                 ) {
-                    regions.push(region);
+                    regions.push((tile_index, region));
+                    if regions.len() > 8000 {
+                        return Err(
+                            "Bilden innehåller för många textregioner för säker OCR-bearbetning."
+                                .into(),
+                        );
+                    }
                 }
             }
         }
     }
 
+    let (text, regions) = if single_tile {
+        (
+            native_text,
+            regions.into_iter().map(|(_, region)| region).collect(),
+        )
+    } else {
+        merge_regions(regions)
+    };
     Ok(OcrOutput {
-        text: text_parts.join("\n"),
+        text,
         language: Some(language),
         regions,
     })
 }
 
+#[cfg(any(windows, test))]
+fn merge_regions(mut regions: Vec<(usize, OcrRegion)>) -> (String, Vec<OcrRegion>) {
+    // A clipped word is usually contained in the complete word read by the next
+    // tile. Prefer the larger box. Equal text at different positions is retained.
+    regions.sort_by_key(|(_, region)| {
+        std::cmp::Reverse(u64::from(region.width) * u64::from(region.height))
+    });
+    let mut unique: Vec<(usize, OcrRegion)> = Vec::new();
+    for (tile, region) in regions {
+        let duplicate = unique.iter().any(|(existing_tile, existing)| {
+            if *existing_tile == tile {
+                return false;
+            }
+            let width = (existing
+                .x
+                .saturating_add(existing.width)
+                .min(region.x.saturating_add(region.width)))
+            .saturating_sub(existing.x.max(region.x));
+            let height = (existing
+                .y
+                .saturating_add(existing.height)
+                .min(region.y.saturating_add(region.height)))
+            .saturating_sub(existing.y.max(region.y));
+            let intersection = u64::from(width) * u64::from(height);
+            let smaller = (u64::from(existing.width) * u64::from(existing.height))
+                .min(u64::from(region.width) * u64::from(region.height));
+            smaller > 0 && (intersection as f64 / smaller as f64) >= 0.7
+        });
+        if !duplicate {
+            unique.push((tile, region));
+        }
+    }
+    let mut unique: Vec<OcrRegion> = unique.into_iter().map(|(_, region)| region).collect();
+    unique.sort_by_key(|region| (region.y, region.x));
+    let mut lines: Vec<Vec<OcrRegion>> = Vec::new();
+    for region in unique {
+        if let Some(line) = lines.iter_mut().rev().find(|line| {
+            let first = &line[0];
+            let distance = (f64::from(first.y) + f64::from(first.height) / 2.0
+                - f64::from(region.y)
+                - f64::from(region.height) / 2.0)
+                .abs();
+            distance <= f64::from(first.height.min(region.height)) / 2.0
+        }) {
+            line.push(region);
+        } else {
+            lines.push(vec![region]);
+        }
+    }
+    for line in &mut lines {
+        line.sort_by_key(|region| region.x);
+    }
+    let text = lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|region| region.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (text, lines.into_iter().flatten().collect())
+}
+
+/// Dropping alpha turns transparent pixels black, erasing black text on transparent
+/// screenshots. Composite against white before passing the pixels to Windows OCR.
+#[cfg(any(windows, test))]
+fn grayscale_on_white(mut image: image::RgbaImage) -> image::GrayImage {
+    for pixel in image.pixels_mut() {
+        let alpha = u32::from(pixel[3]);
+        for channel in 0..3 {
+            pixel[channel] =
+                ((u32::from(pixel[channel]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+        }
+        pixel[3] = 255;
+    }
+    image::DynamicImage::ImageRgba8(image).to_luma8()
+}
+
 #[cfg(windows)]
-fn select_engine() -> Result<(windows::Media::Ocr::OcrEngine, String), String> {
+fn select_engine(
+    requested: Option<&str>,
+) -> Result<(windows::Media::Ocr::OcrEngine, String), String> {
     use windows::Media::Ocr::OcrEngine;
 
+    if let Some(tag) = requested {
+        return engine_for_tag(tag)?.ok_or_else(|| {
+            format!("OCR-språket {tag} saknas. Kör installationen av GRIT Work för att installera svenska och engelska.")
+        });
+    }
     for tag in ["sv-SE", "en-US"] {
         if let Some(selected) = engine_for_tag(tag)? {
             return Ok(selected);
@@ -303,7 +419,7 @@ fn select_engine() -> Result<(windows::Media::Ocr::OcrEngine, String), String> {
     }
 
     let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| {
-        "Ingen OCR-språkmodul är installerad. Windows behöver sv-SE eller en-US.".to_string()
+        "OCR-språk saknas. Kör installationen av GRIT Work för att installera svenska och engelska.".to_string()
     })?;
     let language = recognizer_tag(&engine)?;
     Ok((engine, language))
@@ -555,15 +671,15 @@ mod tests {
                     height: 900,
                 },
                 OcrTile {
-                    x: 1_000,
+                    x: 750,
                     y: 0,
                     width: 1_000,
                     height: 900,
                 },
                 OcrTile {
-                    x: 2_000,
+                    x: 1_500,
                     y: 0,
-                    width: 500,
+                    width: 1_000,
                     height: 900,
                 },
             ]
@@ -673,5 +789,103 @@ mod tests {
         let error = super::recognize(std::path::Path::new("saknas.png")).unwrap_err();
         assert!(error.contains("stöds inte"));
         assert!(!error.contains("saknas.png"));
+    }
+}
+
+#[cfg(test)]
+mod robustness_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_word_boxes_recover_cut_identifiers_without_duplicate_text() {
+        let region = |text: &str, x, y, width| OcrRegion {
+            text: text.into(),
+            x,
+            y,
+            width,
+            height: 30,
+        };
+        let words = vec![
+            (0, region("SAPPHIF", 9870, 50, 120)),
+            (1, region("SAPPHIRE-729", 9870, 50, 250)),
+            (2, region("RE-729", 10000, 51, 120)),
+            (0, region("ÅÄÖ", 50, 100, 70)),
+            (0, region("ÅÄÖ", 250, 100, 70)),
+        ];
+        let (text, regions) = merge_regions(words);
+        assert_eq!(text, "SAPPHIRE-729\nÅÄÖ ÅÄÖ");
+        assert_eq!(regions.len(), 3);
+        let (_, same_tile) = merge_regions(vec![
+            (0, region("x", 10, 10, 50)),
+            (0, region("²", 15, 10, 15)),
+        ]);
+        assert_eq!(
+            same_tile.len(),
+            2,
+            "Never delete overlapping words from the same OCR result"
+        );
+    }
+
+    #[test]
+    fn transparency_is_composited_without_changing_opaque_screenshots() {
+        let mut pixels = image::RgbaImage::new(4, 1);
+        pixels.put_pixel(0, 0, image::Rgba([0, 0, 0, 0]));
+        pixels.put_pixel(1, 0, image::Rgba([0, 0, 0, 255]));
+        pixels.put_pixel(2, 0, image::Rgba([255, 255, 255, 255]));
+        pixels.put_pixel(3, 0, image::Rgba([0, 0, 0, 128]));
+        let gray = grayscale_on_white(pixels);
+        assert_eq!(gray.into_raw(), vec![255, 0, 255, 127]);
+    }
+
+    #[test]
+    fn randomized_tiles_and_word_positions_never_escape_image_bounds() {
+        let mut state = 0x1234_5678u32;
+        for _ in 0..10_000 {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let width = state % 20000 + 1;
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let height = state % 20000 + 1;
+            if let Ok(tiles) = plan_tiles(width, height, 10000, 36) {
+                assert!(tiles.len() <= 36);
+                for tile in tiles {
+                    assert!(tile.x + tile.width <= width && tile.y + tile.height <= height);
+                    for (x, y, w, h) in [
+                        (-10.0, -10.0, 25.0, 25.0),
+                        (12.5, 20.5, 60.0, 80.0),
+                        (f32::NAN, 0.0, 3.0, 4.0),
+                        (0.0, 0.0, f32::INFINITY, 4.0),
+                    ] {
+                        if let Some(region) = region_in_source(
+                            WordBox {
+                                text: "Å🧑".into(),
+                                x,
+                                y,
+                                width: w,
+                                height: h,
+                            },
+                            tile,
+                            width,
+                            height,
+                        ) {
+                            assert!(
+                                region.x + region.width <= width
+                                    && region.y + region.height <= height
+                            );
+                            assert!(region.width > 0 && region.height > 0);
+                            assert_eq!(region.text, "Å🧑");
+                        }
+                    }
+                }
+            }
+        }
+        for (w, h, d, n) in [
+            (0, 1, 1, 1),
+            (1, 0, 1, 1),
+            (1, 1, 0, 1),
+            (1, 1, 1, 0),
+            (u32::MAX, u32::MAX, 1, 36),
+        ] {
+            assert!(plan_tiles(w, h, d, n).is_err());
+        }
     }
 }
