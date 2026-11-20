@@ -1,0 +1,52 @@
+name: GRIT Work Windows review
+on:
+  push:
+    branches: [grit/initial-app]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: grit-windows-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          cache-on-failure: true
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:frontend
+      - run: npm run build
+      - name: Test Swedish and English OCR prerequisite workflow
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/test-windows-ocr-languages.ps1
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --all-targets -- --test-threads=1
+      - run: cargo build -p work-review --example grit-ocr-check
+      - uses: actions/upload-artifact@v6
+        with:
+          name: GRIT-Work-Windows-OCR-check
+          path: target/debug/examples/grit-ocr-check.exe
+          if-no-files-found: error
+          retention-days: 14
+      - run: npm run tauri:build -- --bundles nsis
+      - name: Package portable app with OCR language setup
+        run: ./scripts/package-windows-portable.ps1 -Executable target/release/grit-work.exe
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Grit-Work-Windows-review
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/grit-work_portable_x64.zip
+          if-no-files-found: error
+          retention-days: 14

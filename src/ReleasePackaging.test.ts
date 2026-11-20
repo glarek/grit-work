@@ -31,7 +31,7 @@ test('Linux 发行包应同时生成 RPM 并在 README 中说明', async () => {
     await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8')
   );
   const zh = await readFile(new URL('../README.zh.md', import.meta.url), 'utf8');
-  const en = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const en = await readFile(new URL('../docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8');
   const tw = await readFile(new URL('../README.tw.md', import.meta.url), 'utf8');
 
   assert.ok(tauriConfig.bundle.targets.includes('rpm'));
@@ -49,7 +49,7 @@ test('Linux 发行包应同时生成 RPM 并在 README 中说明', async () => {
 
 test('README 应说明 mac 输入监控权限与三端桌宠联动条件', async () => {
   const zh = await readFile(new URL('../README.zh.md', import.meta.url), 'utf8');
-  const en = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const en = await readFile(new URL('../docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8');
   const tw = await readFile(new URL('../README.tw.md', import.meta.url), 'utf8');
 
   assert.match(zh, /输入监控/);
@@ -65,7 +65,7 @@ test('README 应说明 mac 输入监控权限与三端桌宠联动条件', async
 
 test('README 应将 Wayland 启动崩溃的首选绕过方案写为关闭 WebKit DMA-BUF 渲染器', async () => {
   const zh = await readFile(new URL('../README.zh.md', import.meta.url), 'utf8');
-  const en = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const en = await readFile(new URL('../docs/grit/UPSTREAM-README.md', import.meta.url), 'utf8');
   const tw = await readFile(new URL('../README.tw.md', import.meta.url), 'utf8');
 
   for (const source of [zh, en, tw]) {

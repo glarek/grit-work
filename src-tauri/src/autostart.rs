@@ -15,7 +15,8 @@ const AUTOSTART_LAUNCH_ARG: &str = "--autostart";
 #[cfg(windows)]
 const AUTOSTART_HIDDEN_ARG: &str = "--hidden";
 #[cfg(windows)]
-const AUTOSTART_NOT_INITIALIZED_ERROR: &str = "开机自启动服务未初始化，请重启应用后重试";
+const AUTOSTART_NOT_INITIALIZED_ERROR: &str =
+    "Autostart är inte initierad. Starta om appen och försök igen.";
 
 /// Windows 上保存构造 AutoLaunch 所需的稳定字段，enable/disable/is_enabled
 /// 都据此按需重建 builder。这样 silent 状态变化时能即时写入新的 launch args，
@@ -46,11 +47,11 @@ fn build_autolaunch(config: &AutoLaunchConfig, silent: bool) -> Result<AutoLaunc
     let mut builder = AutoLaunchBuilder::new();
     builder.set_app_name(&config.app_name);
     builder.set_app_path(&config.quoted_app_path);
-    builder.set_windows_enable_mode(WindowsEnableMode::Dynamic);
+    builder.set_windows_enable_mode(WindowsEnableMode::CurrentUser);
     builder.set_args(autolaunch_args(silent));
     builder
         .build()
-        .map_err(|e| AppError::Unknown(format!("构建 Windows 开机自启管理器失败: {e}")))
+        .map_err(|e| AppError::Unknown(format!("Kunde inte initiera autostart i Windows: {e}")))
 }
 
 #[cfg(windows)]
@@ -66,12 +67,12 @@ fn with_windows_config<T>(
 
 #[cfg(windows)]
 pub fn init_autostart(app: &AppHandle) -> Result<()> {
-    let current_exe =
-        current_exe().map_err(|e| AppError::Unknown(format!("无法获取当前执行路径: {e}")))?;
+    let current_exe = current_exe()
+        .map_err(|e| AppError::Unknown(format!("Kunde inte hitta programmets sökväg: {e}")))?;
     let quoted_exe = quote_windows_command_path(&current_exe.display().to_string());
 
     app.manage(AutoLaunchConfig {
-        app_name: app.package_info().name.clone(),
+        app_name: WINDOWS_AUTOSTART_RUN_VALUE.to_string(),
         quoted_app_path: quoted_exe,
     });
     Ok(())
@@ -89,7 +90,8 @@ pub fn enable_autostart(app: AppHandle, silent: bool) -> Result<()> {
         with_windows_config(&app, |config| {
             let auto = build_autolaunch(config, silent)?;
             auto.enable()
-                .map_err(|e| AppError::Unknown(format!("开启开机自启失败: {e}")))?;
+                .map_err(|e| AppError::Unknown(format!("Kunde inte aktivera autostart: {e}")))?;
+            set_windows_autostart_user_disabled(false)?;
             Ok(())
         })
     }
@@ -102,7 +104,7 @@ pub fn enable_autostart(app: AppHandle, silent: bool) -> Result<()> {
         let _ = silent;
         app.autolaunch()
             .enable()
-            .map_err(|e| AppError::Unknown(format!("开启开机自启失败: {e}")))?;
+            .map_err(|e| AppError::Unknown(format!("Kunde inte aktivera autostart: {e}")))?;
         Ok(())
     }
 }
@@ -114,7 +116,8 @@ pub fn disable_autostart(app: AppHandle) -> Result<()> {
         with_windows_config(&app, |config| {
             let auto = build_autolaunch(config, false)?;
             auto.disable()
-                .map_err(|e| AppError::Unknown(format!("关闭开机自启失败: {e}")))?;
+                .map_err(|e| AppError::Unknown(format!("Kunde inte stänga av autostart: {e}")))?;
+            set_windows_autostart_user_disabled(true)?;
             Ok(())
         })
     }
@@ -123,7 +126,7 @@ pub fn disable_autostart(app: AppHandle) -> Result<()> {
     {
         app.autolaunch()
             .disable()
-            .map_err(|e| AppError::Unknown(format!("关闭开机自启失败: {e}")))?;
+            .map_err(|e| AppError::Unknown(format!("Kunde inte stänga av autostart: {e}")))?;
         Ok(())
     }
 }
@@ -135,7 +138,7 @@ pub fn is_autostart_enabled(app: AppHandle) -> Result<bool> {
         with_windows_config(&app, |config| {
             let auto = build_autolaunch(config, false)?;
             auto.is_enabled()
-                .map_err(|e| AppError::Unknown(format!("获取开机自启状态失败: {e}")))
+                .map_err(|e| AppError::Unknown(format!("Kunde inte läsa autostartstatus: {e}")))
         })
     }
 
@@ -143,8 +146,61 @@ pub fn is_autostart_enabled(app: AppHandle) -> Result<bool> {
     {
         app.autolaunch()
             .is_enabled()
-            .map_err(|e| AppError::Unknown(format!("获取开机自启状态失败: {e}")))
+            .map_err(|e| AppError::Unknown(format!("Kunde inte läsa autostartstatus: {e}")))
     }
+}
+
+/// Fork-specific HKCU Run value; must match `windows/hooks.nsh`.
+#[cfg(any(windows, test))]
+pub const WINDOWS_AUTOSTART_RUN_VALUE: &str = "GRIT Work";
+/// Opt-out marker. Installer upgrades must not recreate the Run value when this is 1.
+#[cfg(any(windows, test))]
+pub const WINDOWS_AUTOSTART_POLICY_KEY: &str = r"Software\se.grit.work";
+#[cfg(any(windows, test))]
+pub const WINDOWS_AUTOSTART_USER_DISABLED_VALUE: &str = "AutostartUserDisabled";
+
+#[cfg(test)]
+pub fn windows_run_command(exe: &str, silent: bool) -> String {
+    let quoted = format!("\"{}\"", exe.trim().trim_matches('"'));
+    if silent {
+        format!("{quoted} --autostart --hidden")
+    } else {
+        format!("{quoted} --autostart")
+    }
+}
+
+#[cfg(test)]
+pub fn windows_run_command_preserving_visibility(exe: &str, previous: &str) -> String {
+    let silent = previous
+        .split_whitespace()
+        .any(|arg| arg == "--hidden" || arg == "--minimized");
+    windows_run_command(exe, silent)
+}
+
+#[cfg(windows)]
+fn set_windows_autostart_user_disabled(disabled: bool) -> Result<()> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu
+        .create_subkey(WINDOWS_AUTOSTART_POLICY_KEY)
+        .map_err(|error| AppError::Unknown(format!("Kunde inte spara autostartvalet: {error}")))?;
+    if disabled {
+        key.set_value(WINDOWS_AUTOSTART_USER_DISABLED_VALUE, &1u32)
+            .map_err(|error| {
+                AppError::Unknown(format!(
+                    "Kunde inte spara att autostart är avstängd: {error}"
+                ))
+            })?;
+    } else if let Err(error) = key.delete_value(WINDOWS_AUTOSTART_USER_DISABLED_VALUE) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(AppError::Unknown(format!(
+                "Kunde inte återställa autostartvalet: {error}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, windows))]
@@ -170,5 +226,58 @@ mod tests {
 
         let visible = autolaunch_args(false);
         assert!(!visible.contains(&AUTOSTART_HIDDEN_ARG));
+    }
+}
+
+#[cfg(test)]
+mod installer_contract_tests {
+    use super::{
+        windows_run_command, windows_run_command_preserving_visibility,
+        WINDOWS_AUTOSTART_POLICY_KEY, WINDOWS_AUTOSTART_RUN_VALUE,
+        WINDOWS_AUTOSTART_USER_DISABLED_VALUE,
+    };
+
+    #[test]
+    fn fresh_install_command_is_current_user_silent() {
+        assert_eq!(WINDOWS_AUTOSTART_RUN_VALUE, "GRIT Work");
+        assert_eq!(
+            windows_run_command(
+                r"C:\Users\adrian\AppData\Local\GRIT Work\grit-work.exe",
+                true
+            ),
+            "\"C:\\Users\\adrian\\AppData\\Local\\GRIT Work\\grit-work.exe\" --autostart --hidden"
+        );
+    }
+
+    #[test]
+    fn upgrade_keeps_a_visible_autostart_command() {
+        let previous = "\"C:\\Old\\grit-work.exe\" --autostart";
+        assert_eq!(
+            windows_run_command_preserving_visibility(r"C:\New\grit-work.exe", previous),
+            "\"C:\\New\\grit-work.exe\" --autostart"
+        );
+    }
+
+    #[test]
+    fn upgrade_keeps_hidden_autostart() {
+        let previous = "\"C:\\Old\\grit-work.exe\" --autostart --hidden";
+        assert!(
+            windows_run_command_preserving_visibility(r"C:\New\grit-work.exe", previous)
+                .ends_with("--autostart --hidden")
+        );
+    }
+
+    #[test]
+    fn nsis_hook_matches_current_user_silent_default_and_opt_out() {
+        let hook = include_str!("../windows/hooks.nsh");
+        assert!(hook
+            .contains("HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"GRIT Work\""));
+        assert!(hook.contains("--autostart --hidden"));
+        assert!(hook.contains(WINDOWS_AUTOSTART_POLICY_KEY));
+        assert!(hook.contains(WINDOWS_AUTOSTART_USER_DISABLED_VALUE));
+        assert!(hook.contains("NSIS_HOOK_PREUNINSTALL"));
+        assert!(hook.contains("$UpdateMode <> 1"));
+        assert!(hook.contains("$GritPrevInstall"));
+        assert!(hook.contains("$GritUserDisabled = 1"));
     }
 }

@@ -114,6 +114,28 @@ impl ScreenLockMonitor {
     pub fn is_locked(&self) -> bool {
         use std::process::Command;
 
+        // wlroots cannot deliver a frame while all outputs are asleep. Treat this
+        // as temporary inactivity, so capture resumes without a manual error reset.
+        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+            // Omarchy's Quickshell locker does not currently update logind's
+            // LockedHint. Query its read-only IPC instead of inspecting the screen.
+            if let Some(output) =
+                run_linux_lock_command(Command::new("omarchy").args(["shell", "lock", "isLocked"]))
+            {
+                if output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim() == "true"
+                {
+                    return true;
+                }
+            }
+            if let Some(output) =
+                run_linux_lock_command(Command::new("hyprctl").args(["-j", "monitors"]))
+            {
+                if output.status.success() && hyprland_outputs_asleep(&output.stdout) {
+                    return true;
+                }
+            }
+        }
         if let Some(output) = run_linux_lock_command(Command::new("loginctl").args([
             "show-session",
             "auto",
@@ -133,7 +155,7 @@ impl ScreenLockMonitor {
         // 无 systemd 的桌面环境：一次 pgrep 覆盖常见锁屏进程，再尝试 Cinnamon D-Bus。
         if let Some(output) = run_linux_lock_command(Command::new("pgrep").args([
             "-f",
-            "^(cinnamon-screensaver|gnome-screensaver|xscreensaver|i3lock|swaylock)( .*)?$",
+            "^(cinnamon-screensaver|gnome-screensaver|xscreensaver|i3lock|swaylock|hyprlock)( .*)?$",
         ])) {
             if output.status.success() {
                 log::debug!("锁屏检测: 常见锁屏进程正在运行");
@@ -169,6 +191,30 @@ impl ScreenLockMonitor {
     pub fn set_locked(&self, locked: bool) {
         self.is_locked.store(locked, Ordering::SeqCst);
     }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn hyprland_outputs_asleep(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .is_some_and(|outputs| {
+            !outputs.is_empty()
+                && outputs
+                    .iter()
+                    .all(|o| o["dpmsStatus"].as_bool() == Some(false))
+        })
+}
+
+#[cfg(test)]
+#[test]
+fn sleeping_outputs_are_temporary_inactivity() {
+    assert!(hyprland_outputs_asleep(br#"[{"dpmsStatus":false}]"#));
+    assert!(!hyprland_outputs_asleep(
+        br#"[{"dpmsStatus":false},{"dpmsStatus":true}]"#
+    ));
+    assert!(!hyprland_outputs_asleep(b"[]"));
+    assert!(!hyprland_outputs_asleep(b"invalid"));
 }
 
 #[cfg(any(target_os = "linux", test))]

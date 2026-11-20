@@ -56,10 +56,6 @@ pub fn local_hour_end_timestamp(date: &str, hour: i32) -> Option<i64> {
         .map(|(_, end)| end)
 }
 
-fn category_counts_toward_work_time(category: &str) -> bool {
-    crate::categorize::normalize_category_key(category) != "entertainment"
-}
-
 fn matches_ignored_app_for_stats(app_name: &str, ignored_apps: &[String]) -> bool {
     let app_lower = crate::categorize::normalize_display_app_name(app_name)
         .to_lowercase()
@@ -107,8 +103,27 @@ fn matches_excluded_domain_for_stats(target: &str, excluded_domains: &[String]) 
     })
 }
 
-const UNRESOLVED_BROWSER_DOMAIN_LABEL: &str = "未识别页面";
-const UNRESOLVED_BROWSER_URL_LABEL: &str = "未识别 URL";
+const UNRESOLVED_BROWSER_DOMAIN_LABEL: &str = "Okänd sida";
+const UNRESOLVED_BROWSER_URL_LABEL: &str = "Okänd URL";
+
+/// A browser-looking display name cannot turn an embedded app runtime into a browser.
+fn is_standalone_browser(app_name: &str, executable_path: Option<&str>) -> bool {
+    let executable = executable_path
+        .unwrap_or("")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if executable.contains("webview")
+        || matches!(
+            executable.trim_end_matches(".exe"),
+            "electron" | "grit-work" | "work-review"
+        )
+    {
+        return false;
+    }
+    crate::categorize::is_browser_app(app_name)
+}
 
 const ACTIVITY_SELECT_COLUMNS: &str = "id, timestamp, app_name, window_title, screenshot_path, ocr_text, category, duration, browser_url, executable_path, semantic_category, semantic_confidence, screenshot_url";
 
@@ -158,7 +173,33 @@ pub struct Activity {
     pub screenshot_url: Option<String>,
 }
 
-/// 每日报告
+/// Project individual evidence rows into a local calendar day without grouping.
+/// Capture content belongs to the timestamp's day, even when its activity interval
+/// overlaps the previous day. This projection is idempotent and never writes data.
+pub fn clip_day_evidence(date: &str, activities: Vec<Activity>) -> Result<Vec<Activity>> {
+    let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|error| AppError::Config(error.to_string()))?;
+    let (start, end) = local_day_bounds(date)?;
+    let mut rows = Vec::new();
+    for mut activity in activities {
+        let duration =
+            calculate_overlap_duration(activity.timestamp, activity.duration, start, end);
+        if duration <= 0 {
+            continue;
+        }
+        if activity.timestamp >= end {
+            activity.screenshot_path.clear();
+            activity.screenshot_url = None;
+            activity.ocr_text = None;
+        }
+        activity.duration = duration;
+        activity.timestamp = activity.timestamp.min(end);
+        rows.push(activity);
+    }
+    rows.sort_by_key(|row| (row.timestamp, row.id));
+    Ok(rows)
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DailyReport {
     pub date: String,
@@ -283,21 +324,14 @@ pub struct DailyStats {
     pub hourly_activity_distribution: Vec<HourlyActivityBucket>,
 }
 
+/// Compatibility entry point: every logged active second is work, without shifts.
 pub fn apply_flex_overtime_correction(
     stats: &mut DailyStats,
-    work_time_enabled: bool,
-    standard_work_hours: f64,
+    _work_time_enabled: bool,
+    _standard_work_hours: f64,
 ) {
-    if !work_time_enabled {
-        stats.work_time_duration = stats
-            .category_usage
-            .iter()
-            .filter(|item| category_counts_toward_work_time(&item.category))
-            .map(|item| item.duration)
-            .sum();
-        let standard_seconds = (standard_work_hours * 3600.0).round() as i64;
-        stats.overtime_duration = (stats.work_time_duration - standard_seconds).max(0);
-    }
+    stats.work_time_duration = stats.total_duration;
+    stats.overtime_duration = 0;
 }
 
 /// 域名使用统计（按域名分组）
@@ -557,48 +591,6 @@ fn calculate_overlap_duration(
     (overlap_end - overlap_start).max(0)
 }
 
-/// 多段工作时间重叠计算。同一时间即使落入多个配置段，也只能计一次。
-fn calculate_work_time_segments_overlap(
-    interval_end: i64,
-    duration: i64,
-    day_start: i64,
-    day_end: i64,
-    segments: &[(i64, i64)],
-) -> i64 {
-    if duration <= 0 || day_end <= day_start {
-        return 0;
-    }
-
-    let activity_start = interval_end.saturating_sub(duration).max(day_start);
-    let activity_end = interval_end.min(day_end);
-    if activity_end <= activity_start {
-        return 0;
-    }
-
-    let mut overlaps = Vec::new();
-    let mut collect_overlap = |range_start: i64, range_end: i64| {
-        let start = activity_start.max(range_start);
-        let end = activity_end.min(range_end);
-        if end > start {
-            overlaps.push((start, end));
-        }
-    };
-
-    for &(work_start, work_end) in segments {
-        if work_start == work_end {
-            continue;
-        }
-        if work_end > work_start {
-            collect_overlap(work_start, work_end);
-        } else {
-            collect_overlap(day_start, work_end);
-            collect_overlap(work_start, day_end);
-        }
-    }
-
-    calculate_covered_duration(overlaps)
-}
-
 /// 下一个「本地时区整点」边界。
 /// 之前用 `(t / 3600 + 1) * 3600` 按 UTC 整点切桶，在 UTC+5:30/+5:45/+9:30 等
 /// 非整小时时区，本地小时在 UTC 半点翻转，跨本地整点的区间会整段归入起点小时。
@@ -751,6 +743,16 @@ impl Database {
              PRAGMA synchronous=NORMAL;
              PRAGMA busy_timeout=5000;",
         )?;
+        let db = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
+        db.init_tables()?;
+        Ok(db)
+    }
+
+    /// Ephemeral database for verified archive rows. Nothing is written to the app database.
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
@@ -1178,6 +1180,56 @@ impl Database {
         tx.commit()?;
 
         Ok(activity_id)
+    }
+
+    /// Insert a verified activity while keeping its original primary key.
+    /// Used by ephemeral archive reads so grouped timeline rows keep evidence ids.
+    pub fn insert_activity_snapshot(&self, activity: &Activity) -> Result<i64> {
+        let id = activity.id.ok_or_else(|| {
+            AppError::Database(rusqlite::Error::InvalidParameterName(
+                "活动快照缺少原始 id".to_string(),
+            ))
+        })?;
+        let conn = self.conn.lock().map_err(|e| {
+            AppError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
+        let normalized_browser_url = activity
+            .browser_url
+            .as_deref()
+            .map(normalize_url)
+            .filter(|url| !url.is_empty());
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO activities (id, timestamp, app_name, window_title, screenshot_path, ocr_text, category, duration, browser_url, executable_path, semantic_category, semantic_confidence, screenshot_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                id,
+                activity.timestamp,
+                activity.app_name,
+                activity.window_title,
+                activity.screenshot_path,
+                activity.ocr_text,
+                activity.category,
+                activity.duration,
+                normalized_browser_url,
+                activity.executable_path,
+                activity.semantic_category,
+                activity.semantic_confidence,
+                activity.screenshot_url,
+            ],
+        )?;
+        tx.execute(
+            "UPDATE semantic_memory_state
+             SET rebuild_required = CASE WHEN status = 'ready' THEN 1 ELSE rebuild_required END,
+                 status = CASE WHEN status = 'ready' THEN 'idle' ELSE status END,
+                 build_id = CASE WHEN status = 'ready' THEN '' ELSE build_id END,
+                 total_activities = (SELECT COUNT(*) FROM activities),
+                 updated_at = ?1
+             WHERE singleton_id = 1",
+            params![chrono::Utc::now().timestamp()],
+        )?;
+        tx.commit()?;
+        Ok(id)
     }
 
     /// 获取指定应用最近24小时内的最新一条活动记录
@@ -1899,10 +1951,7 @@ impl Database {
         Ok((deleted, paths))
     }
 
-    /// 获取指定日期的统计数据
-    /// work_start_hour: 工作开始时间（0-23），默认 9
-    /// work_end_hour: 工作结束时间（0-23），默认 18
-    /// 按分段工作时间获取每日统计
+    /// Calendar-day active time. Legacy schedule arguments remain for compatibility.
     pub fn get_daily_stats_with_segments(
         &self,
         date: &str,
@@ -1911,13 +1960,12 @@ impl Database {
         self.get_daily_stats_with_segments_filtered(date, segments, &[], &[])
     }
 
-    /// 按分段工作时间获取每日统计，并在聚合前应用隐私过滤。
-    ///
-    /// 过滤前移到聚合入口，保证总时长、应用、分类、小时分布、网站统计同口径。
+    /// Calendar-day statistics with privacy filtering before aggregation.
+    /// Schedule and category labels never exclude logged active time.
     pub fn get_daily_stats_with_segments_filtered(
         &self,
         date: &str,
-        segments: &[crate::config::WorkTimeSegment],
+        _segments: &[crate::config::WorkTimeSegment],
         ignored_apps: &[String],
         excluded_domains: &[String],
     ) -> Result<DailyStats> {
@@ -1929,20 +1977,6 @@ impl Database {
             .map_err(|e| AppError::Config(e.to_string()))?;
 
         let (start_ts, end_ts) = local_day_bounds(date_parsed)?;
-
-        // 计算所有工作段时间戳
-        let segment_ts: Vec<(i64, i64)> = segments
-            .iter()
-            .map(|s| {
-                let ws = (s.start_hour as u32).min(23);
-                let we = (s.end_hour as u32).min(23);
-                let wsm = (s.start_minute as u32).min(59);
-                let wem = (s.end_minute as u32).min(59);
-                let work_start = safe_local_timestamp(date_parsed.and_hms_opt(ws, wsm, 0).unwrap());
-                let work_end = safe_local_timestamp(date_parsed.and_hms_opt(we, wem, 0).unwrap());
-                (work_start, work_end)
-            })
-            .collect();
 
         let mut screenshot_count: i64 = 0;
 
@@ -1979,17 +2013,6 @@ impl Database {
             ))
         })?;
 
-        let mut total_duration: i64 = 0;
-        let mut work_time_duration: i64 = 0;
-        let mut after_hours_duration: i64 = 0;
-        // 最后一个工作时段的结束时间戳，用于计算下班后加班时长。
-        // 跨午夜段（如 22:00→次日06:00）的结束时间属于次日；对当前自然日而言，
-        // 该工作段一直覆盖到日界线，因此以 end_ts 参与比较，避免班内活动被误判为加班。
-        let last_segment_end_ts = segment_ts
-            .iter()
-            .map(|&(ws, we)| if we < ws { end_ts } else { we })
-            .max()
-            .unwrap_or(end_ts);
         let mut app_usage_map: std::collections::HashMap<
             String,
             (i64, i64, Option<String>, Option<String>, i64),
@@ -2007,7 +2030,7 @@ impl Database {
             std::collections::HashMap::new();
         let mut browser_path_map: std::collections::HashMap<String, (Option<String>, i64)> =
             std::collections::HashMap::new();
-        let mut url_duration_map: std::collections::HashMap<String, i64> =
+        let mut url_duration_map: std::collections::HashMap<(String, String), i64> =
             std::collections::HashMap::new();
         let mut domain_semantic_map: std::collections::HashMap<
             String,
@@ -2021,21 +2044,25 @@ impl Database {
             timestamp,
             app_name,
             window_title,
-            ocr_text,
+            mut ocr_text,
             category,
             duration,
             browser_url,
             executable_path,
             semantic_category,
             screenshot_path,
-            screenshot_url,
+            mut screenshot_url,
         ) in activity_rows
         {
+            if timestamp >= end_ts {
+                ocr_text = None;
+                screenshot_url = None;
+            }
             if matches_ignored_app_for_stats(&app_name, ignored_apps) {
                 continue;
             }
 
-            let browser_page = if crate::categorize::is_browser_app(&app_name) {
+            let browser_page = if is_standalone_browser(&app_name, executable_path.as_deref()) {
                 let normalized_browser_url = browser_url
                     .as_deref()
                     .map(normalize_url)
@@ -2087,28 +2114,6 @@ impl Database {
                         .is_some_and(|url| !url.trim().is_empty()))
             {
                 screenshot_count += 1;
-            }
-
-            total_duration += day_duration;
-
-            if category_counts_toward_work_time(&category) {
-                work_time_duration += calculate_work_time_segments_overlap(
-                    timestamp,
-                    duration,
-                    start_ts,
-                    end_ts,
-                    &segment_ts,
-                );
-
-                // 加班也是工作时长，娱乐活动不能进入“含加班”口径。
-                if timestamp > last_segment_end_ts {
-                    after_hours_duration += calculate_overlap_duration(
-                        timestamp,
-                        duration,
-                        last_segment_end_ts,
-                        end_ts,
-                    );
-                }
             }
 
             let interval_start = timestamp.saturating_sub(duration);
@@ -2184,7 +2189,9 @@ impl Database {
                 let domain_map = browser_map.entry(normalized_browser_name).or_default();
                 let page_map = domain_map.entry(domain.clone()).or_default();
                 *page_map.entry(page_hint.clone()).or_insert(0) += day_duration;
-                *url_duration_map.entry(page_hint).or_insert(0) += day_duration;
+                *url_duration_map
+                    .entry((domain.clone(), page_hint))
+                    .or_insert(0) += day_duration;
 
                 if let Some(semantic_cat) = semantic_category
                     .as_deref()
@@ -2228,6 +2235,13 @@ impl Database {
                 duration: calculate_covered_duration(ranges.clone()),
             })
             .collect();
+
+        // Hour buckets contain disjoint pieces of the local day, including repeated
+        // DST hours. Union coverage excludes idle gaps and counts overlaps once.
+        let total_duration = hourly_activity_distribution
+            .iter()
+            .map(|bucket| bucket.duration)
+            .sum();
 
         let pick_semantic = |semantic_map: &std::collections::HashMap<
             String,
@@ -2291,15 +2305,15 @@ impl Database {
             .collect();
         browser_usage.sort_by_key(|b| Reverse(b.duration));
 
-        let mut url_usage_rows: Vec<(String, i64)> = url_duration_map.into_iter().collect();
+        let mut url_usage_rows: Vec<((String, String), i64)> =
+            url_duration_map.into_iter().collect();
         url_usage_rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
         // 先从全部 URL 聚合域名总时长，再截断 URL 列表
         let mut domain_total_map: std::collections::HashMap<String, i64> =
             std::collections::HashMap::new();
-        for (url, duration) in &url_usage_rows {
-            let domain = crate::categorize::browser_page_domain_label(url);
-            *domain_total_map.entry(domain).or_insert(0) += duration;
+        for ((domain, _), duration) in &url_usage_rows {
+            *domain_total_map.entry(domain.clone()).or_insert(0) += duration;
         }
 
         // 域名 URL 明细：必须用「截断前」的完整列表构建,否则每个域名的"页数"
@@ -2308,9 +2322,9 @@ impl Database {
         // 时长聚合(domain_total_map)本就在截断前完成,不受影响。
         let mut domain_url_detail_map: std::collections::HashMap<String, Vec<UrlDetail>> =
             std::collections::HashMap::new();
-        for (url, duration) in &url_usage_rows {
+        for ((domain, url), duration) in &url_usage_rows {
             domain_url_detail_map
-                .entry(crate::categorize::browser_page_domain_label(url))
+                .entry(domain.clone())
                 .or_default()
                 .push(UrlDetail {
                     url: url.clone(),
@@ -2322,8 +2336,8 @@ impl Database {
         url_usage_rows.truncate(10);
         let url_usage: Vec<UrlUsage> = url_usage_rows
             .into_iter()
-            .map(|(url, duration)| UrlUsage {
-                domain: crate::categorize::browser_page_domain_label(&url),
+            .map(|((domain, url), duration)| UrlUsage {
+                domain,
                 url,
                 duration,
             })
@@ -2353,8 +2367,8 @@ impl Database {
             domain_usage,
             domain_total_count,
             browser_usage,
-            work_time_duration,
-            overtime_duration: after_hours_duration,
+            work_time_duration: total_duration,
+            overtime_duration: 0,
             hourly_activity_distribution,
         })
     }
@@ -2376,9 +2390,9 @@ impl Database {
         self.get_daily_stats_with_segments(date, &segments)
     }
 
-    /// 获取指定日期的统计数据（使用默认工作时间 9:00-18:00）
+    /// Active time within the requested local calendar day.
     pub fn get_daily_stats(&self, date: &str) -> Result<DailyStats> {
-        self.get_daily_stats_with_work_time(date, 9, 18, 0, 0)
+        self.get_daily_stats_with_segments(date, &[])
     }
 
     /// 获取指定日期的时间线 (支持分页)
@@ -2423,7 +2437,7 @@ impl Database {
                                 WHEN browser_url IS NOT NULL AND browser_url != '' THEN RTRIM(browser_url, '/')
                                 ELSE window_title
                             END
-                        ORDER BY timestamp DESC, id DESC
+                        ORDER BY MIN(timestamp, ?2) DESC, id DESC
                     ) as rn,
                     SUM(MAX(0, MIN(timestamp, ?2) - MAX(timestamp - duration, ?1))) OVER (
                         PARTITION BY
@@ -2452,7 +2466,7 @@ impl Database {
                 screenshot_url
              FROM ranked
              WHERE rn = 1
-             ORDER BY timestamp DESC, id DESC
+             ORDER BY MIN(timestamp, ?2) DESC, id DESC
              LIMIT ?3 OFFSET ?4",
         )?;
 
@@ -2461,11 +2475,19 @@ impl Database {
                 let browser_url: String = row.get(8)?;
                 Ok(Activity {
                     id: Some(row.get(0)?),
-                    timestamp: row.get(1)?,
+                    timestamp: row.get::<_, i64>(1)?.min(end_ts),
                     app_name: row.get(2)?,
                     window_title: row.get(3)?,
-                    screenshot_path: row.get(4)?,
-                    ocr_text: row.get(5)?,
+                    screenshot_path: if row.get::<_, i64>(1)? >= end_ts {
+                        String::new()
+                    } else {
+                        row.get(4)?
+                    },
+                    ocr_text: if row.get::<_, i64>(1)? >= end_ts {
+                        None
+                    } else {
+                        row.get(5)?
+                    },
                     category: row.get(6)?,
                     duration: row.get(7)?,
                     browser_url: if browser_url.is_empty() {
@@ -2476,7 +2498,11 @@ impl Database {
                     executable_path: row.get(9)?,
                     semantic_category: row.get(10)?,
                     semantic_confidence: row.get(11)?,
-                    screenshot_url: row.get(12)?,
+                    screenshot_url: if row.get::<_, i64>(1)? >= end_ts {
+                        None
+                    } else {
+                        row.get(12)?
+                    },
                 })
             })?
             .filter_map(|r| r.ok())
@@ -2532,7 +2558,8 @@ impl Database {
                 category,
                 duration,
                 screenshot_url,
-                browser_url
+                browser_url,
+                executable_path
              FROM activities
              WHERE timestamp > ?1 AND (timestamp - duration) < ?2 AND duration > 0
              ORDER BY timestamp ASC",
@@ -2548,6 +2575,7 @@ impl Database {
             i64,
             Option<String>,
             Option<String>,
+            Option<String>,
         )> = stmt
             .query_map(params![start_ts, end_ts], |row| {
                 Ok((
@@ -2560,6 +2588,7 @@ impl Database {
                     row.get(6)?,
                     row.get(7)?,
                     row.get(8)?,
+                    row.get(9)?,
                 ))
             })?
             .filter_map(|r| r.ok())
@@ -2599,41 +2628,11 @@ impl Database {
             duration,
             screenshot_url,
             browser_url,
+            executable_path,
         ) in raw
         {
             if matches_ignored_app_for_stats(&app_name, ignored_apps) {
                 continue;
-            }
-
-            if crate::categorize::is_browser_app(&app_name) {
-                let normalized_browser_url = browser_url
-                    .as_deref()
-                    .map(normalize_url)
-                    .filter(|url| !url.is_empty());
-
-                let page_hint = crate::categorize::resolve_browser_page_hint(
-                    browser_url.as_deref(),
-                    &window_title,
-                    ocr_text.as_deref(),
-                );
-
-                let (domain, page_hint) = match page_hint {
-                    Some(page_hint) => (
-                        crate::categorize::browser_page_domain_label(&page_hint),
-                        page_hint,
-                    ),
-                    None => (
-                        UNRESOLVED_BROWSER_DOMAIN_LABEL.to_string(),
-                        normalized_browser_url
-                            .unwrap_or_else(|| UNRESOLVED_BROWSER_URL_LABEL.to_string()),
-                    ),
-                };
-
-                if matches_excluded_domain_for_stats(&domain, excluded_domains)
-                    || matches_excluded_domain_for_stats(&page_hint, excluded_domains)
-                {
-                    continue;
-                }
             }
 
             let interval_start = timestamp.saturating_sub(duration);
@@ -2652,18 +2651,60 @@ impl Database {
                 let bucket_end = next_local_hour_boundary(t);
                 let range_end = overlap_end.min(bucket_end);
 
-                if let Ok(hour) = hour.parse::<i32>() {
-                    if (0..24).contains(&hour) {
-                        segments.push(HourlySegment {
-                            hour,
-                            start: t,
-                            end: range_end,
-                            timestamp,
-                            row_id,
-                            app_name: display_name.clone(),
-                            category: category.clone(),
-                            screenshot_url: screenshot_url.clone(),
-                        });
+                let segment_day = chrono::DateTime::from_timestamp(t, 0)
+                    .map(|dt| dt.with_timezone(&Local).date_naive());
+                let capture_day = chrono::DateTime::from_timestamp(timestamp, 0)
+                    .map(|dt| dt.with_timezone(&Local).date_naive());
+                let same_capture_day = segment_day == capture_day;
+                let segment_day_end = segment_day
+                    .map(local_day_bounds)
+                    .transpose()?
+                    .map(|(_, end)| end)
+                    .unwrap_or(end_ts);
+                let page_hint = if is_standalone_browser(&app_name, executable_path.as_deref()) {
+                    crate::categorize::resolve_browser_page_hint(
+                        browser_url.as_deref(),
+                        &window_title,
+                        if same_capture_day {
+                            ocr_text.as_deref()
+                        } else {
+                            None
+                        },
+                    )
+                    .or_else(|| {
+                        browser_url
+                            .as_deref()
+                            .map(normalize_url)
+                            .filter(|url| !url.is_empty())
+                    })
+                } else {
+                    None
+                };
+                let excluded = page_hint.as_deref().is_some_and(|hint| {
+                    matches_excluded_domain_for_stats(hint, excluded_domains)
+                        || matches_excluded_domain_for_stats(
+                            &crate::categorize::browser_page_domain_label(hint),
+                            excluded_domains,
+                        )
+                });
+                if !excluded {
+                    if let Ok(hour) = hour.parse::<i32>() {
+                        if (0..24).contains(&hour) {
+                            segments.push(HourlySegment {
+                                hour,
+                                start: t,
+                                end: range_end,
+                                timestamp: timestamp.min(segment_day_end),
+                                row_id,
+                                app_name: display_name.clone(),
+                                category: category.clone(),
+                                screenshot_url: if same_capture_day {
+                                    screenshot_url.clone()
+                                } else {
+                                    None
+                                },
+                            });
+                        }
                     }
                 }
                 t = bucket_end;
@@ -2775,8 +2816,72 @@ impl Database {
         Ok(buckets)
     }
 
-    /// 获取日期范围内的原始活动记录
-    /// 返回按时间升序排列的明细，用于 session 聚合、意图识别和待办提取
+    /// Individual local-day evidence, with original IDs and clipped active intervals.
+    /// The timestamp-owned archive/export reader below intentionally stays unchanged.
+    pub fn get_day_evidence(&self, date: &str, limit: usize) -> Result<Vec<Activity>> {
+        let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map_err(|error| AppError::Config(error.to_string()))?;
+        let (start, end) = local_day_bounds(parsed)?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|error| AppError::Config(error.to_string()))?;
+        let sql = format!(
+            "SELECT {ACTIVITY_SELECT_COLUMNS} FROM activities
+             WHERE duration > 0 AND timestamp > ?1 AND timestamp - duration < ?2
+             ORDER BY timestamp ASC, id ASC LIMIT ?3"
+        );
+        let mut query = conn.prepare(&sql)?;
+        let rows = query
+            .query_map(
+                params![start, end, limit.clamp(1, 10_000) as i64],
+                activity_from_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        clip_day_evidence(date, rows)
+    }
+
+    /// Presence probe for read routing; archive exports retain timestamp ownership.
+    pub fn has_active_overlap_for_day(&self, date: &str) -> Result<bool> {
+        let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map_err(|error| AppError::Config(error.to_string()))?;
+        let (start, end) = local_day_bounds(date)?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|error| AppError::Config(error.to_string()))?;
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM activities WHERE duration > 0 AND timestamp > ?1 AND timestamp - duration < ?2)",
+            params![start, end],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Completed-day inventory for Grit's verified archive workflow.
+    pub fn grit_activity_dates(&self) -> Result<Vec<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Config(e.to_string()))?;
+        let mut q = conn.prepare(
+            "SELECT DISTINCT date(timestamp, 'unixepoch', 'localtime') FROM activities ORDER BY 1",
+        )?;
+        let rows = q
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn grit_screenshot_shared(&self, path: &str, date: &str) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Config(e.to_string()))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM activities WHERE screenshot_path=?1 AND date(timestamp, 'unixepoch', 'localtime') != ?2", params![path,date], |r| r.get(0))?;
+        Ok(count > 0)
+    }
+
+    /// Raw timestamp-owned evidence; calendar-day displays use overlap readers.
     pub fn get_activities_in_range(
         &self,
         date_from: Option<&str>,
@@ -2817,8 +2922,7 @@ impl Database {
                     screenshot_url: row.get(12)?,
                 })
             })?
-            .filter_map(|row| row.ok())
-            .collect();
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(activities)
     }
@@ -2973,7 +3077,7 @@ impl Database {
              ORDER BY hour ASC"
         )?;
 
-        let summaries: Vec<HourlySummary> = stmt
+        let mut summaries: Vec<HourlySummary> = stmt
             .query_map(params![date], |row| {
                 Ok(HourlySummary {
                     id: Some(row.get(0)?),
@@ -2987,9 +3091,22 @@ impl Database {
                     created_at: row.get(8)?,
                 })
             })?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
 
+        for summary in &mut summaries {
+            if summary.summary.starts_with("使用 ") || summary.summary == "无活动记录" {
+                let stats = crate::analysis::hourly::HourlyStats::from_activities(
+                    self.get_hourly_activities(date, summary.hour)?,
+                );
+                if let Some(text) =
+                    crate::analysis::hourly::regenerated_legacy_fallback(summary, &stats)
+                {
+                    summary.summary = text;
+                }
+            }
+        }
         Ok(summaries)
     }
 
@@ -3001,6 +3118,7 @@ impl Database {
 
         let date_parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
             .map_err(|e| AppError::Config(e.to_string()))?;
+        let day_end = local_day_bounds(date_parsed)?.1;
         let h = (hour as u32).min(23);
         let (start_ts, end_ts) = local_hour_bounds(date_parsed, h)?;
 
@@ -3024,6 +3142,11 @@ impl Database {
                     return None;
                 }
 
+                if activity.timestamp >= day_end {
+                    activity.screenshot_path.clear();
+                    activity.screenshot_url = None;
+                    activity.ocr_text = None;
+                }
                 activity.duration = calculate_overlap_duration(
                     activity.timestamp,
                     activity.duration,
@@ -3320,7 +3443,7 @@ impl Database {
         // 不使用域名 LIKE 预筛选，以免标题推断或可疑 URL 兜底的表示形式被遗漏。
         let mut candidates = conn.prepare(
             "SELECT id, app_name, window_title, browser_url,
-                    ocr_text IS NOT NULL AND ocr_text != ''
+                    ocr_text IS NOT NULL AND ocr_text != '', executable_path
              FROM activities ORDER BY timestamp ASC, id ASC",
         )?;
         let mut ocr_query = conn.prepare("SELECT ocr_text FROM activities WHERE id = ?1")?;
@@ -3332,7 +3455,8 @@ impl Database {
 
         while let Some(row) = rows.next()? {
             let app_name: String = row.get(1)?;
-            if !crate::categorize::is_browser_app(&app_name) {
+            let executable_path: Option<String> = row.get(5)?;
+            if !is_standalone_browser(&app_name, executable_path.as_deref()) {
                 continue;
             }
 
@@ -5114,13 +5238,7 @@ mod tests {
     }
 
     fn in_memory_db() -> Database {
-        let db = Database {
-            conn: std::sync::Arc::new(std::sync::Mutex::new(
-                rusqlite::Connection::open_in_memory().expect("创建内存数据库失败"),
-            )),
-        };
-        db.init_tables().expect("初始化内存数据库失败");
-        db
+        Database::open_in_memory().expect("创建内存数据库失败")
     }
 
     #[test]
@@ -5712,7 +5830,7 @@ mod tests {
         assert_eq!(stats.browser_usage[0].browser_name, "Google Chrome");
         assert_eq!(stats.browser_usage[0].duration, 35 * 60);
         assert_eq!(stats.browser_usage[0].domains.len(), 2);
-        assert_eq!(stats.browser_usage[0].domains[0].domain, "未识别页面");
+        assert_eq!(stats.browser_usage[0].domains[0].domain, "Okänd sida");
         assert_eq!(stats.browser_usage[0].domains[0].duration, 30 * 60);
         assert_eq!(stats.browser_usage[0].domains[1].domain, "example.com");
         assert_eq!(stats.browser_usage[0].domains[1].duration, 5 * 60);
@@ -6498,7 +6616,7 @@ mod tests {
     }
 
     #[test]
-    fn 办公时长应仅累计办公时间窗口内的交集() {
+    fn calendar_day_work_ignores_legacy_schedule() {
         let db_path = temp_db_path("daily-stats-work-window");
         let db = Database::new(&db_path).expect("创建测试数据库失败");
         let date = "2026-03-27";
@@ -6526,13 +6644,13 @@ mod tests {
             .expect("读取今日统计失败");
 
         assert_eq!(stats.total_duration, 20 * 60);
-        assert_eq!(stats.work_time_duration, 10 * 60);
+        assert_eq!(stats.work_time_duration, 20 * 60);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn 重叠工作段截图计数与加班分类应保持同一口径() {
+    fn calendar_day_work_ignores_overlapping_shifts_and_overtime() {
         let db_path = temp_db_path("daily-stats-overlapping-work-segments");
         let db = Database::new(&db_path).expect("创建测试数据库失败");
         let date = "2026-03-27";
@@ -6608,14 +6726,14 @@ mod tests {
             .expect("读取今日统计失败");
 
         assert_eq!(stats.total_duration, 2 * 60 * 60);
-        assert_eq!(stats.work_time_duration, 60 * 60);
-        assert_eq!(stats.overtime_duration, 30 * 60);
+        assert_eq!(stats.work_time_duration, 120 * 60);
+        assert_eq!(stats.overtime_duration, 0);
         assert_eq!(stats.screenshot_count, 2);
 
         let mut flex_stats = stats.clone();
         apply_flex_overtime_correction(&mut flex_stats, false, 0.5);
-        assert_eq!(flex_stats.work_time_duration, 90 * 60);
-        assert_eq!(flex_stats.overtime_duration, 60 * 60);
+        assert_eq!(flex_stats.work_time_duration, 120 * 60);
+        assert_eq!(flex_stats.overtime_duration, 0);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -6650,7 +6768,7 @@ mod tests {
     }
 
     #[test]
-    fn 跨零点办公时长应累计当天两段工作窗口的交集() {
+    fn calendar_day_work_ignores_overnight_shift() {
         let db_path = temp_db_path("daily-stats-cross-midnight-work-window");
         let db = Database::new(&db_path).expect("创建测试数据库失败");
         let date = "2026-03-27";
@@ -6697,13 +6815,13 @@ mod tests {
             .expect("读取今日统计失败");
 
         assert_eq!(stats.total_duration, 240 * 60);
-        assert_eq!(stats.work_time_duration, 210 * 60);
+        assert_eq!(stats.work_time_duration, 240 * 60);
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn 娱乐分类不应计入办公时长() {
+    fn calendar_day_work_includes_entertainment() {
         let db_path = temp_db_path("daily-stats-ignore-entertainment-work-time");
         let db = Database::new(&db_path).expect("创建测试数据库失败");
         let date = "2026-03-27";
@@ -6750,7 +6868,7 @@ mod tests {
             .expect("读取今日统计失败");
 
         assert_eq!(stats.total_duration, 45 * 60);
-        assert_eq!(stats.work_time_duration, 15 * 60);
+        assert_eq!(stats.work_time_duration, 45 * 60);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -7146,7 +7264,7 @@ mod tests {
 
         let after = db.get_daily_stats(date).expect("读取回填后统计失败");
         assert_eq!(after.total_duration, before.total_duration);
-        assert_eq!(after.work_time_duration, 5 * 60);
+        assert_eq!(after.work_time_duration, before.work_time_duration);
         assert_eq!(
             after
                 .category_usage
@@ -7329,7 +7447,7 @@ mod tests {
             .get_daily_stats(date)
             .expect("读取 OCR 补分类后的统计失败");
         assert_eq!(stats.total_duration, 7 * 60);
-        assert_eq!(stats.work_time_duration, 4 * 60);
+        assert_eq!(stats.work_time_duration, 7 * 60);
     }
 
     #[test]
@@ -7474,6 +7592,22 @@ mod tests {
 
         let _ = std::fs::remove_file(source_path);
         let _ = std::fs::remove_file(backup_path);
+    }
+
+    #[test]
+    fn grit_archive_export_rejects_corrupt_rows_instead_of_dropping_them() {
+        let path = temp_db_path("grit-corrupt-export");
+        let db = Database::new(&path).unwrap();
+        db.insert_activity(&sample_activity(1_700_000_000, "Editor"))
+            .unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE activities SET duration='invalid-duration'", [])
+            .unwrap();
+        assert!(db.get_activities_in_range(None, None, 10000).is_err());
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     fn sample_activity(timestamp: i64, app_name: &str) -> Activity {
@@ -8388,5 +8522,371 @@ mod tests {
         assert!(!current.rebuild_required);
         assert_eq!(current.total_activities, 1);
         let _ = std::fs::remove_file(db_path);
+    }
+    #[test]
+    fn calendar_day_union_includes_weekends_nights_and_leisure_without_idle_gaps() {
+        let db = in_memory_db();
+        let date = "2026-11-15"; // Sunday, regardless of legacy workdays.
+        let mut rows = vec![
+            sample_activity(local_ts(date, 0, 10), "Editor"),
+            sample_activity(local_ts(date, 0, 15), "Video"),
+            sample_activity(local_ts(date, 23, 55), "Editor"),
+            sample_activity(local_ts("2026-11-16", 0, 10), "Editor"),
+        ];
+        for (row, minutes) in rows.iter_mut().zip([20, 10, 10, 20]) {
+            row.duration = minutes * 60;
+        }
+        rows[1].category = "entertainment".into();
+        for row in &rows {
+            db.insert_activity(row).unwrap();
+        }
+        let stats = db.get_daily_stats(date).unwrap();
+        // 00:00–00:15 and 23:45–24:00. Neither overlaps nor the idle day are added.
+        assert_eq!(stats.total_duration, 30 * 60);
+        assert_eq!(stats.work_time_duration, stats.total_duration);
+        assert_eq!(stats.overtime_duration, 0);
+        assert_eq!(
+            stats
+                .hourly_activity_distribution
+                .iter()
+                .map(|h| h.duration)
+                .sum::<i64>(),
+            stats.total_duration
+        );
+        assert_eq!(
+            stats
+                .category_usage
+                .iter()
+                .find(|c| c.category == "entertainment")
+                .unwrap()
+                .duration,
+            10 * 60
+        );
+        let filtered = db
+            .get_daily_stats_with_segments_filtered(date, &[], &["video".into()], &[])
+            .unwrap();
+        assert_eq!(filtered.total_duration, 25 * 60);
+        assert_eq!(filtered.work_time_duration, 25 * 60);
+        assert_eq!(
+            db.get_daily_stats("2026-11-14").unwrap().total_duration,
+            10 * 60
+        );
+        assert_eq!(
+            db.get_daily_stats("2026-11-16").unwrap().total_duration,
+            10 * 60
+        );
+    }
+
+    #[test]
+    fn calendar_day_dst_bounds_and_hourly_coverage_agree() {
+        for (date, stockholm_hours) in [("2026-03-29", 23), ("2026-10-25", 25)] {
+            let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
+            let (start, end) = local_day_bounds(parsed).unwrap();
+            let db = in_memory_db();
+            let mut row = sample_activity(end + 60, "Editor");
+            row.duration = end - start + 120;
+            db.insert_activity(&row).unwrap();
+            let stats = db.get_daily_stats(date).unwrap();
+            assert_eq!(stats.total_duration, end - start);
+            assert_eq!(stats.work_time_duration, end - start);
+            assert_eq!(
+                stats
+                    .hourly_activity_distribution
+                    .iter()
+                    .map(|hour| hour.duration)
+                    .sum::<i64>(),
+                end - start
+            );
+            let hourly_duration: i64 = (0..24)
+                .map(|hour| {
+                    crate::analysis::hourly::HourlyStats::from_activities(
+                        db.get_hourly_activities(date, hour).unwrap(),
+                    )
+                    .total_duration
+                })
+                .sum();
+            assert_eq!(hourly_duration, end - start);
+            if std::env::var("TZ").as_deref() == Ok("Europe/Stockholm") {
+                assert_eq!(end - start, stockholm_hours * 3600);
+            }
+        }
+    }
+
+    #[test]
+    fn calendar_day_read_presence_includes_only_positive_overlaps() {
+        let db = in_memory_db();
+        let mut row = sample_activity(local_ts("2026-11-16", 0, 10), "Editor");
+        row.duration = 20 * 60;
+        db.insert_activity(&row).unwrap();
+        assert!(db
+            .get_activities_in_range(Some("2026-11-15"), Some("2026-11-15"), 10)
+            .unwrap()
+            .is_empty());
+        assert!(db.has_active_overlap_for_day("2026-11-15").unwrap());
+        assert!(db.has_active_overlap_for_day("2026-11-16").unwrap());
+        assert!(!db.has_active_overlap_for_day("2026-11-14").unwrap());
+    }
+
+    #[test]
+    fn browser_reporting_rejects_embedded_runtimes_and_keeps_unknown_urls_honest() {
+        let db = in_memory_db();
+        let date = "2026-11-19";
+        for (index, (name, executable)) in [
+            ("GRIT Work", None),
+            ("msedgewebview2.exe", None),
+            ("Electron", None),
+            ("Microsoft Edge", Some("C:\\App\\msedgewebview2.exe")),
+            ("Google Chrome", Some("/opt/app/electron")),
+            ("Google Chrome", Some("/opt/grit-work")),
+            ("DB Browser for SQLite", None),
+            ("Opera Backup", None),
+            ("Firefox", None),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut row = sample_activity(local_ts(date, 10, index as u32 + 1), name);
+            row.duration = 60;
+            row.executable_path = executable.map(str::to_string);
+            db.insert_activity(&row).unwrap();
+        }
+        let stats = db.get_daily_stats(date).unwrap();
+        assert_eq!(stats.total_duration, 9 * 60);
+        assert_eq!(stats.browser_duration, 60);
+        assert_eq!(stats.domain_usage.len(), 1);
+        assert_eq!(stats.domain_usage[0].domain, "Okänd sida");
+        assert_eq!(stats.domain_usage[0].urls[0].url, "Okänd URL");
+        assert_eq!(
+            stats.url_usage[0].domain,
+            stats.browser_usage[0].domains[0].domain
+        );
+        let raw = db
+            .get_activities_in_range(Some(date), Some(date), 100)
+            .unwrap();
+        assert!(raw.iter().all(|row| row.browser_url.is_none()));
+    }
+
+    #[test]
+    fn legacy_hourly_fallback_is_regenerated_without_writing_over_cache_or_evidence() {
+        let db = in_memory_db();
+        let date = "2026-11-19";
+        let mut row = sample_activity(local_ts(date, 10, 1), "Editor");
+        row.duration = 60;
+        row.ocr_text = None;
+        let row_id = db.insert_activity(&row).unwrap();
+        let cached = super::HourlySummary {
+            id: None,
+            date: date.into(),
+            hour: 10,
+            summary: "使用 Editor 等应用 1分钟".into(),
+            main_apps: "Editor".into(),
+            activity_count: 1,
+            total_duration: 60,
+            representative_screenshots: None,
+            created_at: 0,
+        };
+        db.save_hourly_summary(&cached).unwrap();
+        assert_eq!(
+            db.get_hourly_summaries(date).unwrap()[0].summary,
+            "Aktiv i Editor i 1 min"
+        );
+        let stored: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT summary FROM hourly_summaries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored, cached.summary);
+        assert_eq!(db.get_activity_by_id(row_id).unwrap().unwrap().duration, 60);
+        let mut authored = cached;
+        authored.summary = "使用 Editor 完成了设计。".into();
+        db.save_hourly_summary(&authored).unwrap();
+        assert_eq!(
+            db.get_hourly_summaries(date).unwrap()[0].summary,
+            authored.summary
+        );
+    }
+    #[test]
+    fn day_evidence_preserves_individual_ids_clips_intervals_and_clears_later_capture() {
+        let db = in_memory_db();
+        let date = "2026-11-19";
+        let mut earlier = sample_activity(local_ts(date, 10, 10), "Editor");
+        earlier.duration = 10 * 60;
+        let early_id = db.insert_activity(&earlier).unwrap();
+        let mut separate = earlier.clone();
+        separate.timestamp = local_ts(date, 20, 10);
+        let separate_id = db.insert_activity(&separate).unwrap();
+        let mut crossing = sample_activity(local_ts("2026-11-20", 0, 10), "Firefox");
+        crossing.duration = 20 * 60;
+        crossing.browser_url = Some("https://example.com/docs".into());
+        crossing.screenshot_url = Some("https://shots.example/later.png".into());
+        let crossing_id = db.insert_activity(&crossing).unwrap();
+        let midnight = local_ts("2026-11-20", 0, 0);
+        let rows = db.get_day_evidence(date, 100).unwrap();
+        assert_eq!(rows.len(), 3); // Same-app rows remain separate across the idle gap.
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![Some(early_id), Some(separate_id), Some(crossing_id)]
+        );
+        let row = &rows[2];
+        assert_eq!(row.timestamp, midnight);
+        assert_eq!(row.duration, 10 * 60);
+        assert!(row.screenshot_path.is_empty());
+        assert!(row.screenshot_url.is_none());
+        assert!(row.ocr_text.is_none());
+        assert_eq!(row.browser_url, crossing.browser_url);
+        assert_eq!(row.window_title, crossing.window_title);
+        assert_eq!(rows[0].screenshot_path, earlier.screenshot_path);
+        assert_eq!(
+            serde_json::to_value(&rows).unwrap(),
+            serde_json::to_value(super::clip_day_evidence(date, rows.clone()).unwrap()).unwrap()
+        );
+        let raw = db
+            .get_activities_in_range(Some("2026-11-20"), Some("2026-11-20"), 100)
+            .unwrap();
+        assert_eq!(raw[0].duration, 20 * 60);
+        assert_eq!(raw[0].screenshot_path, crossing.screenshot_path);
+        assert_eq!(raw[0].screenshot_url, crossing.screenshot_url);
+        assert_eq!(raw[0].ocr_text, crossing.ocr_text);
+        let timeline = db.get_timeline(date, None, None).unwrap();
+        let projected = timeline
+            .iter()
+            .find(|row| row.id == Some(crossing_id))
+            .unwrap();
+        assert_eq!(projected.timestamp, midnight);
+        assert!(projected.screenshot_path.is_empty());
+        assert!(projected.screenshot_url.is_none());
+        assert!(projected.ocr_text.is_none());
+        let hourly = db.get_hourly_activities(date, 23).unwrap();
+        assert_eq!(hourly[0].duration, 10 * 60);
+        assert!(hourly[0].screenshot_path.is_empty());
+        assert!(hourly[0].ocr_text.is_none());
+        let stats = db.get_daily_stats(date).unwrap();
+        assert!(stats
+            .app_usage
+            .iter()
+            .find(|app| app.app_name == "Firefox")
+            .unwrap()
+            .screenshot_url
+            .is_none());
+        assert!(db.get_hourly_app_breakdown(date).unwrap()[23].apps[0]
+            .screenshot_url
+            .is_none());
+        assert_eq!(db.get_day_evidence(date, 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn day_evidence_clips_both_midnights_and_dst_without_changing_raw_export() {
+        for date in ["2026-03-29", "2026-10-25"] {
+            let db = in_memory_db();
+            let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
+            let (start, end) = local_day_bounds(parsed).unwrap();
+            let mut row = sample_activity(end + 60, "Editor");
+            row.duration = end - start + 120;
+            let id = db.insert_activity(&row).unwrap();
+            let evidence = db.get_day_evidence(date, 10).unwrap();
+            assert_eq!(evidence[0].id, Some(id));
+            assert_eq!(evidence[0].timestamp, end);
+            assert_eq!(evidence[0].duration, end - start);
+            assert_eq!(
+                db.get_activity_by_id(id).unwrap().unwrap().duration,
+                row.duration
+            );
+            assert!(db
+                .get_activities_in_range(Some(date), Some(date), 10)
+                .unwrap()
+                .is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod ocr_unicode_storage_tests {
+    use super::*;
+
+    #[test]
+    fn ocr_unicode_corpus_round_trips_through_sqlite_and_json_without_data_loss() {
+        let db = Database::open_in_memory().unwrap();
+        let corpus: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../tests/fixtures/ocr-text-corpus.json"))
+                .unwrap();
+        for (i, case) in corpus.iter().enumerate() {
+            let raw = case["text"].as_str().unwrap();
+            let activity = Activity {
+                id: None,
+                timestamp: 1_700_000_000 + i as i64 * 60,
+                app_name: "Synthetic OCR test".into(),
+                window_title: raw.into(),
+                screenshot_path: "screenshots/Årsrapport Öresund.png".into(),
+                ocr_text: None,
+                category: "development".into(),
+                duration: 60,
+                browser_url: None,
+                executable_path: None,
+                semantic_category: None,
+                semantic_confidence: None,
+                screenshot_url: None,
+            };
+            let id = db.insert_activity(&activity).unwrap();
+            db.update_activity_ocr(id, Some(raw.to_string()), &[])
+                .unwrap();
+            let read = db.get_activity_by_id(id).unwrap().unwrap();
+            assert_eq!(read.ocr_text.as_deref(), Some(raw), "{}", case["id"]);
+            assert_eq!(read.window_title, raw);
+            let encoded = serde_json::to_vec(&read).unwrap();
+            let decoded: Activity = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(decoded.ocr_text.as_deref(), Some(raw));
+            db.merge_activity(
+                id,
+                60,
+                Some(raw),
+                "unused.png",
+                activity.timestamp + 60,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                db.get_activity_by_id(id)
+                    .unwrap()
+                    .unwrap()
+                    .ocr_text
+                    .unwrap(),
+                format!("{raw}\n---\n{raw}")
+            );
+        }
+        assert_eq!(
+            db.get_activities_in_range(None, None, 100).unwrap().len(),
+            corpus.len()
+        );
+    }
+
+    #[test]
+    fn megabyte_ocr_payload_is_stored_without_utf8_truncation() {
+        let db = Database::open_in_memory().unwrap();
+        let text = "Å漢🧑\0\n".repeat(100_000);
+        let activity = Activity {
+            id: None,
+            timestamp: 1_700_000_000,
+            app_name: "OCR test".into(),
+            window_title: "Large synthetic document".into(),
+            screenshot_path: String::new(),
+            ocr_text: Some(text.clone()),
+            category: "development".into(),
+            duration: 60,
+            browser_url: None,
+            executable_path: None,
+            semantic_category: None,
+            semantic_confidence: None,
+            screenshot_url: None,
+        };
+        let id = db.insert_activity(&activity).unwrap();
+        assert_eq!(
+            db.get_activity_by_id(id)
+                .unwrap()
+                .unwrap()
+                .ocr_text
+                .unwrap(),
+            text
+        );
     }
 }

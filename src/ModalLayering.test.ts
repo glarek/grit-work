@@ -16,6 +16,6 @@ test('路由级详情弹层应使用全局对话层级，主滚动区不应创�
   );
   assert.match(
     overviewSource,
-    /class="[^"]*\bfixed\b[^"]*\binset-0\b[^"]*\bz-\[140\][^"]*"/
+    /<UiDialog[\s\S]*?bind:open=\{domainOverlayOpen\}/
   );
 });

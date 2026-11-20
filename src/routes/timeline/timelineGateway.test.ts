@@ -65,7 +65,7 @@ test('时间线网关应拒绝字段漂移的活动和小时摘要', async () =>
   );
   await assert.rejects(
     invalidSummaryGateway.getHourlySummaries('2026-08-11'),
-    /小时摘要载荷格式无效/,
+    /Timsammanfattningen har ett ogiltigt format\./,
   );
 });
 

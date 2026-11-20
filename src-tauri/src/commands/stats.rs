@@ -6,12 +6,10 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 use work_review_core::config::WebsiteSemanticRule;
 use work_review_core::database::{
-    apply_flex_overtime_correction, local_hour_end_timestamp, AppUsage, BrowserUsage,
-    CategoryUsage, DailyStats, DomainUsage, HourlyActivityBucket, HourlyAppBucket, UrlDetail,
-    UrlUsage,
+    AppUsage, BrowserUsage, CategoryUsage, DailyStats, DomainUsage, HourlyActivityBucket,
+    HourlyAppBucket, UrlDetail, UrlUsage,
 };
 use work_review_core::error::AppError;
-use work_review_core::privacy::{apply_excluded_domains_to_stats, apply_ignored_apps_to_stats};
 
 use super::shared::collect_privacy_filters;
 
@@ -53,20 +51,18 @@ pub(crate) fn load_daily_stats_for_overview(
     state: &AppState,
     date: &str,
 ) -> Result<DailyStats, AppError> {
-    let segments = state.config.effective_work_segments();
     let (ignored_apps, excluded_domains) = collect_privacy_filters(state);
-    let mut stats = state.database.get_daily_stats_with_segments_filtered(
-        date,
-        &segments,
-        &ignored_apps,
-        &excluded_domains,
-    )?;
+    let stats = match super::grit_read::day_activities(&state.data_dir, &state.database, date)? {
+        super::grit_read::DayActivities::Local => state
+            .database
+            .get_daily_stats_with_segments_filtered(date, &[], &ignored_apps, &excluded_domains)?,
+        super::grit_read::DayActivities::Archive(rows) => {
+            let rows =
+                super::shared::filter_activities_by_privacy(rows, &ignored_apps, &excluded_domains);
+            super::grit_read::daily_stats_from_activities(date, &rows, &[])?
+        }
+    };
 
-    apply_flex_overtime_correction(
-        &mut stats,
-        state.config.work_time_enabled,
-        state.config.standard_work_hours,
-    );
     let stats = apply_website_semantic_rules_to_stats(stats, &state.config.website_semantic_rules);
 
     Ok(stats)
@@ -585,12 +581,7 @@ fn resolve_overview_date_span(
 pub(crate) fn get_today_stats_inner(state: &Arc<Mutex<AppState>>) -> Result<DailyStats, AppError> {
     let state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let stats = load_daily_stats_for_overview(&state, &today)?;
-    let (ignored_apps, excluded_domains) = collect_privacy_filters(&state);
-    let stats = apply_ignored_apps_to_stats(stats, &ignored_apps);
-    let mut stats = apply_excluded_domains_to_stats(stats, &excluded_domains);
-    stats.domain_total_count = stats.domain_usage.len();
-    Ok(stats)
+    load_daily_stats_for_overview(&state, &today)
 }
 
 /// 获取今日统计
@@ -610,7 +601,6 @@ fn load_full_overview_stats(
     state: &AppState,
 ) -> Result<DailyStats, AppError> {
     let normalized_mode = mode.trim().to_lowercase();
-    let (ignored_apps, excluded_domains) = collect_privacy_filters(state);
 
     let stats = match normalized_mode.as_str() {
         "date" => {
@@ -620,6 +610,7 @@ fn load_full_overview_stats(
                 let date_value = start.format("%Y-%m-%d").to_string();
                 load_daily_stats_for_overview(state, &date_value)?
             } else {
+                super::grit_read::ensure_archive_range(&state.data_dir, start, end)?;
                 let mut daily_stats = Vec::new();
                 let mut current = start;
                 while current <= end {
@@ -639,6 +630,7 @@ fn load_full_overview_stats(
                 .map_err(|e| AppError::Config(format!("解析周概览开始日期失败: {e}")))?;
             let end = chrono::NaiveDate::parse_from_str(&date_to, "%Y-%m-%d")
                 .map_err(|e| AppError::Config(format!("解析周概览结束日期失败: {e}")))?;
+            super::grit_read::ensure_archive_range(&state.data_dir, start, end)?;
 
             let mut daily_stats = Vec::new();
             let mut current = start;
@@ -657,9 +649,8 @@ fn load_full_overview_stats(
         }
     };
 
-    let stats = apply_ignored_apps_to_stats(stats, &ignored_apps);
-    let mut stats = apply_excluded_domains_to_stats(stats, &excluded_domains);
-    stats.domain_total_count = stats.domain_usage.len();
+    // Each day was filtered before union coverage was calculated. Re-summing
+    // per-app attribution here would double-count overlapping activity again.
     Ok(stats)
 }
 
@@ -740,22 +731,8 @@ pub(crate) fn get_daily_stats_inner(
     date: &str,
     state: &Arc<Mutex<AppState>>,
 ) -> Result<DailyStats, AppError> {
-    let s = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
-    let segments = s.config.effective_work_segments();
-    let (ignored_apps, excluded_domains) = collect_privacy_filters(&s);
-    let mut stats = s.database.get_daily_stats_with_segments_filtered(
-        date,
-        &segments,
-        &ignored_apps,
-        &excluded_domains,
-    )?;
-    apply_flex_overtime_correction(
-        &mut stats,
-        s.config.work_time_enabled,
-        s.config.standard_work_hours,
-    );
-    let stats = apply_website_semantic_rules_to_stats(stats, &s.config.website_semantic_rules);
-    Ok(stats)
+    let state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+    load_daily_stats_for_overview(&state, date)
 }
 
 /// 获取指定日期的统计
@@ -798,13 +775,56 @@ pub(crate) fn get_hourly_app_breakdown_inner(
         }
     };
 
+    let start = chrono::NaiveDate::parse_from_str(&date_from, "%Y-%m-%d")
+        .map_err(|error| AppError::Config(format!("解析小时统计开始日期失败: {error}")))?;
+    let end = chrono::NaiveDate::parse_from_str(&date_to, "%Y-%m-%d")
+        .map_err(|error| AppError::Config(format!("解析小时统计结束日期失败: {error}")))?;
+    super::grit_read::ensure_archive_range(&state.data_dir, start, end)?;
     let (ignored_apps, excluded_domains) = collect_privacy_filters(&state);
-    state.database.get_hourly_app_breakdown_range_filtered(
-        &date_from,
-        &date_to,
-        &ignored_apps,
-        &excluded_domains,
-    )
+    let mut archived_days = Vec::new();
+    let mut current = start;
+    while current <= end {
+        let current_date = current.format("%Y-%m-%d").to_string();
+        if let super::grit_read::DayActivities::Archive(rows) =
+            super::grit_read::day_activities(&state.data_dir, &state.database, &current_date)?
+        {
+            let rows =
+                super::shared::filter_activities_by_privacy(rows, &ignored_apps, &excluded_domains);
+            archived_days.push((current_date, rows));
+        }
+        current = current
+            .succ_opt()
+            .ok_or_else(|| AppError::Config("计算小时统计日期失败".to_string()))?;
+    }
+    if archived_days.is_empty() {
+        return state.database.get_hourly_app_breakdown_range_filtered(
+            &date_from,
+            &date_to,
+            &ignored_apps,
+            &excluded_domains,
+        );
+    }
+    let mut buckets = Vec::new();
+    let mut cursor = start;
+    while cursor <= end {
+        let current_date = cursor.format("%Y-%m-%d").to_string();
+        let day_buckets =
+            if let Some((_, rows)) = archived_days.iter().find(|(day, _)| day == &current_date) {
+                super::grit_read::hourly_apps_from_activities(&current_date, rows)?
+            } else {
+                state.database.get_hourly_app_breakdown_range_filtered(
+                    &current_date,
+                    &current_date,
+                    &ignored_apps,
+                    &excluded_domains,
+                )?
+            };
+        super::grit_read::add_hourly_app_buckets(&mut buckets, &day_buckets);
+        cursor = cursor
+            .succ_opt()
+            .ok_or_else(|| AppError::Config("计算小时统计日期失败".to_string()))?;
+    }
+    Ok(buckets)
 }
 
 /// 获取每小时×应用的时长分布
@@ -994,28 +1014,49 @@ pub async fn get_storage_stats(
     get_storage_stats_inner(state.inner())
 }
 
-/// 获取指定日期的小时摘要 —— 内部复用版。
-/// 只重算「缺失或可能不完整」的小时：已有摘要且生成于该小时结束之后的直接复用
-/// （此前每次查看都对 0..24 全量重算并 REPLACE 写库,进一次时间线 = 24 次聚合 + 24 次写）。
-/// 今天的当前小时改为内存计算、不落库,避免半截摘要进库。
-/// 删除/合并记录的路径都会失效当日摘要缓存（invalidate_daily_cache）,
-/// 因此「已有且完整即跳过」不会留下脏数据。
+/// Read hourly summaries for timeline and localhost API.
+/// Missing hours are generated on demand; existing prose is preserved.
+/// Exact legacy generated fallbacks are localized by the database reader without writes.
 pub(crate) fn get_hourly_summaries_inner(
     date: &str,
     state: &Arc<Mutex<AppState>>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     use chrono::Timelike;
 
+    let archived = {
+        let guard = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+        match super::grit_read::day_activities(&guard.data_dir, &guard.database, date)? {
+            super::grit_read::DayActivities::Archive(rows) => {
+                let (ignored_apps, excluded_domains) = collect_privacy_filters(&guard);
+                let data_dir = guard.data_dir.clone();
+                let rows = super::shared::filter_activities_by_privacy(
+                    rows,
+                    &ignored_apps,
+                    &excluded_domains,
+                );
+                Some(super::grit_read::hourly_summaries_from_activities(
+                    date, &rows, &data_dir,
+                )?)
+            }
+            super::grit_read::DayActivities::Local => None,
+        }
+    };
+    if let Some(summaries) = archived {
+        return Ok(summaries);
+    }
+
     let app_state = state.clone();
 
-    let saved_created_at: HashMap<i32, i64> = {
+    // Reading the database regenerates exact legacy fallback text in memory.
+    // Cache age alone cannot establish that text was generated rather than authored.
+    let saved_hours: HashSet<i32> = {
         let s = app_state
             .lock()
             .map_err(|e| AppError::Unknown(e.to_string()))?;
         s.database
             .get_hourly_summaries(date)?
             .iter()
-            .map(|summary| (summary.hour, summary.created_at))
+            .map(|summary| summary.hour)
             .collect()
     };
 
@@ -1032,11 +1073,7 @@ pub(crate) fn get_hourly_summaries_inner(
     };
 
     for hour in 0..end_hour {
-        let fresh = matches!(
-            (saved_created_at.get(&hour), local_hour_end_timestamp(date, hour)),
-            (Some(&created_at), Some(end_ts)) if created_at >= end_ts
-        );
-        if !fresh {
+        if !saved_hours.contains(&hour) {
             crate::generate_and_save_summary(&app_state, date, hour);
         }
     }
@@ -1048,8 +1085,8 @@ pub(crate) fn get_hourly_summaries_inner(
         s.database.get_hourly_summaries(date)?
     };
 
-    // 今天的当前小时：内存计算,不写库(旧版本可能残留过半截摘要,一并以内存结果覆盖展示)
-    if date == today {
+    // Build the current hour in memory, preserving any existing authored/model text.
+    if date == today && !saved_hours.contains(&current_hour) {
         if let Some(current) = crate::build_hourly_summary(&app_state, date, current_hour) {
             summaries.retain(|summary| summary.hour != current_hour);
             summaries.push(current);

@@ -10,12 +10,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
+const brandSourceIcon = path.join(
+  projectRoot,
+  'src-tauri',
+  'icons',
+  'brand-source.png'
+);
 const masterIcon = path.join(projectRoot, 'src-tauri', 'icons', 'icon.png');
 const windowsMasterIcon = path.join(
   projectRoot,
   'src-tauri',
   'icons',
   'windows-icon.png'
+);
+const trayIcon = path.join(
+  projectRoot,
+  'src-tauri',
+  'icons',
+  'tray-template.png'
 );
 const tauriIconsDir = path.join(projectRoot, 'src-tauri', 'icons');
 const publicIconsDir = path.join(projectRoot, 'public', 'icons');
@@ -79,19 +91,8 @@ function run(command: string, args: readonly string[]): void {
 }
 
 function renderFilter(size: number): string {
-  if (size <= 24) {
-    return `scale=${size}:${size}:flags=lanczos,unsharp=7:7:0.9:7:7:0.0`;
-  }
-
-  if (size <= 48) {
-    return `scale=${size}:${size}:flags=lanczos,unsharp=5:5:0.75:5:5:0.0`;
-  }
-
-  if (size <= 64) {
-    return `scale=${size}:${size}:flags=lanczos,unsharp=3:3:0.45:3:3:0.0`;
-  }
-
-  return `scale=${size}:${size}:flags=lanczos`;
+  // Nearest-neighbor + transparent square pad preserves exact pixel-art aspect ratio without smoothing.
+  return `scale=${size}:${size}:force_original_aspect_ratio=decrease:flags=neighbor,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
 }
 
 async function buildPngWithFfmpeg(
@@ -133,12 +134,7 @@ async function buildPng(
     return;
   }
 
-  if (hasSips) {
-    await buildPngWithSips(size, output, source);
-    return;
-  }
-
-  throw new Error('缺少 ffmpeg 或 sips，无法生成图标资源');
+  throw new Error('缺少 ffmpeg，无法以 nearest-neighbor 生成像素图标资源');
 }
 
 async function buildIcns(tempDir: string): Promise<boolean> {
@@ -191,9 +187,10 @@ async function buildNativeIconsWithTauri(tempDir: string): Promise<boolean> {
   return true;
 }
 
-async function buildIco(tempDir: string): Promise<void> {
+async function buildIco(tempDir: string, sourceOverride?: string): Promise<void> {
   const icoPngs: string[] = [];
-  const source = hasDedicatedWindowsIcon ? windowsMasterIcon : masterIcon;
+  const source =
+    sourceOverride ?? (hasDedicatedWindowsIcon ? windowsMasterIcon : masterIcon);
 
   for (const size of windowsIcoSizes) {
     const output = path.join(tempDir, `${size}.png`);
@@ -206,21 +203,30 @@ async function buildIco(tempDir: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!existsSync(masterIcon)) {
+  const hasBrandSource = existsSync(brandSourceIcon);
+  if (!hasBrandSource && !existsSync(masterIcon)) {
     throw new Error(`未找到主图标：${masterIcon}`);
   }
 
   await mkdir(publicIconsDir, { recursive: true });
 
+  const renderSource = hasBrandSource ? brandSourceIcon : masterIcon;
+  if (hasBrandSource) {
+    await buildPng(1024, masterIcon, brandSourceIcon);
+    await buildPng(1024, windowsMasterIcon, brandSourceIcon);
+    await buildPng(512, trayIcon, brandSourceIcon);
+    await buildPng(64, path.join(projectRoot, 'public', 'favicon.png'), brandSourceIcon);
+  }
+
   const tempDir = await mkdtemp(path.join(tmpdir(), 'work-review-icons-'));
 
   try {
     for (const target of persistentTargets) {
-      await buildPng(target.size, target.output);
+      await buildPng(target.size, target.output, renderSource);
     }
 
     const builtNativeIcons = await buildNativeIconsWithTauri(tempDir);
-    await buildIco(tempDir);
+    await buildIco(tempDir, renderSource);
 
     if (!builtNativeIcons) {
       await buildIcns(tempDir);

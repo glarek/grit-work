@@ -83,3 +83,8 @@ src-tauri/icons.backup/
 /plan.md
 .claude/
 .zcode/
+
+# Local Arch package artifacts
+/packaging/arch/pkg/
+/packaging/arch/src/
+/packaging/arch/*.pkg.tar.*

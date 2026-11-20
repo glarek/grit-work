@@ -1576,40 +1576,118 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    async fn read_test_headers(socket: &mut tokio::net::TcpStream) {
+    async fn read_test_headers(socket: &mut tokio::net::TcpStream) -> std::io::Result<Vec<u8>> {
         let mut headers = Vec::new();
         while !headers.ends_with(b"\r\n\r\n") {
-            headers.push(socket.read_u8().await.unwrap());
-            assert!(headers.len() <= 8192, "本地测试请求头过大");
+            headers.push(socket.read_u8().await?);
+            if headers.len() > 8192 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "oversized test request",
+                ));
+            }
         }
+        Ok(headers)
     }
 
-    /// 只绑定回环地址；响应头及部分 body 发完后保持连接，不结束响应体。
+    /// Only this test's unique GET target advances the 429 -> stalled-body sequence.
+    /// Local port probes must not steal a response or block the real retry's accept.
     async fn stalled_body_server(
         status: &'static str,
         retry_first: bool,
     ) -> (String, tokio::task::JoinHandle<()>) {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let target = format!("/{}", uuid::Uuid::new_v4());
+        let endpoint = format!("http://{}{target}", listener.local_addr().unwrap());
+        let request_line = format!("GET {target} HTTP/1.1\r\n");
         let server = tokio::spawn(async move {
-            if retry_first {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                read_test_headers(&mut socket).await;
-                socket
-                    .write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                    .await
-                    .unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            // Dropping the set when the fixture is aborted closes all stalled sockets.
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (mut socket, _) = accepted.unwrap();
+                        let request_line = request_line.clone();
+                        let requests = requests.clone();
+                        connections.spawn(async move {
+                            let Ok(Ok(headers)) = tokio::time::timeout(
+                                Duration::from_secs(1), read_test_headers(&mut socket),
+                            ).await else { return; };
+                            if !headers.starts_with(request_line.as_bytes()) {
+                                let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                                return;
+                            }
+                            let attempt = requests.fetch_add(1, Ordering::SeqCst);
+                            if retry_first && attempt == 0 {
+                                socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                                socket.shutdown().await.unwrap();
+                                return;
+                            }
+                            let response = format!(
+                                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{{"
+                            );
+                            socket.write_all(response.as_bytes()).await.unwrap();
+                            std::future::pending::<()>().await;
+                            drop(socket);
+                        });
+                    }
+                    result = connections.join_next(), if !connections.is_empty() => {
+                        result.unwrap().unwrap();
+                    }
+                }
             }
-            let (mut socket, _) = listener.accept().await.unwrap();
-            read_test_headers(&mut socket).await;
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{{"
-            );
-            socket.write_all(response.as_bytes()).await.unwrap();
-            std::future::pending::<()>().await;
-            drop(socket);
         });
         (endpoint, server)
+    }
+
+    #[tokio::test]
+    async fn stalled_body_fixture_ignores_unrelated_and_idle_connections() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (endpoint, server) = stalled_body_server("200 OK", true).await;
+        let address = endpoint
+            .strip_prefix("http://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        // A silent connection must not block accepting the actual retry.
+        let idle = tokio::net::TcpStream::connect(address).await.unwrap();
+        let probe = send_until(
+            client.get(format!("http://{address}/")),
+            Deadline::after(Duration::from_millis(300)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(probe.status(), reqwest::StatusCode::NOT_FOUND);
+        let first = send_until(
+            client.get(&endpoint),
+            Deadline::after(Duration::from_secs(1)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        // Another unrelated request during the retry gap must not consume the 200.
+        let probe = send_until(
+            client.get(format!("http://{address}/")),
+            Deadline::after(Duration::from_millis(300)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(probe.status(), reqwest::StatusCode::NOT_FOUND);
+        let deadline = Deadline::after(Duration::from_millis(150));
+        let response = send_until(client.get(&endpoint), deadline).await.unwrap();
+        assert!(response.status().is_success());
+        let error = response.json::<Value>().await.unwrap_err();
+        assert!(error.is_timeout());
+        assert!(deadline.is_expired());
+        drop(idle);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
     }
 
     #[tokio::test]
@@ -1644,6 +1722,7 @@ mod tests {
             })
             .await;
             server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
             result.expect("响应头后的 body 卡住不能绕过 deadline");
             assert!(deadline.is_expired(), "不应在 body 未完成时提前返回");
         }
@@ -1665,6 +1744,7 @@ mod tests {
         })
         .await;
         server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
         result.expect("重试后的响应体不能重新获得完整预算");
         assert!(deadline.is_expired());
     }

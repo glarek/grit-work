@@ -1,7 +1,10 @@
 <script lang="ts">
+  import UiCheckbox from "$lib/components/ui/UiCheckbox.svelte";
   import { createEventDispatcher, onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { Check } from 'lucide-svelte';
   import { formatDurationLocalized, locale, t } from '$lib/i18n/index.ts';
+  import UiSwitch from '../../../lib/components/ui/UiSwitch.svelte';
   import CollapsibleSection from '../../../lib/components/CollapsibleSection.svelte';
 
   interface WorkTimeSegment {
@@ -30,15 +33,14 @@
     daily_report_auto_generate_time: string | null;
   }
 
-  type TimePart = number | string | null | undefined;
-
   export let config: GeneralConfig;
+  export let showAutoReport = true;
+  export let runtimePlatform = "";
 
   const dispatch = createEventDispatcher<{ change: GeneralConfig }>();
   $: currentLocale = $locale;
-  let workHours = '—';
   let autoStartEnabled = false;
-  const MAX_WORK_SEGMENTS = 8;
+  let autoStartBusy = false;
 
   onMount(async () => {
     try {
@@ -57,149 +59,12 @@
     }
   });
 
-  function normalizeHour(value: TimePart): number {
-    const parsed = Number.parseInt(String(value ?? ''), 10);
-    if (!Number.isFinite(parsed)) return 0;
-    return Math.min(Math.max(parsed, 0), 23);
-  }
-
-  function normalizeMinute(value: TimePart): number {
-    const parsed = Number.parseInt(String(value ?? ''), 10);
-    if (!Number.isFinite(parsed)) return 0;
-    return Math.min(Math.max(parsed, 0), 59);
-  }
-
-  function parseTimeInput(value: string | null | undefined): [number, number] {
-    const [hour = '0', minute = '0'] = String(value ?? '').split(':');
-    return [normalizeHour(hour), normalizeMinute(minute)];
-  }
-
-  function segmentToTimeValue(hour: TimePart, minute: TimePart): string {
-    return `${String(normalizeHour(hour)).padStart(2, '0')}:${String(normalizeMinute(minute)).padStart(2, '0')}`;
-  }
-
-  function normalizeSegment(segment?: Partial<WorkTimeSegment> | null): WorkTimeSegment {
-    return {
-      start_hour: normalizeHour(segment?.start_hour),
-      start_minute: normalizeMinute(segment?.start_minute),
-      end_hour: normalizeHour(segment?.end_hour),
-      end_minute: normalizeMinute(segment?.end_minute),
-    };
-  }
-
-  function normalizeWorkSegments(segments?: WorkTimeSegment[] | null): WorkTimeSegment[] {
-    if (Array.isArray(segments) && segments.length > 0) {
-      return segments.slice(0, MAX_WORK_SEGMENTS).map(normalizeSegment);
-    }
-    return [
-      normalizeSegment({
-        start_hour: config?.work_start_hour ?? 9,
-        start_minute: config?.work_start_minute ?? 0,
-        end_hour: config?.work_end_hour ?? 18,
-        end_minute: config?.work_end_minute ?? 0,
-      }),
-    ];
-  }
-
-  function syncLegacyWorkRange(segments: WorkTimeSegment[]): void {
-    if (!segments.length) return;
-    const first = segments[0];
-    const last = segments[segments.length - 1];
-    config.work_start_hour = first.start_hour;
-    config.work_start_minute = first.start_minute;
-    config.work_end_hour = last.end_hour;
-    config.work_end_minute = last.end_minute;
-  }
-
-  function totalWorkSegmentMinutes(segments: WorkTimeSegment[]): number {
-    const ranges: [number, number][] = [];
-    for (const segment of segments) {
-      const start = segment.start_hour * 60 + segment.start_minute;
-      const end = segment.end_hour * 60 + segment.end_minute;
-      if (start === end) continue;
-      if (end > start) {
-        ranges.push([start, end]);
-      } else {
-        ranges.push([start, 24 * 60], [0, end]);
-      }
-    }
-    ranges.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
-
-    let total = 0;
-    let current: [number, number] | null = null;
-    for (const range of ranges) {
-      if (!current || range[0] > current[1]) {
-        if (current) total += current[1] - current[0];
-        current = [...range];
-      } else {
-        current[1] = Math.max(current[1], range[1]);
-      }
-    }
-    return total + (current ? current[1] - current[0] : 0);
-  }
-
-  $: workSegments = normalizeWorkSegments(config?.work_time_segments);
-
-  $: {
-    currentLocale;
-    const diffMinutes = totalWorkSegmentMinutes(workSegments);
-    const diffSeconds = diffMinutes * 60;
-    workHours = diffSeconds === 0 ? formatDurationLocalized(0) : formatDurationLocalized(diffSeconds);
-  }
-
-  function updateSegment(index: number, type: 'start' | 'end', value: string) {
-    const segments = normalizeWorkSegments(config.work_time_segments);
-    const target = { ...segments[index] };
-    const [hour, minute] = parseTimeInput(value);
-    if (type === 'start') {
-      target.start_hour = hour;
-      target.start_minute = minute;
-    } else {
-      target.end_hour = hour;
-      target.end_minute = minute;
-    }
-    segments[index] = normalizeSegment(target);
-    config.work_time_segments = segments;
-    syncLegacyWorkRange(segments);
-    dispatch('change', config);
-  }
-
-  function addWorkSegment() {
-    const segments = normalizeWorkSegments(config.work_time_segments);
-    if (segments.length >= MAX_WORK_SEGMENTS) return;
-
-    const last = segments[segments.length - 1];
-    const nextStartHour = normalizeHour(last?.end_hour ?? 9);
-    const nextStartMinute = normalizeMinute(last?.end_minute ?? 0);
-    const nextEndHour = (nextStartHour + 1) % 24;
-    const nextSegment = normalizeSegment({
-      start_hour: nextStartHour,
-      start_minute: nextStartMinute,
-      end_hour: nextEndHour,
-      end_minute: nextStartMinute,
-    });
-
-    segments.push(nextSegment);
-    config.work_time_segments = segments;
-    syncLegacyWorkRange(segments);
-    dispatch('change', config);
-  }
-
-  function removeWorkSegment(index: number) {
-    const segments = normalizeWorkSegments(config.work_time_segments);
-    if (segments.length <= 1) return;
-    segments.splice(index, 1);
-    config.work_time_segments = segments;
-    syncLegacyWorkRange(segments);
-    dispatch('change', config);
-  }
-
   function handleChange() {
     dispatch('change', config);
   }
 
-  async function toggleAutoStart() {
-    const targetState = !autoStartEnabled;
+  async function toggleAutoStart(targetState = !autoStartEnabled) {
+    autoStartBusy = true;
     try {
       if (targetState) {
         await invoke<void>('enable_autostart', { silent: !!config.auto_start_silent });
@@ -219,8 +84,9 @@
       }
       dispatch('change', config);
     } catch (e) {
-      console.error('重新校验开机自启状态失败:', e);
-    }
+      console.error('Autostartstatus kunde inte kontrolleras:', e);
+      autoStartEnabled = !targetState;
+    } finally { autoStartBusy = false; }
   }
 
   async function toggleDockIcon() {
@@ -260,82 +126,9 @@
   <h3 class="settings-card-title">{t('settingsGeneral.title')}</h3>
 
   <div class="settings-section">
-    <!-- 工作时段 -->
+    <!-- Aktivitetsgränser (kalendardygn) -->
     <div class="settings-block">
-      <div class="flex items-center justify-between">
-        <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span class="settings-text">{t('settingsGeneral.workTime')}</span>
-          {#if config.work_time_enabled}
-            <span class="settings-muted">{t('settingsGeneral.totalWorkHours', { duration: workHours })}</span>
-          {:else}
-            <span class="settings-muted">{t('settingsGeneral.workTimeDisabledHint')}</span>
-          {/if}
-        </div>
-        <button
-          type="button"
-          on:click={() => {
-            config.work_time_enabled = !config.work_time_enabled;
-            handleChange();
-          }}
-          class="switch-track {config.work_time_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-          role="switch"
-          aria-label={t('settingsGeneral.workTime')}
-          aria-checked={config.work_time_enabled}
-        >
-          <span class="switch-thumb {config.work_time_enabled ? 'translate-x-5' : 'translate-x-0'}"></span>
-        </button>
-      </div>
-
-      {#if config.work_time_enabled}
-      <div class="space-y-2.5">
-        {#each workSegments as segment, index}
-          <div class="flex flex-wrap items-center gap-2.5">
-            <span class="settings-subtle min-w-16">{t('settingsGeneral.segmentLabel', { index: index + 1 })}</span>
-            <div class="control-inline">
-              <span class="settings-subtle">{t('settingsGeneral.from')}</span>
-              <input
-                type="time"
-                aria-label={`${t('settingsGeneral.segmentLabel', { index: index + 1 })} ${t('settingsGeneral.from')}`}
-                value={segmentToTimeValue(segment.start_hour, segment.start_minute)}
-                on:change={(e) => updateSegment(index, 'start', e.currentTarget.value)}
-                class="w-24 bg-transparent text-sm font-mono text-slate-900 dark:text-[#e6edf3] focus:outline-none"
-              />
-            </div>
-
-            <span class="text-slate-400 dark:text-[#484f58]">—</span>
-
-            <div class="control-inline">
-              <span class="settings-subtle">{t('settingsGeneral.to')}</span>
-              <input
-                type="time"
-                aria-label={`${t('settingsGeneral.segmentLabel', { index: index + 1 })} ${t('settingsGeneral.to')}`}
-                value={segmentToTimeValue(segment.end_hour, segment.end_minute)}
-                on:change={(e) => updateSegment(index, 'end', e.currentTarget.value)}
-                class="w-24 bg-transparent text-sm font-mono text-slate-900 dark:text-[#e6edf3] focus:outline-none"
-              />
-            </div>
-
-            <button
-              type="button"
-              class="settings-action-secondary px-2.5 py-1.5 text-xs"
-              disabled={workSegments.length <= 1}
-              on:click={() => removeWorkSegment(index)}
-            >
-              {t('settingsGeneral.removeSegment')}
-            </button>
-          </div>
-        {/each}
-      </div>
-      <button
-        type="button"
-        class="settings-action-secondary mt-3 px-3 py-1.5 text-xs"
-        on:click={addWorkSegment}
-        disabled={workSegments.length >= MAX_WORK_SEGMENTS}
-      >
-        {t('settingsGeneral.addSegment')}
-      </button>
-      <p class="settings-note">{t('settingsGeneral.workTimeHint')}</p>
-      {/if}
+      <p class="settings-muted">All aktiv datortid loggas per kalenderdygn utan arbetspassgränser.</p>
 
       <!-- 高级工时设置（折叠） -->
       <CollapsibleSection title={t('settingsGeneral.advancedWorkSettings')} storageKey="settings.general.advancedWork">
@@ -425,22 +218,23 @@
           <span class="text-xs text-slate-500 dark:text-[#7d8590]">{t('settingsGeneral.hours')}</span>
         </div>
       </div>
-      <label class="flex items-center justify-between mt-3 cursor-pointer">
+      <label for="settingsgeneral-config-goal_notifications" class="flex items-center justify-between mt-3 cursor-pointer">
         <span class="settings-text text-sm">{t('settingsGeneral.workGoalNotifications')}</span>
-        <input type="checkbox" bind:checked={config.goal_notifications} on:change={handleChange} class="accent-primary-500" />
+        <UiCheckbox id="settingsgeneral-config-goal_notifications" bind:checked={config.goal_notifications} label={t('settingsGeneral.workGoalNotifications')} on:change={handleChange} />
       </label>
     </CollapsibleSection>
 
     <!-- AI 工作记忆 -->
     <CollapsibleSection title={t('settingsGeneral.memoryTitle')} storageKey="settings.general.memory">
-      <label class="flex items-center justify-between mt-3 cursor-pointer">
+      <label for="settingsgeneral-config-memory_enabled" class="flex items-center justify-between mt-3 cursor-pointer">
         <div>
           <span class="settings-text text-sm">{t('settingsGeneral.memoryEnabled')}</span>
           <p class="settings-muted mt-0.5">{t('settingsGeneral.memoryHint')}</p>
         </div>
-        <input type="checkbox" bind:checked={config.memory_enabled} on:change={handleChange} class="accent-primary-500" />
+        <UiCheckbox id="settingsgeneral-config-memory_enabled" bind:checked={config.memory_enabled} label={t('settingsGeneral.memoryEnabled')} on:change={handleChange} />
       </label>
     </CollapsibleSection>
+    {#if showAutoReport}
     <div class="settings-block pt-4 border-t border-slate-200 dark:border-[#30363d]">
       <div class="flex flex-wrap items-center gap-3">
         <span class="settings-text">{t('settingsGeneral.reportAutoGenerateTime')}</span>
@@ -471,75 +265,63 @@
       </div>
       <p class="settings-note">{t('settingsGeneral.reportAutoGenerateTimeHint')}</p>
     </div>
+    {/if}
 
     <!-- 系统行为 -->
     <div class="settings-block pt-4 border-t border-slate-200 dark:border-[#30363d]">
       <div class="space-y-2.5">
         <div class="settings-row">
           <span class="settings-text">{t('settingsGeneral.autoStart')}</span>
-          <button
-            type="button"
-            on:click={toggleAutoStart}
-            class="switch-track {autoStartEnabled ? 'bg-primary-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-            role="switch"
-            aria-label={t('settingsGeneral.autoStart')}
-            aria-checked={autoStartEnabled}
-          >
-            <span class="switch-thumb {autoStartEnabled ? 'translate-x-5' : 'translate-x-0'}"></span>
-          </button>
+          <UiSwitch bind:checked={autoStartEnabled} label={t('settingsGeneral.autoStart')} disabled={autoStartBusy} on:change={(e)=>toggleAutoStart(e.detail)} />
         </div>
 
         {#if autoStartEnabled}
-          <div class="ml-3 pl-3 border-l-2 border-primary-200/60 dark:border-primary-800/40">
+          <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-[#30363d] dark:bg-[#161b22]/40">
             <span class="settings-label">{t('settingsGeneral.autoStartLaunchMode')}</span>
-            <div class="mt-2 flex gap-2">
+            <div class="mt-2 flex flex-wrap gap-2">
               <button
                 type="button"
+                aria-pressed={!config.auto_start_silent}
                 on:click={() => updateAutoStartLaunchMode(false)}
-                class="segment-btn {config.auto_start_silent ? 'settings-segment-base' : 'settings-segment-active'}"
+                class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition {!config.auto_start_silent
+                  ? 'border-indigo-600 bg-indigo-50 font-semibold text-indigo-900 dark:border-indigo-500 dark:bg-indigo-950/40 dark:text-indigo-200'
+                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#8b949e]'}"
               >
-                {t('settingsGeneral.autoStartLaunchShow')}
+                <span class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border {!config.auto_start_silent ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 dark:border-[#484f58]'}" aria-hidden="true">
+                  {#if !config.auto_start_silent}<Check size={10} strokeWidth={2.5} />{/if}
+                </span>
+                <span>{t('settingsGeneral.autoStartLaunchShow')}</span>
               </button>
               <button
                 type="button"
+                aria-pressed={!!config.auto_start_silent}
                 on:click={() => updateAutoStartLaunchMode(true)}
-                class="segment-btn {config.auto_start_silent ? 'settings-segment-active' : 'settings-segment-base'}"
+                class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition {config.auto_start_silent
+                  ? 'border-indigo-600 bg-indigo-50 font-semibold text-indigo-900 dark:border-indigo-500 dark:bg-indigo-950/40 dark:text-indigo-200'
+                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-[#30363d] dark:bg-[#0d1117] dark:text-[#8b949e]'}"
               >
-                {t('settingsGeneral.autoStartLaunchSilent')}
+                <span class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border {config.auto_start_silent ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 dark:border-[#484f58]'}" aria-hidden="true">
+                  {#if config.auto_start_silent}<Check size={10} strokeWidth={2.5} />{/if}
+                </span>
+                <span>{t('settingsGeneral.autoStartLaunchSilent')}</span>
               </button>
             </div>
           </div>
         {/if}
 
+        {#if runtimePlatform === "macos"}
         <div class="settings-row">
           <span class="settings-text">{t('settingsGeneral.hideDockIcon')}</span>
-          <button
-            type="button"
-            on:click={toggleDockIcon}
-            class="switch-track {config.hide_dock_icon ? 'bg-primary-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-            role="switch"
-            aria-label={t('settingsGeneral.hideDockIcon')}
-            aria-checked={config.hide_dock_icon}
-          >
-            <span class="switch-thumb {config.hide_dock_icon ? 'translate-x-5' : 'translate-x-0'}"></span>
-          </button>
+          <UiSwitch bind:checked={config.hide_dock_icon} label={t('settingsGeneral.hideDockIcon')}  on:change={async()=>{ await invoke("set_dock_visibility",{visible:!config.hide_dock_icon}); handleChange(); }} />
         </div>
+        {/if}
 
         <div class="settings-row">
           <div>
             <span class="settings-text">{t('settingsGeneral.lightweightMode')}</span>
             <p class="settings-muted mt-0.5">{t('settingsGeneral.lightweightModeDescription')}</p>
           </div>
-          <button
-            type="button"
-            on:click={toggleLightweightMode}
-            class="switch-track {config.lightweight_mode ? 'bg-primary-500' : 'bg-slate-300 dark:bg-[#484f58]'}"
-            role="switch"
-            aria-label={t('settingsGeneral.lightweightMode')}
-            aria-checked={config.lightweight_mode}
-          >
-            <span class="switch-thumb {config.lightweight_mode ? 'translate-x-5' : 'translate-x-0'}"></span>
-          </button>
+          <UiSwitch bind:checked={config.lightweight_mode} label={t('settingsGeneral.lightweightMode')}  on:change={handleChange} />
         </div>
       </div>
     </div>

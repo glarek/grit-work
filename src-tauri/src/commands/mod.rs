@@ -11,6 +11,7 @@ mod assistant_history;
 mod avatar;
 mod category;
 mod config;
+pub(crate) mod grit_read;
 mod integration;
 mod memory;
 mod recording;

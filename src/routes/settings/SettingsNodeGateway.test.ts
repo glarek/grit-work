@@ -2,22 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-test('设置页应提供节点 Beta 标签并在设置工作台内渲染节点组件', async () => {
+test('设置页已精简为 Grit Work 同步设置，不再挂载节点 Beta 标签', async () => {
   const source = await readFile(new URL('./Settings.svelte', import.meta.url), 'utf8');
 
-  assert.match(source, /import SettingsNodeGateway from '\.\/components\/SettingsNodeGateway\.svelte'/);
-  assert.match(source, /id:\s*'node'/);
-  assert.match(source, /labelKey:\s*'settings\.tabs\.node'/);
-  assert.match(source, /beta:\s*true/);
-  assert.match(source, /t\('settings\.tabs\.beta'\)/);
-  assert.match(source, /activeTab === 'node'/);
-  assert.match(source, /<SettingsNodeGateway bind:config/);
-
-  const storageTabIndex = source.indexOf("id: 'storage'");
-  const nodeTabIndex = source.indexOf("id: 'node'");
-  assert.notEqual(storageTabIndex, -1);
-  assert.notEqual(nodeTabIndex, -1);
-  assert.ok(nodeTabIndex > storageTabIndex, '节点标签应位于存储标签之后');
+  assert.match(source, /import GritSettings from '\.\.\/grit\/GritSettings\.svelte'/);
+  assert.match(source, /id:\s*'ai'/);
+  assert.match(source, /id:\s*'spiris'/);
+  assert.match(source, /id:\s*'capture'/);
+  assert.doesNotMatch(source, /id:\s*'node'/);
+  assert.doesNotMatch(source, /<SettingsNodeGateway/);
 });
 
 test('节点设置组件应复用设置页配置对象并读取节点与本地 API 状态', async () => {

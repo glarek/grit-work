@@ -7,7 +7,8 @@ test('概览页应渲染总编台式分区布局', async () => {
 
   assert.match(source, /overview-editorial-shell/);
   assert.match(source, /overview-lead-card/);
-  assert.match(source, /overview-summary-grid/);
+  assert.match(source, /<DashboardSummary/);
+  assert.match(source, /<DashboardProjects/);
   assert.match(source, /overview-command-deck/);
   assert.match(source, /overview-section-grid/);
   assert.match(source, /overview-section-card/);

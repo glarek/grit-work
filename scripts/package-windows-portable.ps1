@@ -1,19 +1,37 @@
-#Requires -Version 7.0
+﻿#Requires -Version 5.1
 param([Parameter(Mandatory)][string]$Executable)
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $exe = Get-Item -LiteralPath $Executable
-if ($exe.PSIsContainer -or $exe.Name -ne 'Work_Review.exe') {
-    throw 'Expected the built Work_Review.exe.'
+if ($exe.PSIsContainer -or $exe.Name -notin @('grit-work.exe', 'Work_Review.exe')) {
+    throw 'Expected the built grit-work.exe or Work_Review.exe.'
 }
-$archive = Join-Path $exe.DirectoryName 'Work_Review_portable_x64.zip'
+$archive = Join-Path $exe.DirectoryName ($exe.BaseName + '_portable_x64.zip')
 $staging = Join-Path ([IO.Path]::GetTempPath()) ('work-review-portable-package-' + [guid]::NewGuid().ToString('N'))
 $temporaryArchive = $staging + '.zip'
 [void][IO.Directory]::CreateDirectory($staging)
 try {
     # 只复制构建的 EXE，绝不打包程序旁已有的用户 Data。
-    Copy-Item -LiteralPath $exe.FullName -Destination (Join-Path $staging 'Work_Review.exe')
+    Copy-Item -LiteralPath $exe.FullName -Destination (Join-Path $staging $exe.Name)
+    foreach ($name in @('install-ocr-languages.ps1', 'setup-ocr.cmd')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot ('..\src-tauri\windows\' + $name)) -Destination (Join-Path $staging $name)
+    }
     [void][IO.Directory]::CreateDirectory((Join-Path $staging 'Data'))
-    @'
+    $readme = @'
+GRIT Work OCR setup / OCR-språk
+
+Kör setup-ocr.cmd före första starten på en ny dator. Svenska (sv-SE) och engelska
+(en-US) installeras via Windows Update. Saknade språk kräver internet och
+administratörsgodkännande. Starta om Windows om installationen begär det.
+Dina valda visningsspråk och tangentbord ändras inte. OCR-språken delas med andra appar
+och tas inte bort när den här portabla mappen tas bort.
+
+Run setup-ocr.cmd before first use on a new PC. It installs Swedish (sv-SE) and
+English (en-US) OCR through Windows Update. Missing languages need internet and
+administrator approval. Restart Windows if requested. Existing OCR languages are
+reused; display language and keyboard settings are unchanged. These Windows
+components remain installed when the portable folder is removed.
+
 Work Review 便携版 / Portable edition
 
 - 解压整个 ZIP 到可写目录，双击 Work_Review.exe。需要 Microsoft Edge WebView2 Runtime。
@@ -33,16 +51,23 @@ Data may contain API keys: never share it publicly. An unwritable Data directory
 For updates, download the new portable ZIP and replace the EXE after exiting; preserve your Data.
 Do not use the installer to upgrade the portable app. Removing Data restores this PC's normal mode.
 WebView2 cache, autostart registration and external export destinations remain system-managed.
-'@ | Set-Content -LiteralPath (Join-Path $staging 'PORTABLE_README.txt') -Encoding utf8NoBOM
+'@
+    [IO.File]::WriteAllText((Join-Path $staging 'PORTABLE_README.txt'), $readme.Replace('Work_Review.exe', $exe.Name), [Text.UTF8Encoding]::new($false))
     [IO.Compression.ZipFile]::CreateFromDirectory($staging, $temporaryArchive)
-    $zip = [IO.Compression.ZipFile]::OpenRead($temporaryArchive)
+    $zip = [IO.Compression.ZipFile]::Open($temporaryArchive, [IO.Compression.ZipArchiveMode]::Update)
     try {
+        # Windows PowerShell's .NET Framework may emit a backslash for empty directories.
+        $legacyDirectory = $zip.GetEntry('Data\')
+        if ($null -ne $legacyDirectory) {
+            $legacyDirectory.Delete()
+            [void]$zip.CreateEntry('Data/')
+        }
         $entries = @($zip.Entries | ForEach-Object FullName | Sort-Object)
-        $expected = @('Data/', 'PORTABLE_README.txt', 'Work_Review.exe') | Sort-Object
+        $expected = @('Data/', 'PORTABLE_README.txt', $exe.Name, 'install-ocr-languages.ps1', 'setup-ocr.cmd') | Sort-Object
         if (@(Compare-Object $expected $entries).Count -ne 0) {
             throw ('Portable archive entries do not match: ' + ($entries -join ', '))
         }
-        if ($zip.GetEntry('Work_Review.exe').Length -ne $exe.Length) {
+        if ($zip.GetEntry($exe.Name).Length -ne $exe.Length) {
             throw 'Portable executable size did not verify.'
         }
     } finally {
