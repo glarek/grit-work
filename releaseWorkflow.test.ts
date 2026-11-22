@@ -52,9 +52,9 @@ test('RC releases use prerelease metadata and cannot replace the stable latest r
   assert.ok(source.includes("prerelease: ${{ contains(github.ref_name, '-rc.') }}"));
   assert.ok(source.includes("makeLatest: ${{ contains(github.ref_name, '-rc.') && 'false' || 'legacy' }}"));
   const config = JSON.parse(readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-  for (const endpoint of config.plugins.updater.endpoints) {
-    assert.ok(endpoint.includes('/releases/latest/download/'));
-  }
+  assert.match(Buffer.from(config.plugins.updater.pubkey, 'base64').toString(), /minisign public key: 189328164577D037/);
+  assert.equal(config.plugins.updater.windows.installMode, 'passive');
+  assert.equal(config.bundle.createUpdaterArtifacts, false);
 });
 
 test('官方 Actions 应使用 Node 24 运行时版本', () => {
@@ -127,7 +127,8 @@ test('Windows 便携包应在独立暂存目录打包空Data并校验ZIP内容',
   assert.match(script, /CreateDirectory\(\(Join-Path \$staging 'Data'\)\)/);
   assert.match(script, /Copy-Item -LiteralPath \$exe\.FullName/);
   assert.match(script, /CreateFromDirectory\(\$staging, \$temporaryArchive\)/);
-  assert.match(script, /'Data\/', 'PORTABLE_README\.txt', 'Work_Review\.exe'/);
+  assert.match(script, /\$exe\.Name -notin @\('grit-work\.exe', 'Work_Review\.exe'\)/);
+  assert.match(script, /'Data\/', 'PORTABLE_README\.txt', \$exe\.Name, 'install-ocr-languages\.ps1', 'setup-ocr\.cmd'/);
   assert.match(script, /Compare-Object \$expected \$entries/);
   assert.doesNotMatch(script, /Copy-Item[^\n]*-Recurse/);
   assert.ok(script.indexOf('Move-Item -LiteralPath $temporaryArchive') > script.indexOf('Compare-Object $expected $entries'));

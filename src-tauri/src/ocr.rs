@@ -1408,14 +1408,14 @@ fn append_unique_clean_lines(
         if trimmed.is_empty() {
             continue;
         }
-        let normalized = trimmed.to_lowercase();
+        let normalized = trimmed.to_string();
         if seen.insert(normalized) {
             merged_lines.push(trimmed.to_string());
         }
     }
 }
 
-/// 清理 OCR 文本（剔除乱码、Markdown 符号等）
+/// Normalize line whitespace and exact duplicate lines without deleting Unicode evidence.
 pub fn clean_ocr_text(text: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1423,13 +1423,13 @@ pub fn clean_ocr_text(text: &str) -> String {
     for line in text.lines() {
         let cleaned = clean_line(line);
 
-        // 跳过空行或太短的行（可能是乱码）。按字符数判断，避免单字中文（3 字节）漏过。
-        if cleaned.chars().count() < 2 {
+        // A single letter, digit or engineering symbol can be meaningful evidence.
+        if cleaned.is_empty() {
             continue;
         }
 
         // 跳过重复行
-        let normalized = cleaned.to_lowercase();
+        let normalized = cleaned.clone();
         if seen.contains(&normalized) {
             continue;
         }
@@ -1446,8 +1446,8 @@ fn clean_line(line: &str) -> String {
     let mut result = String::new();
 
     for c in line.chars() {
-        // 只保留：中文、英文、数字、常用标点
-        if is_valid_char(c) {
+        // Preserve all Unicode scripts, combining marks, symbols and emoji.
+        if !c.is_control() && !c.is_whitespace() {
             result.push(c);
         } else if c.is_whitespace() {
             // 空格保留，但连续空格合并
@@ -1458,60 +1458,6 @@ fn clean_line(line: &str) -> String {
     }
 
     result.trim().to_string()
-}
-
-/// 判断字符是否有效（中英文、数字、常用标点、代码/URL 符号、日韩文）
-fn is_valid_char(c: char) -> bool {
-    // CJK 中文（基本区 + 扩展 A）
-    if ('\u{4e00}'..='\u{9fff}').contains(&c) || ('\u{3400}'..='\u{4dbf}').contains(&c) {
-        return true;
-    }
-    // 日文假名（平假名 / 片假名）
-    if ('\u{3040}'..='\u{30ff}').contains(&c) {
-        return true;
-    }
-    // 韩文音节
-    if ('\u{ac00}'..='\u{d7af}').contains(&c) {
-        return true;
-    }
-    // 英文字母、数字
-    if c.is_ascii_alphanumeric() {
-        return true;
-    }
-    // 代码 / URL / 文件路径常用符号：OCR 屏幕上的代码、终端、URL 不应被这些符号破坏
-    if matches!(
-        c,
-        '/' | '\\'
-            | '*'
-            | '+'
-            | '='
-            | '<'
-            | '>'
-            | '#'
-            | '@'
-            | '$'
-            | '%'
-            | '^'
-            | '&'
-            | '|'
-            | '`'
-            | '~'
-            | '{'
-            | '}'
-            | '['
-            | ']'
-            | '_'
-            | '-'
-    ) {
-        return true;
-    }
-    // 常用标点（中英文）
-    let punctuation: [char; 30] = [
-        '，', '。', '！', '？', '、', '；', '：', '\u{201c}', '\u{201d}', '\u{2018}', '\u{2019}',
-        '（', '）', '【', '】', '「', '」', '《', '》', '-', '—', '·', '.', ',', ':', ';', '!',
-        '?', '(', ')',
-    ];
-    punctuation.contains(&c)
 }
 
 /// 过滤敏感信息
@@ -2058,5 +2004,45 @@ printf '%s\n' '{"text":"single","boxes":[],"confidence":0.9}'
         assert_eq!(second_start_count, 2);
         assert_eq!(second_det_model, "PP-OCRv5_mobile_det");
         assert_eq!(second_rec_model, "PP-OCRv5_mobile_rec");
+    }
+}
+
+#[cfg(test)]
+mod unicode_robustness_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_preserves_swedish_engineering_symbols_and_case_sensitive_identifiers() {
+        for text in [
+            "ÅÄÖ åäö Räksmörgås",
+            "A\u{030a} a\u{0308} o\u{0308}",
+            "Ø12 ⌀16 ±0,5 mm × 230 V ≤ 3 % ≥ 20 °C µ Ω",
+            "👷🏽‍♀️ 🧑‍💻 🇸🇪",
+            "العربية עברית Ελληνικά Кириллица",
+            "\"åäö\" 'citat'",
+            "A",
+            "Ω",
+            "A-101\na-101",
+        ] {
+            assert_eq!(clean_ocr_text(text), text);
+            assert_eq!(filter_sensitive_text(text), text);
+        }
+    }
+
+    #[test]
+    fn cleanup_never_panics_on_unicode_and_keeps_privacy_redaction() {
+        let corpus: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../tests/fixtures/ocr-text-corpus.json"))
+                .unwrap();
+        for case in corpus {
+            let cleaned = filter_sensitive_text(case["text"].as_str().unwrap());
+            assert!(!cleaned.contains('\0'));
+        }
+        let filtered = filter_sensitive_text(
+            "Årsrapport synthetic@example.test lösenord password=synthetic-only",
+        );
+        assert!(filtered.contains("Årsrapport"));
+        assert!(!filtered.contains("synthetic@example.test"));
+        assert!(!filtered.contains("synthetic-only"));
     }
 }

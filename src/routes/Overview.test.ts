@@ -105,26 +105,25 @@ test('常驻网站应按需加载完整摘要并在卡片内展开，同时保�
   assert.match(source, /const availableDomains = expandedDomainUsageItems\.length > 0/);
   assert.match(source, /browser_sources: item\.browser_sources/);
   assert.match(source, /stats\?\.domain_total_count \|\| availableDomains\.length/);
-  assert.match(source, /use:trapFocus/);
-  assert.match(source, /aria-labelledby="overview-domain-overlay-title"/);
-  assert.match(source, /id="overview-domain-overlay-title"/);
+  assert.match(source, /<UiDialog/);
+  assert.match(source, /bind:open=\{domainOverlayOpen\}/);
+  assert.match(source, /dismissible=\{!editingDomainKey\}/);
   assert.match(source, /bind:this=\{domainOverlayDialog\}/);
   assert.match(source, /function focusDomainOverlayView\(\)/);
   assert.match(source, /domainOverlayDialog\?\.querySelector(?:<[^>]+>)?\('\[data-domain-summary\]'\)/);
   assert.match(source, /bind:this=\{domainOverlayBackButton\}/);
   assert.match(source, /data-domain-summary/);
-  assert.match(source, /on:click\|self=\{closeDomainOverlay\}/);
 });
 
-test('概览总时长 KPI 应使用紧凑格式并保持单行', async () => {
-  const [overviewSource, statsCardSource] = await Promise.all([
+test('Dashboard shows compact durations from the collected activity', async () => {
+  const [overview, summary] = await Promise.all([
     readFile(new URL('./Overview.svelte', import.meta.url), 'utf8'),
-    readFile(new URL('../lib/components/StatsCard.svelte', import.meta.url), 'utf8'),
+    readFile(new URL('../lib/components/DashboardSummary.svelte', import.meta.url), 'utf8'),
   ]);
-
-  assert.match(overviewSource, /formatDurationLocalized\(stats\.total_duration, \{ compact: true \}\)/);
-  assert.match(overviewSource, /formatDurationLocalized\(stats\.work_time_duration \|\| 0, \{ compact: true \}\)/);
-  assert.match(statsCardSource, /whitespace-nowrap text-\[1\.9rem\]/);
+  assert.match(overview, /duration=\{stats\?\.total_duration \?\? 0\}/);
+  assert.match(overview, /browserDuration=\{stats\?\.browser_duration \?\? 0\}/);
+  assert.match(summary, /formatDurationLocalized\(duration, \{ compact: true \}\)/);
+  assert.match(summary, /formatDurationLocalized\(browserDuration, \{ compact: true \}\)/);
 });
 
 test('小时应用明细只应接受最后一次日期范围请求的结果', async () => {
@@ -213,7 +212,7 @@ test('概览改版应提供可选择的分类构成条、分类摘要与按天�
   }
 
   assert.match(source, /invoke(?:<[^>]+>)?\('get_range_daily_totals'/);
-  assert.match(source, /\{#if overviewMode !== 'today'\}/);
+  assert.match(source, /overviewMode === 'week' \|\| \(overviewMode === 'date' && selectedDateFrom !== selectedDateTo\)/);
   assert.match(source, /overview\.dailyInvest/);
   assert.match(source, /overview\.heaviestDay/);
 });
@@ -375,7 +374,8 @@ test('概览页未识别页面域名标题应走 i18n 文案而不是直接渲�
   const source = await readFile(new URL('./Overview.svelte', import.meta.url), 'utf8');
 
   assert.match(source, /function getBrowserDomainDisplayLabel\(domain(?:\s*:[^)]+)?\)/);
-  assert.match(source, /isUnresolvedBrowserDomain\(domain\) \? t\('overview\.unresolvedPage'\) : domain\.domain/);
+  assert.match(source, /raw === 'unknown'/);
+  assert.match(source, /isUnresolvedBrowserDomain\(domain\) \? 'Okänd sida' : domain\.domain/);
   assert.match(source, /\{getBrowserDomainDisplayLabel\(domain\)\}/);
   assert.doesNotMatch(
     source,

@@ -1,0 +1,18 @@
+# Build the repository first with npm run tauri:build -- --no-bundle.
+pkgname=grit-work
+pkgver=1.1.4.rc2
+pkgrel=1
+pkgdesc='Grit Work preview: local activity evidence and reviewed Spiris time reports'
+arch=('x86_64')
+url='https://github.com/glarek/grit-work'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator')
+optdepends=('gnome-keyring: OS credential storage' 'grim: Wayland screenshots' 'imagemagick: X11 screenshots' 'xdotool: X11 window activity' 'xorg-xrandr: X11 monitor selection' 'tesseract: OCR')
+options=('!strip')
+package() {
+  local repo_root="$startdir/../.."
+  install -Dm755 "$repo_root/target/release/grit-work" "$pkgdir/usr/bin/grit-work"
+  install -Dm644 "$startdir/grit-work.desktop" "$pkgdir/usr/share/applications/grit-work.desktop"
+  install -Dm644 "$repo_root/src-tauri/icons/256x256.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/grit-work.png"
+  install -Dm644 "$repo_root/LICENSE" "$pkgdir/usr/share/licenses/grit-work/LICENSE"
+}

@@ -11,10 +11,10 @@ test('设置页应接入编辑部风格壳层并强化保存操作区', async ()
   assert.match(settingsSource, /settings-editorial-shell/);
   assert.match(settingsSource, /settings-editorial-board/);
   assert.match(settingsSource, /settings-stage-layout/);
-  assert.match(settingsSource, /<nav class="settings-tab-rail" aria-label=\{t\('settings\.title'\)\}>/);
+  assert.match(settingsSource, /<nav class="settings-tab-rail\b[^"]*" aria-label=\{t\('settings\.title'\)\}>/);
   assert.match(settingsSource, /aria-current=\{activeTab === tab\.id \? 'page' : undefined\}/);
   assert.match(settingsSource, /settings-stage-shell/);
-  assert.match(settingsSource, /settings-ai-shell/);
+  assert.match(settingsSource, /<GritSettings/);
   assert.match(settingsSource, /settings-save-dock/);
   assert.doesNotMatch(settingsSource, /<div class="page-card">[\s\S]*<SettingsAI/);
   assert.doesNotMatch(settingsSource, /settings-summary-grid/);

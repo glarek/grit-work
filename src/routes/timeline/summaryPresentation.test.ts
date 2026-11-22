@@ -24,11 +24,11 @@ test('小时摘要外部载荷应拒绝非数组和字段类型漂移', () => {
   assert.deepEqual(parseHourlySummaryRecords([valid]), [valid]);
   assert.throws(
     () => parseHourlySummaryRecords({ records: [valid] }),
-    /小时摘要载荷格式无效/
+    /Timsammanfattningen har ett ogiltigt format/
   );
   assert.throws(
     () => parseHourlySummaryRecords([{ ...valid, hour: '9' }]),
-    /小时摘要载荷格式无效/
+    /Timsammanfattningen har ett ogiltigt format/
   );
 });
 

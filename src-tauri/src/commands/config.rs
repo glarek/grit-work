@@ -617,7 +617,7 @@ pub async fn open_data_dir(state: State<'_, Arc<Mutex<AppState>>>) -> Result<(),
     // 目录不存在时先创建，避免打开失败
     if !data_dir.exists() {
         std::fs::create_dir_all(&data_dir)
-            .map_err(|e| AppError::Unknown(format!("创建数据目录失败: {e}")))?;
+            .map_err(|e| AppError::Unknown(format!("Kunde inte skapa datamappen: {e}")))?;
     }
 
     #[cfg(target_os = "macos")]
@@ -625,7 +625,7 @@ pub async fn open_data_dir(state: State<'_, Arc<Mutex<AppState>>>) -> Result<(),
         std::process::Command::new("open")
             .arg(&data_dir)
             .spawn()
-            .map_err(|e| AppError::Unknown(format!("打开数据目录失败: {e}")))?;
+            .map_err(|e| AppError::Unknown(format!("Kunde inte öppna datamappen: {e}")))?;
     }
 
     #[cfg(target_os = "windows")]
@@ -633,7 +633,7 @@ pub async fn open_data_dir(state: State<'_, Arc<Mutex<AppState>>>) -> Result<(),
         std::process::Command::new("explorer")
             .arg(&data_dir)
             .spawn()
-            .map_err(|e| AppError::Unknown(format!("打开数据目录失败: {e}")))?;
+            .map_err(|e| AppError::Unknown(format!("Kunde inte öppna datamappen: {e}")))?;
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -641,7 +641,47 @@ pub async fn open_data_dir(state: State<'_, Arc<Mutex<AppState>>>) -> Result<(),
         std::process::Command::new("xdg-open")
             .arg(&data_dir)
             .spawn()
-            .map_err(|e| AppError::Unknown(format!("打开数据目录失败: {e}")))?;
+            .map_err(|e| AppError::Unknown(format!("Kunde inte öppna datamappen: {e}")))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_screenshots_dir(state: State<'_, Arc<Mutex<AppState>>>) -> Result<(), AppError> {
+    let data_dir = {
+        let state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
+        state.data_dir.join("screenshots")
+    };
+
+    // 目录不存在时先创建，避免打开失败
+    if !data_dir.exists() {
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|e| AppError::Unknown(format!("Kunde inte skapa datamappen: {e}")))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&data_dir)
+            .spawn()
+            .map_err(|e| AppError::Unknown(format!("Kunde inte öppna datamappen: {e}")))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&data_dir)
+            .spawn()
+            .map_err(|e| AppError::Unknown(format!("Kunde inte öppna datamappen: {e}")))?;
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&data_dir)
+            .spawn()
+            .map_err(|e| AppError::Unknown(format!("Kunde inte öppna datamappen: {e}")))?;
     }
 
     Ok(())

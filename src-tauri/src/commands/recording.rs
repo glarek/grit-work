@@ -28,6 +28,7 @@ pub async fn resume_recording(
     let mut state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
     state.is_recording = true;
     state.is_paused = false;
+    crate::grit::capture_resumed(&state.data_dir);
     log::info!("恢复录制");
     drop(state);
     crate::emit_recording_state_changed(&app);

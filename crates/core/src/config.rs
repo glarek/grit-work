@@ -6,12 +6,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_locale() -> String {
-    "zh-CN".to_string()
+    "sv-SE".to_string()
 }
 
 /// AI 提供商类型
@@ -370,8 +366,8 @@ pub struct WebsiteSemanticRule {
     pub semantic_category: String,
 }
 
-/// 隐私配置
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Legacy capture rules retained for data compatibility; GRIT clears them on normalization.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PrivacyConfig {
     /// 应用隐私规则列表
     #[serde(default)]
@@ -382,45 +378,13 @@ pub struct PrivacyConfig {
     /// URL 域名黑名单（匹配时完全忽略，不记录）
     #[serde(default)]
     pub excluded_domains: Vec<String>,
-    /// 已弃用：敏感词过滤始终启用，此字段仅保留反序列化兼容
-    #[serde(default = "default_true")]
+    /// Legacy field; defaults off under the current GRIT capture policy.
+    #[serde(default)]
     pub filter_sensitive: bool,
 
     // 兼容旧版
     #[serde(default)]
     pub excluded_apps: Vec<String>,
-}
-
-impl Default for PrivacyConfig {
-    fn default() -> Self {
-        Self {
-            app_rules: vec![
-                AppPrivacyRule {
-                    app_name: "1Password".to_string(),
-                    level: PrivacyLevel::Ignored,
-                },
-                AppPrivacyRule {
-                    app_name: "Bitwarden".to_string(),
-                    level: PrivacyLevel::Ignored,
-                },
-                AppPrivacyRule {
-                    app_name: "Keychain".to_string(),
-                    level: PrivacyLevel::Ignored,
-                },
-            ],
-            excluded_keywords: vec![
-                "bank".to_string(),
-                "login".to_string(),
-                "password".to_string(),
-                "密码".to_string(),
-                "银行".to_string(),
-                "支付".to_string(),
-            ],
-            excluded_domains: vec![], // 默认无域名黑名单
-            filter_sensitive: true,   // 已弃用，保留兼容
-            excluded_apps: vec![],
-        }
-    }
 }
 
 impl PrivacyConfig {
@@ -495,27 +459,19 @@ impl PrivacyConfig {
         domain.ends_with(&format!(".{pattern}"))
     }
 
-    /// 迁移旧版 excluded_apps 到 app_rules
+    /// Drop every configured collection exception. Does not log the removed values.
     pub fn migrate_legacy_excluded_apps(&mut self) -> bool {
-        if self.excluded_apps.is_empty() {
-            return false;
-        }
-        let existing_names: std::collections::HashSet<String> = self
-            .app_rules
-            .iter()
-            .map(|r| r.app_name.to_lowercase())
-            .collect();
-        let mut migrated = false;
-        for app in self.excluded_apps.drain(..) {
-            if !existing_names.contains(&app.to_lowercase()) {
-                self.app_rules.push(AppPrivacyRule {
-                    app_name: app,
-                    level: PrivacyLevel::Ignored,
-                });
-                migrated = true;
-            }
-        }
-        migrated
+        let had = !self.excluded_apps.is_empty()
+            || !self.app_rules.is_empty()
+            || !self.excluded_keywords.is_empty()
+            || !self.excluded_domains.is_empty()
+            || self.filter_sensitive;
+        self.excluded_apps.clear();
+        self.app_rules.clear();
+        self.excluded_keywords.clear();
+        self.excluded_domains.clear();
+        self.filter_sensitive = false;
+        had
     }
 
     /// 收集所有应忽略的应用名（小写），包含 app_rules 和遗留 excluded_apps
@@ -594,6 +550,10 @@ pub struct StorageConfig {
     /// 截图宽度模式：auto 自适应屏幕，fixed 使用固定值
     #[serde(default)]
     pub screenshot_width_mode: ScreenshotWidthMode,
+    /// 0 means this file predates the native-resolution default. Missing JSON is 0.
+    /// 1 means 1280 and 1440 are explicit caps, not the old preset.
+    #[serde(default)]
+    pub resolution_policy: u8,
 }
 
 fn default_screenshots_enabled() -> bool {
@@ -608,10 +568,24 @@ impl Default for StorageConfig {
             metadata_cleanup_enabled: false,
             storage_limit_mb: 2048, // 默认2GB上限
             jpeg_quality: 85,       // 85%质量，更清晰
-            max_image_width: 1280,  // 最大宽度1280px
+            max_image_width: 0,     // 0 = behåll ursprunglig upplösning
             screenshots_enabled: true,
             screenshot_display_mode: ScreenshotDisplayMode::ActiveWindow,
-            screenshot_width_mode: ScreenshotWidthMode::Auto,
+            screenshot_width_mode: ScreenshotWidthMode::Fixed,
+            resolution_policy: 1,
+        }
+    }
+}
+
+impl StorageConfig {
+    /// `0` keeps the captured pixel size. `width_mode` is ignored for `0`.
+    /// Policy 0 migrates the old 1280 and 1440 presets to no limit. Policy 1 keeps them.
+    pub fn resolved_max_image_width(&self) -> u32 {
+        let _ = self.screenshot_width_mode;
+        if self.resolution_policy == 0 && matches!(self.max_image_width, 1280 | 1440) {
+            0
+        } else {
+            self.max_image_width
         }
     }
 }
@@ -1116,7 +1090,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub work_time_segments: Vec<WorkTimeSegment>,
     /// 是否启用工作时间过滤。关闭后所有活动都算"工作时间"，不再区分
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub work_time_enabled: bool,
     /// 每日标准工时（小时），用于计算加班时长。默认 8.0
     #[serde(default = "default_standard_work_hours")]
@@ -1291,7 +1265,7 @@ fn default_avatar_persona() -> String {
     "assistant".to_string()
 }
 fn default_ui_visual_style() -> String {
-    "c".to_string()
+    "a".to_string()
 }
 pub fn default_assistant_timeout_secs() -> u64 {
     120
@@ -1312,7 +1286,7 @@ fn normalize_positive_token(value: Option<u32>) -> Option<u32> {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            screenshot_interval: 30,
+            screenshot_interval: 300,
             locale: default_locale(),
             idle_threshold_minutes: default_idle_threshold_minutes(),
             ai_mode: AiMode::Local,
@@ -1366,11 +1340,11 @@ impl Default for AppConfig {
             mcp_server_enabled: false,
             node_devices: Vec::new(),
             node_gateway: NodeGatewayConfig::default(),
-            auto_start: false,
-            auto_start_silent: false,
+            auto_start: cfg!(windows),
+            auto_start_silent: cfg!(windows),
             macos_screen_capture_permission_prompted: false,
             last_app_version: None,
-            theme: "system".to_string(),
+            theme: "light".to_string(),
             ui_visual_style: default_ui_visual_style(),
             report_editor_font: String::new(),
             work_start_hour: 9,
@@ -1391,7 +1365,7 @@ impl Default for AppConfig {
                     end_minute: 0,
                 },
             ],
-            work_time_enabled: true,
+            work_time_enabled: false,
             standard_work_hours: default_standard_work_hours(),
             // 旧版兼容字段
             ai_provider: AiProviderConfig::default(),
@@ -1500,6 +1474,20 @@ impl AppConfig {
             &mut self.website_semantic_rules,
             &self.custom_semantic_categories,
         );
+        self.privacy.app_rules.clear();
+        self.privacy.excluded_keywords.clear();
+        self.privacy.excluded_domains.clear();
+        self.privacy.excluded_apps.clear();
+        self.privacy.filter_sensitive = false;
+        self.work_time_enabled = false;
+        self.storage.max_image_width = self.storage.resolved_max_image_width();
+        if self.storage.max_image_width == 0 {
+            self.storage.screenshot_width_mode = ScreenshotWidthMode::Fixed;
+        } else {
+            self.storage.max_image_width = self.storage.max_image_width.clamp(320, 16_384);
+            self.storage.screenshot_width_mode = ScreenshotWidthMode::Fixed;
+        }
+        self.storage.resolution_policy = 1;
         self.screenshot_interval = normalize_screenshot_interval(self.screenshot_interval);
         self.idle_threshold_minutes = normalize_idle_threshold_minutes(self.idle_threshold_minutes);
         self.ui_visual_style = normalize_ui_visual_style(&self.ui_visual_style);
@@ -1659,7 +1647,9 @@ impl AppConfig {
 
     /// 保存配置到文件
     pub fn save(&self, path: &Path) -> Result<()> {
-        let content = serde_json::to_vec_pretty(self)?;
+        let mut normalized = self.clone();
+        normalized.normalize();
+        let content = serde_json::to_vec_pretty(&normalized)?;
         let parent = config_parent(path);
         std::fs::create_dir_all(parent)?;
 
@@ -1737,27 +1727,14 @@ impl AppConfig {
         &self.vision_model.endpoint
     }
 
-    /// 获取有效的工作时间段列表
-    /// - work_time_enabled=false: 返回全天段 (0:00-23:59)，所有活动都算工作时间
-    /// - work_time_enabled=true + segments 非空: 使用自定义时间段
-    /// - work_time_enabled=true + segments 为空: 从旧字段构造一段
+    /// Kalenderdygn. Sparad arbetstid används inte för att filtrera insamling.
     pub fn effective_work_segments(&self) -> Vec<WorkTimeSegment> {
-        if !self.work_time_enabled {
-            return vec![WorkTimeSegment {
-                start_hour: 0,
-                start_minute: 0,
-                end_hour: 23,
-                end_minute: 59,
-            }];
-        }
-        if !self.work_time_segments.is_empty() {
-            return self.work_time_segments.clone();
-        }
+        let _ = self.work_time_enabled;
         vec![WorkTimeSegment {
-            start_hour: self.work_start_hour,
-            start_minute: self.work_start_minute,
-            end_hour: self.work_end_hour,
-            end_minute: self.work_end_minute,
+            start_hour: 0,
+            start_minute: 0,
+            end_hour: 23,
+            end_minute: 59,
         }]
     }
 
@@ -2141,7 +2118,7 @@ fn normalize_break_reminder_interval_minutes(value: u64) -> u64 {
 
 /// 截屏间隔最低 5 秒，防止配置值过小导致 CPU/磁盘占用过高
 fn normalize_screenshot_interval(value: u64) -> u64 {
-    value.clamp(5, 600)
+    value.clamp(5, 3600)
 }
 
 fn default_idle_threshold_minutes() -> u32 {
@@ -2173,8 +2150,9 @@ mod tests {
         normalize_app_category_rules, normalize_avatar_followups, normalize_avatar_opacity,
         normalize_avatar_persona, normalize_avatar_preset, normalize_avatar_scale,
         normalize_ui_visual_style, update_config_backup_with_sync, AiProvider, AppCategoryRule,
-        AppConfig, AvatarFollowupItem, ConfigLoadStatus, PendingConfigFile, RemoteStorageProvider,
-        ScreenshotDisplayMode, WebsiteSemanticRule, DEFAULT_LOCALHOST_API_PORT,
+        AppConfig, AppPrivacyRule, AvatarFollowupItem, ConfigLoadStatus, PendingConfigFile,
+        PrivacyLevel, RemoteStorageProvider, ScreenshotDisplayMode, ScreenshotWidthMode,
+        WebsiteSemanticRule, WorkTimeSegment, DEFAULT_LOCALHOST_API_PORT,
     };
     use std::io::{self, Write};
     use std::path::PathBuf;
@@ -2819,11 +2797,11 @@ mod tests {
         let config = AppConfig::default();
 
         assert_eq!(config.ui_visual_style, default_ui_visual_style());
-        assert_eq!(config.ui_visual_style, "c");
+        assert_eq!(config.ui_visual_style, "a");
         assert_eq!(normalize_ui_visual_style(" a "), "a");
         assert_eq!(normalize_ui_visual_style("B"), "b");
         assert_eq!(normalize_ui_visual_style("c"), "c");
-        assert_eq!(normalize_ui_visual_style("unknown"), "c");
+        assert_eq!(normalize_ui_visual_style("unknown"), "a");
     }
 
     #[test]
@@ -2895,10 +2873,16 @@ mod tests {
     }
 
     #[test]
-    fn 开机自启动默认应显示主界面() {
+    fn 开机自启动默认应在_windows_静默开启() {
         let config = AppConfig::default();
 
-        assert!(!config.auto_start_silent);
+        if cfg!(windows) {
+            assert!(config.auto_start);
+            assert!(config.auto_start_silent);
+        } else {
+            assert!(!config.auto_start);
+            assert!(!config.auto_start_silent);
+        }
     }
 
     #[test]
@@ -3105,5 +3089,77 @@ mod tests {
 
         assert_eq!(config.node_gateway.device_name, None);
         assert_eq!(config.node_gateway.device_name, None);
+    }
+
+    #[test]
+    fn legacy_capture_limits_and_exclusions_clear_without_keeping_content() {
+        let mut config = AppConfig::default();
+        config.work_time_enabled = true;
+        config.storage.resolution_policy = 0;
+        config.storage.screenshot_width_mode = ScreenshotWidthMode::Auto;
+        config.storage.max_image_width = 1440;
+        config.privacy.excluded_apps = vec!["SecretApp".into()];
+        config.privacy.excluded_domains = vec!["bank.example".into()];
+        config.privacy.excluded_keywords = vec!["password".into()];
+        config.privacy.app_rules.push(AppPrivacyRule {
+            app_name: "1Password".into(),
+            level: PrivacyLevel::Ignored,
+        });
+        config.normalize();
+        assert!(!config.work_time_enabled);
+        assert_eq!(
+            config.effective_work_segments(),
+            vec![WorkTimeSegment {
+                start_hour: 0,
+                start_minute: 0,
+                end_hour: 23,
+                end_minute: 59,
+            }]
+        );
+        assert_eq!(config.storage.max_image_width, 0);
+        assert_eq!(
+            config.storage.screenshot_width_mode,
+            ScreenshotWidthMode::Fixed
+        );
+        assert!(config.privacy.app_rules.is_empty());
+        assert!(config.privacy.excluded_apps.is_empty());
+        assert!(config.privacy.excluded_domains.is_empty());
+        assert!(config.privacy.excluded_keywords.is_empty());
+        config.storage.max_image_width = 1920;
+        config.storage.screenshot_width_mode = ScreenshotWidthMode::Auto;
+        config.normalize();
+        assert_eq!(config.storage.max_image_width, 1920);
+        assert_eq!(config.storage.resolution_policy, 1);
+        let mut chosen = AppConfig::default();
+        assert_eq!(chosen.storage.resolution_policy, 1);
+        chosen.storage.max_image_width = 1440;
+        chosen.normalize();
+        assert_eq!(chosen.storage.max_image_width, 1440);
+        chosen.storage.max_image_width = 1280;
+        chosen.normalize();
+        assert_eq!(chosen.storage.max_image_width, 1280);
+        let mut legacy = serde_json::to_value(AppConfig::default()).unwrap();
+        legacy["storage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("resolution_policy");
+        legacy["storage"]["max_image_width"] = serde_json::json!(1440);
+        legacy["storage"]["screenshot_width_mode"] = serde_json::json!("fixed");
+        let mut loaded: AppConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(loaded.storage.resolution_policy, 0);
+        loaded.normalize();
+        assert_eq!(loaded.storage.max_image_width, 0);
+        assert_eq!(loaded.storage.resolution_policy, 1);
+        let mut legacy_auto = serde_json::to_value(AppConfig::default()).unwrap();
+        legacy_auto["storage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("resolution_policy");
+        legacy_auto["storage"]["max_image_width"] = serde_json::json!(1280);
+        legacy_auto["storage"]["screenshot_width_mode"] = serde_json::json!("auto");
+        let mut loaded_auto: AppConfig = serde_json::from_value(legacy_auto).unwrap();
+        loaded_auto.normalize();
+        assert_eq!(loaded_auto.storage.max_image_width, 0);
+        assert_eq!(loaded_auto.storage.resolution_policy, 1);
     }
 }

@@ -2,62 +2,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-test('关于页应提供赞助支持按钮并展示微信与支付宝收款码', async () => {
+test('关于页应展示 Grit Work 仓库与上游 Work Review MIT 归属', async () => {
   const source = await readFile(new URL('./About.svelte', import.meta.url), 'utf8');
 
-  assert.match(source, /let isSponsorshipOpen = false;/);
-  assert.match(source, /about\.sponsorship/);
-  assert.match(source, /text-rose-500/);
-  assert.match(source, /about\.wechat/);
-  assert.match(source, /about\.alipay/);
-  assert.match(source, /docs\/sponsorship\/vx\.png/);
-  assert.match(source, /docs\/sponsorship\/zfb\.png/);
+  assert.match(source, /https:\/\/github\.com\/glarek\/grit-work/);
+  assert.match(source, /https:\/\/github\.com\/wm94i\/Work-Review/);
+  assert.match(source, /MIT-licens/);
+  assert.match(source, /<h1 class="about-brand-title">GRIT Work<\/h1>/);
+  assert.match(source, /ExternalLink/);
+  assert.doesNotMatch(source, /from 'lucide-svelte'[\s\S]*Github/);
 });
 
-test('关于页赞助弹层应保留完整交互，紧凑更新行应位于三个轻量操作之后', async () => {
+test('About offers a guarded portal update action', async () => {
   const source = await readFile(new URL('./About.svelte', import.meta.url), 'utf8');
-
-  assert.match(source, /about\.supportCopy/);
-  assert.match(source, /about\.supportCopy2/);
-  assert.doesNotMatch(source, /推荐微信扫码支持/);
-  assert.doesNotMatch(source, /也可以使用支付宝扫码/);
-  assert.match(source, /if \(event\.key !== 'Escape'\) return;/);
-  assert.match(source, /if \(isSponsorshipOpen\)/);
-  assert.doesNotMatch(source, /isUpdateDetailsOpen/);
-  assert.match(source, /on:click=\{\(\) => zoomedQr = wechatSponsorshipQr\}/);
-  assert.match(source, /on:click=\{\(\) => zoomedQr = alipaySponsorshipQr\}/);
-  assert.match(source, /<label class="about-auto-check">[\s\S]*type="checkbox"[\s\S]*t\('about\.autoCheckUpdate'\)/);
-  assert.match(source, /checked=\{autoCheckUpdate\}[\s\S]*toggleUpdateSetting\('autoCheck'\)/);
-  assert.match(source, /checked=\{includePrerelease\}[\s\S]*toggleUpdateSetting\('includePrerelease'\)/);
-  assert.ok(
-    source.indexOf("t('about.sponsorship')")
-      < source.indexOf("t('about.checkUpdates')"),
-    'GitHub、数据目录和赞助支持应先展示，检查更新只保留在下方紧凑行'
-  );
+  assert.match(source, /runUpdateFlow/);
+  assert.match(source, /disabled=\{updating\}/);
+  assert.match(source, /Sök uppdateringar/);
+  assert.match(source, /Pausa insamlingen/);
 });
 
-test('关于页应独立读取版本与更新设置，失败时不得伪造旧版本号', async () => {
+test('关于页应独立读取版本与平台诊断，失败时不得伪造旧版本号', async () => {
   const source = await readFile(new URL('./About.svelte', import.meta.url), 'utf8');
 
   assert.match(source, /typeof version === 'string' && version\.trim\(\) \? version : '--'/);
-  assert.match(source, /settings\?\.autoCheck \?\? true/);
+  assert.match(source, /get_runtime_platform/);
   assert.doesNotMatch(source, /appVersion = '1\.0\.0'/);
-  assert.ok(source.indexOf("console.error('获取版本失败:'") < source.indexOf("console.error('读取更新设置失败:'"));
 });
 
-test('测试版必须默认关闭并保存到独立更新设置，手动检查需确认下载', async () => {
-  const source = await readFile(new URL('./About.svelte', import.meta.url), 'utf8');
-  assert.match(source, /let includePrerelease = false;/);
-  assert.match(source, /settings\?\.includePrerelease \?\? false/);
-  assert.match(source, /settings\[key\] = !previous/);
-  assert.match(source, /await invoke\('save_update_settings', \{ settings \}\);\s*updateStatus = '';/);
-  assert.match(source, /else includePrerelease = previous/);
-  assert.match(source, /t\('about\.updateSettingsSaveFailed'\)/);
-  assert.match(source, /confirmBeforeDownload: true/);
-  assert.match(source, /t\('about\.includePrerelease'\)/);
-});
-
-test('关于页不应恢复 Linux 会话状态查询或 Wayland 详情卡片', async () => {
+test('关于页应保留数据目录入口且不恢复 Linux 会话状态查询', async () => {
   const source = await readFile(new URL('./About.svelte', import.meta.url), 'utf8');
 
   assert.match(source, /open_data_dir/);

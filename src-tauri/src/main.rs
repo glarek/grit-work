@@ -22,7 +22,13 @@ mod config_sync;
 mod data_dir;
 mod dingtalk_bot;
 mod feishu_bot;
+mod grit;
+mod grit_cli;
+mod grit_engine;
 mod idle_detector;
+mod image_interpretation;
+mod image_ocr;
+mod image_schedule;
 mod linux_session;
 mod localhost_api;
 mod monitor;
@@ -92,7 +98,7 @@ pub(crate) fn build_windows_window_icon() -> Option<tauri::image::Image<'static>
     ) {
         Ok(decoded) => {
             let decoded = if decoded.width() > 256 || decoded.height() > 256 {
-                decoded.resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+                decoded.resize_exact(256, 256, image::imageops::FilterType::Nearest)
             } else {
                 decoded
             };
@@ -272,29 +278,15 @@ fn tray_recording_toggle_action(is_recording: bool, is_paused: bool) -> Recordin
 }
 
 /// 托盘菜单文案的三语映射（后端独立于前端 i18n，因为托盘在 Rust 端构造）。
-fn tray_label(key: &str, locale: &str) -> &'static str {
-    match (key, locale) {
-        ("show", "en") => "Show Window",
-        ("show", "zh-TW") => "顯示視窗",
-        ("show", _) => "显示窗口",
-        ("quit", "en") => "Quit",
-        ("quit", "zh-TW") => "結束",
-        ("quit", _) => "退出",
-        ("lightweight", "en") => "Lightweight Mode",
-        ("lightweight", "zh-TW") => "輕量模式",
-        ("lightweight", _) => "轻量模式",
-        ("avatar", "en") => "Desktop Pet",
-        ("avatar", "zh-TW") => "桌寵",
-        ("avatar", _) => "桌宠",
-        ("recording_start", "en") => "Start Recording",
-        ("recording_start", "zh-TW") => "開始錄製",
-        ("recording_start", _) => "开始录制",
-        ("recording_pause", "en") => "Pause",
-        ("recording_pause", "zh-TW") => "暫停錄製",
-        ("recording_pause", _) => "暂停录制",
-        ("recording_resume", "en") => "Resume",
-        ("recording_resume", "zh-TW") => "恢復錄製",
-        ("recording_resume", _) => "恢复录制",
+fn tray_label(key: &str, _locale: &str) -> &'static str {
+    match key {
+        "show" => "Visa GRIT Work",
+        "quit" => "Avsluta",
+        "lightweight" => "Resurssnålt läge",
+        "avatar" => "Skrivbordsfigur",
+        "recording_start" => "Starta insamling",
+        "recording_pause" => "Pausa insamling",
+        "recording_resume" => "Återuppta insamling",
         _ => "",
     }
 }
@@ -345,23 +337,19 @@ pub(crate) fn refresh_tray_menu(app: &AppHandle) {
     let _ = tray_menu.quit.set_text(tray_label("quit", &locale));
 }
 
-/// 前端切换语言时同步到后端 config，并刷新托盘菜单文案
+/// Keep legacy callers compatible while enforcing the app's Swedish locale.
 #[tauri::command]
 async fn set_app_locale(
     locale: String,
     app: AppHandle,
     state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<(), work_review_core::error::AppError> {
-    let normalized = match locale.as_str() {
-        v if v.starts_with("en") => "en",
-        "zh-TW" | "zh-HK" => "zh-TW",
-        _ => "zh-CN",
-    };
+    let _ = locale;
     let config = {
         let mut s = state
             .lock()
             .map_err(|e| work_review_core::error::AppError::Unknown(e.to_string()))?;
-        s.config.locale = normalized.to_string();
+        s.config.locale = "sv-SE".to_string();
         s.config.clone()
     };
     commands::persist_app_config(config, app.clone(), state.inner())?;
@@ -1342,6 +1330,10 @@ fn reset_recording_session(
     overlay_sessions.clear();
 }
 
+fn legacy_capture_ocr_enabled() -> bool {
+    false
+}
+
 fn should_run_ocr(elapsed_since_ocr: Option<Duration>, screenshot_interval: u64) -> bool {
     match elapsed_since_ocr {
         None => true,
@@ -1821,7 +1813,7 @@ async fn background_avatar_task(state: Arc<Mutex<AppState>>, app: AppHandle) {
                             avatar_engine::emit_avatar_bubble(
                                 &app,
                                 &avatar_engine::AvatarBubblePayload::success(
-                                    "🎉 今日工作目标达成！继续保持！",
+                                    "Dagens arbetsmål är uppnått.",
                                 ),
                             );
                             goal_celebrated_date = today;
@@ -2104,22 +2096,23 @@ async fn capture_screenshot_for_window(
     active_window: &monitor::ActiveWindow,
     sample: activity_clock::Sample,
 ) -> work_review_core::error::Result<ScreenshotResult> {
-    let screenshot_service = {
+    let (screenshot_service, privacy_config) = {
         let state_guard = state.lock().unwrap_or_else(|e| e.into_inner());
-        state_guard.screenshot_service.clone()
+        (
+            state_guard.screenshot_service.clone(),
+            state_guard.config.privacy.clone(),
+        )
     };
     let active_window = active_window.clone();
     let result = tokio::task::spawn_blocking(move || {
-        screenshot_service
-            .capture_for_window(Some(&active_window))
-            .map_err(|error| error.to_string())
+        screenshot_service.capture_for_window_with_privacy(Some(&active_window), &privacy_config)
     })
     .await
     .map_err(|error| {
         work_review_core::error::AppError::Unknown(format!("截图任务异常: {error}"))
     })?;
 
-    let result = result.map_err(work_review_core::error::AppError::Screenshot)?;
+    let result = result?;
     if !activity_clock::Sample::now().follows(sample) {
         if let Some(path) = result
             .ocr_source_path
@@ -2147,6 +2140,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
     let _power_monitor = activity_clock::PowerMonitor::new();
     let mut activity_clock = activity_clock::ActivityClock::new();
     let mut last_capture_time = std::time::Instant::now();
+    let mut last_grit_screenshot = std::time::Instant::now() - Duration::from_secs(3600);
     let mut overlay_sessions = std::collections::HashMap::new();
 
     // ===== 空闲检测器 =====
@@ -2372,12 +2366,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
         // 注意 explorer 特殊处理：有窗口标题时是文件管理器，应该记录
         {
             if should_skip_system_window(&active_window) {
-                log::debug!(
-                    "跳过系统/桌面窗口: {} (title={}, minimized={})",
-                    active_window.app_name,
-                    active_window.window_title,
-                    active_window.is_minimized
-                );
+                log::debug!("跳过系统/桌面窗口");
                 last_app_name = None;
                 last_app_window_title = None;
                 last_browser_url = None;
@@ -2405,12 +2394,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
             },
         ) {
             if last_browser_url.as_deref() != Some(resolved_url.as_str()) {
-                log::debug!(
-                    "浏览器 URL 预探测命中: {} | {} -> {}",
-                    active_window.app_name,
-                    active_window.window_title,
-                    resolved_url
-                );
+                log::debug!("浏览器 URL 预探测命中");
             }
             active_window.browser_url = Some(resolved_url);
         }
@@ -2439,12 +2423,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
             };
 
             if let Some(recovered_url) = recovered_url {
-                log::debug!(
-                    "恢复浏览器 URL: {} | {} -> {}",
-                    active_window.app_name,
-                    active_window.window_title,
-                    recovered_url
-                );
+                log::debug!("恢复浏览器 URL");
                 active_window.browser_url = Some(recovered_url);
             }
         }
@@ -2487,13 +2466,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
 
         // ===== 应用切换日志 =====
         if app_changed && last_app_name.is_some() {
-            log::info!(
-                "📊 应用切换: {} [{}] → {} [{}]",
-                last_app_name.as_deref().unwrap_or("无"),
-                previous_window_title.as_deref().unwrap_or(""),
-                active_window.app_name,
-                active_window.window_title,
-            );
+            log::info!("应用切换");
         }
 
         // ===== 空闲检测第一阶段：键鼠活动检查 =====
@@ -2523,7 +2496,9 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
         // ===== 判断是否截图 =====
         // 1. 定时触发：到达配置的间隔时间
         // 2. 应用切换触发：满足最小间隔
-        let should_take_screenshot = if elapsed_secs >= screenshot_interval {
+        let should_take_screenshot = if elapsed_secs >= screenshot_interval
+            || last_grit_screenshot.elapsed() >= Duration::from_secs(screenshot_interval)
+        {
             log::debug!("定时截图触发");
             true
         } else if app_changed && elapsed_since_capture.as_millis() >= capture_min_interval_ms {
@@ -2566,12 +2541,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
             },
         ) {
             if active_window.browser_url.as_deref() != Some(resolved_url.as_str()) {
-                log::debug!(
-                    "浏览器 URL 落库前刷新: {} | {} -> {}",
-                    active_window.app_name,
-                    active_window.window_title,
-                    resolved_url
-                );
+                log::debug!("浏览器 URL 落库前刷新");
             }
             active_window.browser_url = Some(resolved_url);
             url_changed = match (&last_browser_url, &active_window.browser_url) {
@@ -2641,11 +2611,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
         use work_review_core::privacy::PrivacyAction;
         let result: Option<work_review_core::database::Activity> = match privacy_action {
             PrivacyAction::Skip => {
-                log::debug!(
-                    "完全跳过: {} - {}",
-                    active_window.app_name,
-                    active_window.window_title
-                );
+                log::debug!("隐私规则：跳过记录");
                 // 切到忽略应用不应吞掉上一应用的最后一段经过时间：
                 // 与 Anonymize/Record 路径一致,先回补给上一活动再跳过本条
                 let skip_is_confirmed_idle =
@@ -2669,11 +2635,7 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                 None
             }
             PrivacyAction::Anonymize => {
-                log::debug!(
-                    "内容脱敏: {} - {}",
-                    active_window.app_name,
-                    active_window.window_title
-                );
+                log::debug!("隐私规则：内容脱敏");
                 let classification = {
                     let state_guard = state.lock().unwrap_or_else(|e| e.into_inner());
                     crate::resolve_activity_classification(
@@ -2757,9 +2719,28 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                             &active_window.window_title,
                             active_window.browser_url.as_deref(),
                         ),
-                        state_guard.config.storage.screenshots_enabled,
+                        state_guard.config.storage.screenshots_enabled
+                            && last_grit_screenshot.elapsed()
+                                >= Duration::from_secs(screenshot_interval),
                     )
                 };
+                // Suppress images independently of permitted foreground activity logs.
+                let screenshots_enabled = if screenshots_enabled {
+                    let privacy = state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .config
+                        .privacy
+                        .clone();
+                    tokio::task::spawn_blocking(move || monitor::screenshots_permitted(&privacy))
+                        .await
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                if screenshots_enabled {
+                    last_grit_screenshot = std::time::Instant::now();
+                }
                 let category = classification.base_category.clone();
 
                 // 先检查是否有可合并的记录（在截屏之前判断，避免不必要的截图保存）
@@ -2797,33 +2778,36 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
 
                 // 只合并当前连续会话。切回此前使用过的应用/页面必须新建记录，
                 // 否则累计 duration 配合新 timestamp 会把中间会话覆盖成重叠区间。
-                let is_merge = if let Some(ref latest) = latest_activity {
-                    let mut merge = should_merge_contiguous_activity(
-                        app_changed,
-                        &active_window.app_name,
-                        current_timestamp,
-                        latest.timestamp,
-                    );
+                let is_merge = !screenshots_enabled
+                    && if let Some(ref latest) = latest_activity {
+                        let mut merge = should_merge_contiguous_activity(
+                            app_changed,
+                            &active_window.app_name,
+                            current_timestamp,
+                            latest.timestamp,
+                        );
 
-                    // 如果由于某种原因 browser_url 获取失败，但它确实是一个浏览器
-                    // 我们必须更严格地判断合并条件，否则不同标签页的切换会被错误合并。
-                    if merge
-                        && active_window.browser_url.is_none()
-                        && work_review_core::categorize::is_browser_app(&active_window.app_name)
-                        && (latest.window_title != active_window.window_title
-                            || latest.browser_url.is_some())
-                    {
-                        merge = false;
-                    }
+                        // 如果由于某种原因 browser_url 获取失败，但它确实是一个浏览器
+                        // 我们必须更严格地判断合并条件，否则不同标签页的切换会被错误合并。
+                        if merge
+                            && active_window.browser_url.is_none()
+                            && work_review_core::categorize::is_browser_app(&active_window.app_name)
+                            && (latest.window_title != active_window.window_title
+                                || latest.browser_url.is_some())
+                        {
+                            merge = false;
+                        }
 
-                    merge
-                } else {
-                    false
-                };
+                        merge
+                    } else {
+                        false
+                    };
 
                 // 新建与合并共用 OCR 冷却，窗口切换仍保留截图。
                 // ponytail: 冷却期内的短活动可能没有 OCR；需要逐条索引时再加有界后台队列。
-                let should_run_ocr = screenshots_enabled
+                // GRIT's explicit image interpretation worker owns OCR. Capture only saves images.
+                let should_run_ocr = legacy_capture_ocr_enabled()
+                    && screenshots_enabled
                     && should_run_ocr(
                         last_ocr_time.map(|last| last.elapsed()),
                         screenshot_interval,
@@ -3325,8 +3309,19 @@ async fn background_screenshot_task(state: Arc<Mutex<AppState>>, app: AppHandle)
                                     }
                                 }
                             }
+                            Err(work_review_core::error::AppError::Privacy(_)) => {
+                                // A private window appeared between the two guards.
+                                // Skip this frame; retry normally next capture interval.
+                                log::debug!("Capture skipped by privacy rules");
+                                None
+                            }
                             Err(e) => {
                                 log::error!("截屏失败: {e}");
+                                if let Ok(mut guard) = state.lock() {
+                                    guard.is_paused = true;
+                                    grit::capture_failed(&guard.data_dir, &e.to_string());
+                                }
+                                emit_recording_state_changed(&app);
                                 None
                             }
                         }
@@ -3722,7 +3717,7 @@ fn install_crash_handler() {
             .unwrap_or_else(|| "<未知位置>".to_string());
         let now = chrono::Local::now();
         let report = format!(
-            "Work Review crash report\n版本: {}\n时间: {}\nPanic: {}\n位置: {}\n\n调用栈:\n{}\n",
+            "GRIT Work felrapport\nVersion: {}\nTid: {}\nPanic: {}\nPlats: {}\n\nAnropsstack:\n{}\n",
             env!("CARGO_PKG_VERSION"),
             now.format("%Y-%m-%d %H:%M:%S"),
             message,
@@ -4134,39 +4129,6 @@ async fn entity_classify_task(state: Arc<Mutex<AppState>>) {
     }
 }
 
-/// 存储清理周期任务：保留天数与容量上限此前只在启动时执行一次,
-/// 应用常驻数周就完全不生效——这里每 6 小时补跑一次。
-/// 配置损坏(fail-safe)时与启动路径一致,跳过清理以保护历史数据。
-async fn storage_cleanup_task(state: Arc<Mutex<AppState>>) {
-    const SWEEP_INTERVAL_SECS: u64 = 6 * 60 * 60;
-
-    loop {
-        // 启动清理已在 main 里执行过,首轮直接等一个周期
-        tokio::time::sleep(tokio::time::Duration::from_secs(SWEEP_INTERVAL_SECS)).await;
-
-        let (data_dir, database, storage_config, allowed) = {
-            let guard = state.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                guard.data_dir.clone(),
-                guard.database.clone(),
-                guard.config.storage.clone(),
-                should_run_startup_cleanup(guard.config_load_status),
-            )
-        };
-        if !allowed {
-            continue;
-        }
-
-        // 用独立实例在阻塞线程执行,避免清理期间占用 AppState 锁阻塞采集循环
-        let manager = StorageManager::new(&data_dir, storage_config);
-        match tokio::task::spawn_blocking(move || manager.cleanup(&database)).await {
-            Ok(Ok(_)) => log::debug!("周期存储清理完成"),
-            Ok(Err(e)) => log::warn!("周期存储清理失败: {e}"),
-            Err(e) => log::warn!("周期存储清理任务异常: {e}"),
-        }
-    }
-}
-
 /// Linux: 注入 WebKit/Wayland 兼容性环境变量，规避 webkit2gtk 在 Wayland（尤其
 /// KDE Plasma / NVIDIA）下启动即崩的问题（"Error 71 (Protocol error) dispatching
 /// to Wayland display"，上游 Tauri #10702 / GTK WebKitGTK）。必须在 GTK/WebKit
@@ -4476,6 +4438,17 @@ async fn main() {
             let launch_args = std::env::args().collect::<Vec<_>>();
             // 获取 Arc<Mutex<AppState>> 并克隆以便在异步任务中使用
             let state = app.state::<Arc<Mutex<AppState>>>();
+            // Single-instance plugin has admitted this process before setup.
+            // A second launch must never recover another instance's active jobs.
+            let grit_data_dir = state
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .data_dir
+                .clone();
+            if let Err(e) = grit::recover(&grit_data_dir) {
+                log::error!("Grit recovery: {e}");
+            }
             let should_hide_main_window = {
                 let state_guard = state.inner().lock().unwrap_or_else(|e| e.into_inner());
                 if state_guard.config.auto_start {
@@ -4728,6 +4701,15 @@ async fn main() {
             // 先发布句柄，再注册后台电源通知，避免恢复事件找不到应用。
             let _ = APP_HANDLE.set(app.handle().clone());
 
+            let image_state = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                grit::image_interpretation_task(image_state).await;
+            });
+            let grit_report_state = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                grit::report_task(grit_report_state).await;
+            });
+
             // 启动后台截屏任务
             tauri::async_runtime::spawn(async move {
                 background_screenshot_task(state_clone, screenshot_app_handle).await;
@@ -4747,9 +4729,9 @@ async fn main() {
                 remote_upload_backfill_task(state_clone4).await;
             });
 
-            // 启动存储清理周期任务（每 6 小时，保留策略不再只在启动时生效一次）
+            // Archive completed days hourly; delete only after verification.
             tauri::async_runtime::spawn(async move {
-                storage_cleanup_task(state_clone5).await;
+                grit::archive_task(state_clone5).await;
             });
 
             // 启动实体分类学习任务（每 30 分钟，自动归类未知应用/域名并回溯修正）
@@ -4766,6 +4748,29 @@ async fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            grit::grit_save_capture_settings,
+            grit::grit_status,
+            grit::grit_day_context,
+            grit::grit_interpretation_status,
+            grit::grit_interpret_images,
+            grit::grit_export_report,
+            grit::grit_save_settings,
+            grit::grit_select_user,
+            grit::grit_save_credentials,
+            grit::grit_sync_spiris,
+            grit::grit_test_connection,
+            grit::grit_connection_status,
+            grit::grit_test_ai,
+            grit::grit_reporting_context,
+            grit::grit_archive,
+            grit::grit_generate,
+            grit::grit_get_report,
+            grit::grit_save_draft,
+            grit::grit_create_manual_report,
+            grit::grit_submit,
+            grit::grit_reconcile,
+            grit::grit_cancel,
+            grit::grit_dismiss,
             autostart::enable_autostart,
             autostart::disable_autostart,
             autostart::is_autostart_enabled,
@@ -4817,6 +4822,7 @@ async fn main() {
             commands::download_and_install_github_update,
             commands::quit_app_for_update,
             commands::open_data_dir,
+            commands::open_screenshots_dir,
             commands::get_screenshot_thumbnail,
             commands::get_screenshot_full,
             commands::test_remote_storage,
@@ -5646,13 +5652,16 @@ mod tests {
     fn 托盘录制按钮文案应与状态一致() {
         assert_eq!(
             tray_recording_toggle_label(false, false, "zh-CN"),
-            "开始录制"
+            "Starta insamling"
         );
         assert_eq!(
             tray_recording_toggle_label(true, false, "zh-CN"),
-            "暂停录制"
+            "Pausa insamling"
         );
-        assert_eq!(tray_recording_toggle_label(true, true, "zh-CN"), "恢复录制");
+        assert_eq!(
+            tray_recording_toggle_label(true, true, "zh-CN"),
+            "Återuppta insamling"
+        );
     }
 
     #[test]

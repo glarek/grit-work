@@ -30,7 +30,7 @@ export function isHourlySummaryRecord(value: unknown): value is HourlySummaryRec
 
 export function parseHourlySummaryRecords(value: unknown): HourlySummaryRecord[] {
   if (!Array.isArray(value) || !value.every(isHourlySummaryRecord)) {
-    throw new TypeError('小时摘要载荷格式无效');
+    throw new TypeError('Timsammanfattningen har ett ogiltigt format.');
   }
   return value;
 }
@@ -48,7 +48,7 @@ function normalizeSummary(text?: string | null): string {
 
 function splitSummarySentences(text: string): string[] {
   return normalizeSummary(text)
-    .split(/[。！？!?]/)
+    .split(/[。！？!?]|\.(?=\s|$)/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -60,11 +60,12 @@ function splitSummaryClauses(text: string): string[] {
     .filter(Boolean);
 }
 
-function ensureChineseStop(text: string): string {
+function ensureSentenceStop(text: string): string {
   if (!text) {
     return '';
   }
-  return `${text.replace(/[。！？!?]+$/g, '').trim()}。`;
+  const stop = /[\u4e00-\u9fff]/.test(text) ? '。' : '.';
+  return `${text.replace(/[。！？!?.]+$/g, '').trim()}${stop}`;
 }
 
 export function orderHourlySummariesForDisplay<T extends HourSummaryOrderable>(
@@ -100,7 +101,7 @@ export function getPrimarySummary(text?: string | null): string {
   const clauses = splitSummaryClauses(firstSentence);
 
   if (clauses.length >= 3) {
-    return clauses.slice(0, 2).join('，');
+    return clauses.slice(0, 2).join(/[\u4e00-\u9fff]/.test(normalized) ? '，' : ', ');
   }
 
   return firstSentence;
@@ -117,11 +118,11 @@ export function getSecondarySummary(text?: string | null): string {
   const clauses = splitSummaryClauses(firstSentence);
 
   if (clauses.length >= 3) {
-    return ensureChineseStop(clauses.slice(2).join('，'));
+    return ensureSentenceStop(clauses.slice(2).join(/[\u4e00-\u9fff]/.test(normalized) ? '，' : ', '));
   }
 
   if (sentences.length > 1) {
-    return ensureChineseStop(sentences.slice(1).join('。'));
+    return ensureSentenceStop(sentences.slice(1).join(/[\u4e00-\u9fff]/.test(normalized) ? '。' : '. '));
   }
 
   return '';

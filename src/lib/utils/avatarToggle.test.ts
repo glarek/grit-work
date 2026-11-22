@@ -1,3 +1,5 @@
+import { setLocale } from '../i18n/index.ts';
+setLocale('sv-SE');
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -101,9 +103,9 @@ test('关闭桌宠时应同时关闭休息提醒，避免保留无效依赖配�
 test('桌宠开关提示文案应与状态匹配', () => {
   assert.equal(
     getAvatarToggleToast(true),
-    '桌宠已显示，可在屏幕右下角附近查看'
+    'Skrivbordsavataren syns nu nära skärmens nedre högra hörn',
   );
-  assert.equal(getAvatarToggleToast(false), '桌宠已隐藏');
+  assert.equal(getAvatarToggleToast(false), 'Skrivbordsavataren är dold');
 });
 
 test('桌宠开关 UI 状态应区分开启和关闭', () => {
@@ -112,12 +114,12 @@ test('桌宠开关 UI 状态应区分开启和关闭', () => {
 
   assert.match(enabledState.trackClass, /bg-primary-500/);
   assert.equal(enabledState.thumbClass, 'translate-x-5');
-  assert.equal(enabledState.ariaLabel, '关闭桌面化身');
+  assert.equal(enabledState.ariaLabel, 'Stäng av skrivbordsavatar');
 
   assert.match(disabledState.trackClass, /bg-slate-300/);
   assert.equal(disabledState.thumbClass, 'translate-x-0');
   assert.match(disabledState.buttonClass, /cursor-wait/);
-  assert.equal(disabledState.ariaLabel, '开启桌面化身');
+  assert.equal(disabledState.ariaLabel, 'Aktivera skrivbordsavatar');
 });
 
 test('桌宠缩放应限制在允许范围内', () => {

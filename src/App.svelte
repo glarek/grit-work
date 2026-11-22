@@ -2,7 +2,11 @@
   import { onMount, tick, type ComponentType } from 'svelte';
   import Router, { push } from 'svelte-spa-router';
   import { wrap } from 'svelte-spa-router/wrap';
+  import Onboarding from './routes/grit/Onboarding.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
+  import WorkspaceToolbar from './lib/components/WorkspaceToolbar.svelte';
+  import { dashboardTheme, applyDashboardTheme } from './lib/stores/appearance';
+  $: applyDashboardTheme($dashboardTheme);
   import Toast from './lib/components/Toast.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
   import { invoke } from '@tauri-apps/api/core';
@@ -172,7 +176,7 @@
   async function getRuntimeConfig(): Promise<RuntimeConfig> {
     const payload = await invoke<unknown>('get_config');
     if (!isRuntimeConfig(payload)) {
-      throw new TypeError('配置载荷格式无效');
+      throw new TypeError('Inställningarna har ett ogiltigt format.');
     }
     return payload;
   }
@@ -325,10 +329,7 @@
           invokeAppIcon
         );
       }),
-      // 2. 日报 (今天) - 检查是否已存在（必须带上当前语言，否则会把中文日报缓存到其他语言的 key 下）
-      invoke<unknown>('get_saved_report', { date: today, locale: $locale }).then(report => {
-        if (report) cache.setReport(`${today}:${$locale}`, report);
-      })
+
     ]).then(() => {
       devLog('预加载完成');
     }).catch(e => {
@@ -338,17 +339,18 @@
 
   const routes = {
     '/': wrap({ asyncComponent: () => import('./routes/Overview.svelte') }),
+    '/overview': wrap({ asyncComponent: () => import('./routes/Overview.svelte') }),
     '/timeline': wrap({ asyncComponent: () => import('./routes/timeline/Timeline.svelte') }),
     '/timeline/summary/:date': wrap({ asyncComponent: () => import('./routes/timeline/Summary.svelte') }),
     '/timeline/summary': wrap({ asyncComponent: () => import('./routes/timeline/Summary.svelte') }),
-    '/report': wrap({ asyncComponent: () => import('./routes/report/Report.svelte') }),
-    '/ask': wrap({ asyncComponent: () => import('./routes/ask/Ask.svelte') }),
+    '/report': wrap({ asyncComponent: () => import('./routes/grit/GritWork.svelte') }),
+    '/ask': wrap({ asyncComponent: () => import('./routes/grit/GritWork.svelte') }),
     '/settings': wrap({ asyncComponent: () => import('./routes/settings/Settings.svelte') }),
     '/about': wrap({ asyncComponent: () => import('./routes/about/About.svelte') }),
   };
 
-  let theme: Theme = 'system';
-  let isDark = false;
+  let onboardingOpen = localStorage.getItem('grit-onboarding-v1') === null;
+  function finishOnboarding(choice: string) { localStorage.setItem('grit-onboarding-v1', choice); onboardingOpen = false; }
   let isRecording = true;
   let isPaused = false;
   let platform = '';
@@ -356,77 +358,22 @@
   let backgroundOpacity = 0.25;
   let backgroundBlur = 1;
   let runtimeConfig: RuntimeConfig | null = null;
-  let uiVisualStyle: UiVisualStyle = 'c';
+  let uiVisualStyle: UiVisualStyle = 'a';
   let unsubscribeLocale: () => void = () => {};
   $: currentLocale = $locale;
 
-  function detectSystemTheme(): boolean {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
-  }
-
-  function applyTheme(newTheme: Theme): void {
-    theme = newTheme;
-    isDark = theme === 'system' ? detectSystemTheme() : theme === 'dark';
-    
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }
-
   function normalizeUiVisualStyle(value: unknown): UiVisualStyle {
     const nextStyle = typeof value === 'string' ? value.trim().toLowerCase() : '';
-    return isUiVisualStyle(nextStyle) ? nextStyle : 'c';
+    return 'a';
   }
 
   function applyUiVisualStyle(value: unknown): void {
-    uiVisualStyle = normalizeUiVisualStyle(value);
+    uiVisualStyle = 'a';
     document.documentElement.dataset.uiVisualStyle = uiVisualStyle;
   }
 
-  async function handleThemeChange(event: CustomEvent<Theme>): Promise<void> {
-    const newTheme = event.detail;
-    applyTheme(newTheme);
-
-    try {
-      const config = await getRuntimeConfig();
-      config.theme = newTheme;
-      await invoke('save_config', { config });
-      cache.setConfig(config);
-    } catch (e) {
-      console.error('保存主题配置失败:', e);
-    }
-  }
-
-  async function loadBackground() {
-    try {
-      const config = await getRuntimeConfig();
-      backgroundOpacity = config.background_opacity ?? 0.25;
-      backgroundBlur = config.background_blur ?? 1;
-      if (config.background_image) {
-        const b64 = await invoke<string | null>('get_background_image');
-        if (b64) {
-          backgroundImage = `data:image/jpeg;base64,${b64}`;
-        }
-      } else {
-        backgroundImage = null;
-      }
-    } catch (e) {
-      console.warn('加载背景图失败:', e);
-    }
-  }
-
-  // 实时响应设置页的背景参数变更（不需要保存即可生效）
-  function handleBackgroundChanged(e: Event): void {
-    if (!(e instanceof CustomEvent)) return;
-    const d: BackgroundChangeDetail = e.detail;
-    if (d) {
-      if (d.image !== undefined) backgroundImage = d.image;
-      if (d.opacity !== undefined) backgroundOpacity = d.opacity;
-      if (d.blur !== undefined) backgroundBlur = d.blur;
-    }
-  }
+  async function loadBackground() { backgroundImage = null; }
+  function handleBackgroundChanged(_event: Event): void { backgroundImage = null; }
 
   function syncMainWindowVisibility(visible: boolean): void {
     document.body.classList.toggle('app-window-hidden', visible === false);
@@ -559,11 +506,9 @@
         config = await getRuntimeConfig();
         runtimeConfig = config;
         cache.setConfig(config);
-        applyTheme(config.theme || 'system');
         applyUiVisualStyle(config.ui_visual_style || 'c');
       } catch (e) {
         console.error('加载配置失败:', e);
-        applyTheme('system');
         applyUiVisualStyle('c');
         config = { work_end_hour: 18 };
         runtimeConfig = config;
@@ -587,20 +532,9 @@
       }
       if (disposed) return;
 
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-      const handleSystemThemeChange = () => {
-        if (theme === 'system') applyTheme('system');
-      };
-      mediaQuery.addEventListener('change', handleSystemThemeChange);
-      pendingCleanup.push(() => mediaQuery.removeEventListener('change', handleSystemThemeChange));
-
       const unsubscribeCache = cache.subscribe((state) => {
         if (!isRuntimeConfig(state.config)) return;
         runtimeConfig = state.config;
-
-        if (state.config.theme && state.config.theme !== theme) {
-          applyTheme(state.config.theme);
-        }
 
         if (state.config.ui_visual_style && state.config.ui_visual_style !== uiVisualStyle) {
           applyUiVisualStyle(state.config.ui_visual_style);
@@ -690,67 +624,8 @@
       }, 2000);
       pendingCleanup.push(() => clearTimeout(autoUpdateTimer));
 
-      // 日报自动生成检测：每分钟检查一次
-      let lastAutoGenDate: string | null = null;  // 防止同一天重复触发
-      let autoGenRunning = false;  // 防止并发生成
-      let memorySynthRunning = false;  // 防止洞察合成并发
-      const autoReportTimer = setInterval(async () => {
-        if (autoGenRunning) return;  // 上一轮还没完成，跳过
-        const now = new Date();
-        const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
-        const today = getLocalDate();
-
-        // 检查是否达到或已过工作结束时间
-        const { hour: workEndHour, minute: workEndMinute } =
-          resolveAutoReportWorkEnd(runtimeConfig);
-        const workEndTotalMinutes = workEndHour * 60 + workEndMinute;
-
-        // 条件：当前时间 >= 工作结束时间，且今天未自动生成过
-        if (currentTotalMinutes >= workEndTotalMinutes && lastAutoGenDate !== today) {
-          try {
-            // 检查今日是否已有日报
-            const existingReport = await invoke<unknown>('get_saved_report', { date: today, locale: currentLocale });
-            if (!existingReport) {
-              devLog('工作结束时间到达，自动生成日报...');
-              autoGenRunning = true;
-              try {
-                await invoke('generate_report', { date: today, force: false, locale: currentLocale });
-                cache.invalidate('report', `${today}:${currentLocale}`);
-                lastAutoGenDate = today;
-                devLog('日报自动生成完成');
-              } finally {
-                autoGenRunning = false;
-              }
-            } else {
-              lastAutoGenDate = today;  // 已有日报，标记今天不再触发
-            }
-          } catch (e) {
-            console.warn('日报自动生成失败:', e);
-          }
-        }
-
-        // AI 工作记忆：每天工作结束后自动合成洞察
-        if (currentTotalMinutes >= workEndTotalMinutes && !memorySynthRunning) {
-          try {
-            const config = await getRuntimeConfig();
-            if (config.memory_enabled && config.memory_last_synthesis_date !== today) {
-              memorySynthRunning = true;
-              try {
-                await invoke('synthesize_insights', {});
-                // 合成可能耗时较长，重新拉取最新配置再写入，避免覆盖期间用户改动的其他设置
-                const freshConfig = await getRuntimeConfig();
-                await invoke('save_config', { config: { ...freshConfig, memory_last_synthesis_date: today } });
-                devLog('工作记忆合成完成');
-              } finally {
-                memorySynthRunning = false;
-              }
-            }
-          } catch (e) {
-            console.warn('工作记忆合成失败:', e);
-          }
-        }
-      }, 60000);  // 每分钟检查一次
-      pendingCleanup.push(() => clearInterval(autoReportTimer));
+      // Grit starts report agents only after the user accepts the daily prompt.
+      // The upstream automatic report/insight timer must not send evidence independently.
 
       const unlisten = await safeListen(
         'screenshot-taken',
@@ -794,7 +669,7 @@
     <svelte:component this={AvatarWindowComponent} />
   {/if}
 {:else}
-<div class="app-shell ui-style-{uiVisualStyle} platform-{platform || 'web'} flex h-screen overflow-hidden relative">
+<div class="app-shell grit-dashboard ui-style-{uiVisualStyle} platform-{platform || 'web'} flex h-screen overflow-hidden relative">
   <div class="app-shell-ambient pointer-events-none absolute inset-0 z-0 opacity-80">
     <div class="absolute inset-x-0 top-0 h-40 bg-[radial-gradient(circle_at_top,rgba(99,102,241,0.14),transparent_62%)] dark:bg-[radial-gradient(circle_at_top,rgba(99,102,241,0.18),transparent_62%)]"></div>
     <div class="absolute -right-16 top-24 h-48 w-48 rounded-full bg-indigo-200/20 blur-3xl dark:bg-indigo-500/12"></div>
@@ -878,18 +753,20 @@
     <!-- 左侧边栏 -->
     <aside class="app-shell-sidebar-frame min-h-0">
       <div class="app-shell-sidebar h-full flex flex-col overflow-hidden">
-        <Sidebar {isRecording} {isPaused} {theme} on:themeChange={handleThemeChange} />
+        <Sidebar {isRecording} {isPaused} />
       </div>
     </aside>
 
     <!-- 右侧主内容区域 -->
     <section class="app-shell-main-frame min-h-0">
       <div class="app-shell-main relative h-full flex flex-col overflow-hidden">
+        <WorkspaceToolbar />
         <main class="app-shell-main-scroll flex-1 overflow-auto">
           {#key currentLocale}
             <Router {routes} />
           {/key}
         </main>
+        {#if onboardingOpen}<Onboarding on:complete={() => finishOnboarding('complete')} on:defer={() => finishOnboarding('deferred')} />{/if}
         <Toast />
         <ConfirmDialog />
       </div>

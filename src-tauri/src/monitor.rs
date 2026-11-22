@@ -263,12 +263,7 @@ fn is_browser_internal_segment(segment: &str) -> bool {
     }
 
     // chrome:// internal pages
-    if lower.starts_with("chrome://") || lower.starts_with("edge://") || lower.starts_with("about:")
-    {
-        return true;
-    }
-
-    false
+    lower.starts_with("chrome://") || lower.starts_with("edge://") || lower.starts_with("about:")
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
@@ -2337,7 +2332,30 @@ Path=Profiles/wkm9x2lf.Default (release)
 
         let window = parse_gnome_focused_window_dbus_output(output).expect("应解析成功");
 
+        assert_eq!(window.app_name, "Google Chrome");
         assert_eq!(window.browser_url, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn gnome_browser_title_does_not_promote_embedded_or_similarly_named_apps() {
+        for app in [
+            "msedgewebview2",
+            "Electron",
+            "GRIT Work",
+            "google-chrome-document-viewer",
+        ] {
+            let payload = serde_json::json!({
+                "title": "https://example.com - Google Chrome",
+                "wm_class": app,
+                "x": 0, "y": 0, "width": 800, "height": 600,
+            });
+            let window = parse_gnome_focused_window_dbus_output(&payload.to_string()).unwrap();
+            assert_eq!(window.browser_url, None, "{app}");
+            assert!(
+                !work_review_core::categorize::is_browser_app(&window.app_name),
+                "{app}"
+            );
+        }
     }
 
     #[test]
@@ -4601,4 +4619,229 @@ unsafe fn get_cf_dict_number(
 #[cfg(not(target_os = "macos"))]
 pub fn get_overlay_windows(_frontmost_app: &str) -> Vec<ActiveWindow> {
     Vec::new()
+}
+
+/// Capture authorization is deliberately independent of foreground activity logging.
+/// No window details are returned to callers or included in diagnostics.
+#[cfg(any(target_os = "windows", test))]
+fn capture_window_is_permitted(
+    filter: &work_review_core::privacy::PrivacyFilter,
+    has_url_exclusions: bool,
+    app: &str,
+    title: &str,
+    url: Option<&str>,
+) -> bool {
+    use work_review_core::privacy::PrivacyAction;
+    if app.trim().is_empty() || app == "Unknown" {
+        return false;
+    }
+    if is_browser_app(app) && has_url_exclusions && url.is_none_or(|s| s.trim().is_empty()) {
+        return false;
+    }
+    filter.check_privacy_full(app, title, url) == PrivacyAction::Record
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn capture_window_is_visible(visible: bool, minimized: bool) -> bool {
+    visible && !minimized
+}
+
+/// EnumWindows covers the entire desktop, not just the foreground monitor.
+/// Covered/cloaked/offscreen windows are intentionally treated conservatively.
+#[cfg(target_os = "windows")]
+pub fn screenshots_permitted(config: &work_review_core::config::PrivacyConfig) -> bool {
+    use winapi::shared::{
+        minwindef::{BOOL, LPARAM},
+        windef::HWND,
+    };
+    use winapi::um::winuser::{EnumWindows, IsIconic, IsWindowVisible};
+    unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
+        if capture_window_is_visible(IsWindowVisible(hwnd) != 0, IsIconic(hwnd) != 0) {
+            (*(data as *mut Vec<isize>)).push(hwnd as isize);
+        }
+        1
+    }
+    let mut windows = Vec::<isize>::new();
+    if unsafe { EnumWindows(Some(collect), &mut windows as *mut _ as LPARAM) } == 0
+        || windows.is_empty()
+    {
+        return false;
+    }
+    let filter = work_review_core::privacy::PrivacyFilter::from_config(config);
+    let has_url_exclusions = !config.collect_excluded_domains().is_empty();
+    for hwnd in windows {
+        let pid = get_window_process_id_windows(hwnd);
+        let Some(name) = get_process_name_by_image(pid) else {
+            return false;
+        };
+        let app = normalize_display_app_name(&name);
+        let Some(title) = capture_window_title_windows(hwnd) else {
+            return false;
+        };
+        let url = if has_url_exclusions && is_browser_app(&app) {
+            capture_browser_url_windows(hwnd)
+        } else {
+            None
+        };
+        if !capture_window_is_permitted(&filter, has_url_exclusions, &app, &title, url.as_deref()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Empty titles are valid; failed/truncated reads are not authorization.
+#[cfg(target_os = "windows")]
+fn capture_window_title_windows(hwnd: isize) -> Option<String> {
+    use winapi::um::winuser::{GetWindowTextLengthW, GetWindowTextW};
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLastError() -> u32;
+        fn SetLastError(error: u32);
+    }
+    unsafe {
+        let hwnd = hwnd as winapi::shared::windef::HWND;
+        SetLastError(0);
+        let length = GetWindowTextLengthW(hwnd);
+        if length == 0 && GetLastError() != 0 {
+            return None;
+        }
+        let mut title = vec![0u16; length as usize + 2];
+        SetLastError(0);
+        let read = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
+        if (read == 0 && GetLastError() != 0) || read > length {
+            return None;
+        }
+        String::from_utf16(&title[..read as usize]).ok()
+    }
+}
+
+/// Fresh address-bar ValuePattern only: never cached URLs, page text, or title guesses.
+/// A child process provides a hard timeout even when a UIA provider hangs.
+#[cfg(target_os = "windows")]
+fn capture_browser_url_windows(hwnd: isize) -> Option<String> {
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]{hwnd})
+$condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+$edits = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$urls = @()
+foreach ($edit in $edits) {{
+  # Web content can contain an input named "address". Only browser chrome
+  # outside every Document subtree can authorize a capture.
+  $ancestor = $edit
+  $inDocument = $false
+  while ($ancestor -and -not $ancestor.Equals($root)) {{
+    if ($ancestor.Current.ControlType -eq [System.Windows.Automation.ControlType]::Document) {{ $inDocument = $true; break }}
+    $ancestor = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($ancestor)
+  }}
+  if ($inDocument -or -not $ancestor) {{ continue }}
+  $label = $edit.Current.Name
+  $class = $edit.Current.ClassName
+  if (($label -match 'address|location|地址') -or ($class -match 'omnibox|address')) {{
+    $pattern = $null
+    if ($edit.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
+      $value = $pattern.Current.Value
+      if ($value) {{ $urls += $value }}
+    }}
+  }}
+}}
+if ($urls.Count -eq 1) {{ [Console]::Write($urls[0]) }}
+"#
+    );
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    command.creation_flags(0x08000000);
+    let output =
+        run_monitor_command_with_timeout(&mut command, "Capture privacy inspection").ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    normalize_browser_url_candidate(std::str::from_utf8(&output.stdout).ok()?.trim())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn screenshots_permitted(_config: &work_review_core::config::PrivacyConfig) -> bool {
+    true
+}
+
+#[cfg(test)]
+mod capture_privacy_tests {
+    use super::*;
+    use work_review_core::{
+        config::{AppPrivacyRule, PrivacyConfig, PrivacyLevel},
+        privacy::PrivacyFilter,
+    };
+
+    #[test]
+    fn capture_guard_only_visible_nonminimized_windows() {
+        assert!(capture_window_is_visible(true, false));
+        assert!(!capture_window_is_visible(false, false));
+        assert!(!capture_window_is_visible(true, true));
+        assert!(!capture_window_is_visible(false, true));
+    }
+
+    #[test]
+    fn capture_guard_any_monitor_blocks_and_resumes() {
+        let mut config = PrivacyConfig::default();
+        config.app_rules.push(AppPrivacyRule {
+            app_name: "PrivateApp".into(),
+            level: PrivacyLevel::Ignored,
+        });
+        let filter = PrivacyFilter::from_config(&config);
+        let allowed = |app| capture_window_is_permitted(&filter, false, app, "Document", None);
+        assert!(!["Code", "PrivateApp"].into_iter().all(allowed));
+        assert!(["Code"].into_iter().all(allowed));
+        // Foreground logging remains independently permitted.
+        assert_eq!(
+            filter.check_privacy("Code", "Document"),
+            work_review_core::privacy::PrivacyAction::Record
+        );
+    }
+
+    #[test]
+    fn capture_guard_browser_unknown_and_excluded_urls_fail_closed() {
+        let config = PrivacyConfig {
+            excluded_domains: vec!["private.example".into()],
+            excluded_keywords: vec!["password".into()],
+            ..PrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::from_config(&config);
+        for url in [None, Some(""), Some("https://private.example/account")] {
+            assert!(!capture_window_is_permitted(
+                &filter,
+                true,
+                "Google Chrome",
+                "Document",
+                url
+            ));
+        }
+        assert!(capture_window_is_permitted(
+            &filter,
+            true,
+            "Google Chrome",
+            "Document",
+            Some("https://public.example")
+        ));
+        assert!(capture_window_is_permitted(
+            &filter,
+            false,
+            "Google Chrome",
+            "Document",
+            None
+        ));
+        assert!(!capture_window_is_permitted(
+            &filter, true, "Unknown", "Document", None
+        ));
+        assert!(!capture_window_is_permitted(
+            &filter,
+            false,
+            "Code",
+            "Enter password",
+            None
+        ));
+    }
 }

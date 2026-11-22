@@ -1,4 +1,5 @@
 import './app.css';
+import './dashboard.css';
 import App from './App.svelte';
 
 const target = document.getElementById('app');

@@ -45,7 +45,7 @@ test('Linux 发布构建不应编译仅供 macOS 或测试使用的符号', () =
   assert.doesNotMatch(monitor, /\binfer_browser_page_hint_from_text\b/);
   assert.match(
     screenshot,
-    /#\[cfg\(any\(target_os = "macos", target_os = "windows", test\)\)\]\n    fn persist_dynamic_image_capture/,
+    /#\[cfg\(any\(target_os = "macos", target_os = "windows", target_os = "linux", test\)\)\]\n    fn persist_dynamic_image_capture/,
   );
 });
 

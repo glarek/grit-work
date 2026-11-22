@@ -1,7 +1,11 @@
-//! Windows 以 EXE 同级的 Data 目录显式启用便携模式；其他情况保留本机目录偏好。
+//! Grit keeps local evidence in the operating system application-data directory.
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::io;
+#[cfg(test)]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize)]
@@ -10,14 +14,14 @@ struct DataDirPreference {
 }
 
 fn system_data_dir() -> PathBuf {
-    dirs::data_dir()
-        .map(|dir| dir.join("work-review"))
+    dirs::data_local_dir()
+        .map(|dir| dir.join("grit-work"))
         .unwrap_or_else(|| PathBuf::from("./data"))
 }
 
 fn preference_path() -> PathBuf {
     dirs::config_dir()
-        .map(|dir| dir.join("work-review").join("data-location.json"))
+        .map(|dir| dir.join("grit-work").join("data-location.json"))
         .unwrap_or_else(|| PathBuf::from("./work-review-data-location.json"))
 }
 
@@ -48,12 +52,10 @@ pub(crate) fn is_portable_mode() -> io::Result<bool> {
 }
 
 pub(crate) fn default_data_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|executable| portable_dir_at(&executable).ok().flatten())
-        .unwrap_or_else(system_data_dir)
+    system_data_dir()
 }
 
+#[cfg(test)]
 fn load_preference(path: &Path) -> Option<PathBuf> {
     let content = fs::read_to_string(path).ok()?;
     let preference: DataDirPreference = serde_json::from_str(&content).ok()?;
@@ -72,8 +74,10 @@ fn validate_portable_target(portable: &Path, target: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn validate_data_dir_target(target: &Path) -> io::Result<()> {
-    if let Some(portable) = portable_dir_at(&std::env::current_exe()?)? {
-        validate_portable_target(&portable, target)?;
+    if target.canonicalize()? != system_data_dir().canonicalize()? {
+        return Err(io::Error::other(
+            "Grit Work använder systemets appdata. Välj långtidslagring i Grit-inställningarna.",
+        ));
     }
     Ok(())
 }
@@ -114,11 +118,13 @@ fn save_preference_at(
     fs::write(preference, content)
 }
 
+#[cfg(test)]
 fn ensure_data_dir(path: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(path)?;
     Ok(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
 }
 
+#[cfg(test)]
 fn ensure_portable_dir(directory: &Path) -> io::Result<PathBuf> {
     let directory = directory.canonicalize()?;
     fs::read_dir(&directory)?;
@@ -147,13 +153,17 @@ fn ensure_portable_dir(directory: &Path) -> io::Result<PathBuf> {
 }
 
 pub(crate) fn resolve_data_dir() -> io::Result<PathBuf> {
-    resolve_at(
-        &std::env::current_exe()?,
-        &system_data_dir(),
-        &preference_path(),
-    )
+    let dir = system_data_dir();
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
 }
 
+#[cfg(test)]
 fn resolve_at(executable: &Path, default: &Path, preference: &Path) -> io::Result<PathBuf> {
     if let Some(portable) = portable_dir_at(executable)? {
         return ensure_portable_dir(&portable).map_err(|error| {
@@ -190,6 +200,7 @@ fn resolve_at(executable: &Path, default: &Path, preference: &Path) -> io::Resul
     Ok(directory)
 }
 
+#[cfg(test)]
 fn migrate_legacy_data_dir(executable: &Path, target: &Path) {
     let Some(legacy) = executable.parent().map(|parent| parent.join("data")) else {
         return;

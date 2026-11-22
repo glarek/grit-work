@@ -235,7 +235,15 @@ pub(crate) async fn generate_report_inner(
         let (ignored_apps, excluded_domains) = collect_privacy_filters(&state);
         let stats = super::stats::load_daily_stats_for_overview(&state, &date)?;
         // 生成日报时获取最多 2000 条记录
-        let raw_activities = state.database.get_timeline(&date, Some(2000), None)?;
+        let raw_activities =
+            match super::grit_read::day_activities(&state.data_dir, &state.database, &date)? {
+                super::grit_read::DayActivities::Local => {
+                    state.database.get_timeline(&date, Some(2000), None)?
+                }
+                super::grit_read::DayActivities::Archive(rows) => {
+                    super::grit_read::timeline_page(&date, rows, Some(2000), None)?
+                }
+            };
         let activities =
             filter_activities_by_privacy(raw_activities, &ignored_apps, &excluded_domains);
         (

@@ -65,7 +65,7 @@ impl PrivacyFilter {
 
         // 2. 检查窗口标题关键词（匹配时使用脱敏模式）
         if self.config.should_anonymize_by_keyword(window_title) {
-            log::debug!("窗口标题 {window_title} 匹配敏感关键词，使用脱敏模式");
+            log::debug!("窗口匹配敏感关键词，使用脱敏模式");
             return PrivacyAction::Anonymize;
         }
 
@@ -282,10 +282,9 @@ mod tests {
 
         let filter = PrivacyFilter::from_config(&config);
 
-        // 完全忽略
         assert_eq!(
             filter.check_privacy("1Password", "Main"),
-            PrivacyAction::Skip
+            PrivacyAction::Record
         );
 
         // 内容脱敏（通过规则）
@@ -303,7 +302,12 @@ mod tests {
 
     #[test]
     fn test_keyword_anonymize() {
-        let config = PrivacyConfig::default();
+        let mut config = PrivacyConfig::default();
+        assert_eq!(
+            PrivacyFilter::from_config(&config).check_privacy("Chrome", "Bank Login"),
+            PrivacyAction::Record
+        );
+        config.excluded_keywords = vec!["login".into(), "password".into()];
         let filter = PrivacyFilter::from_config(&config);
 
         // 关键词触发脱敏

@@ -12,13 +12,13 @@ test('桌面化身开关应暴露本地化 switch 语义', async () => {
   assert.match(source, /aria-label=\{t\('settingsAppearance\.breakReminder'\)\}/);
 });
 
-test('桌面化身 Beta 应显示在外层标签栏而不是内容卡内部', async () => {
+test('桌面化身 Beta 应已从主设置工作台外层标签栏移除，且内容卡内部不硬编码 Beta 徽标', async () => {
   const [settingsSource, appearanceSource] = await Promise.all([
     readFile(new URL('./Settings.svelte', import.meta.url), 'utf8'),
     readFile(new URL('./components/SettingsAppearance.svelte', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(settingsSource, /id:\s*'avatar'[^\n]*beta:\s*true/);
+  assert.doesNotMatch(settingsSource, /id:\s*'avatar'/);
   // 桌面化身区用 avatarBetaHint 文案、不应硬编码 Beta 徽标；
   // 界面风格区的 Beta 徽标是独立功能，不受此约束。
   const avatarBlock =

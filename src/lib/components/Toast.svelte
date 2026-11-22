@@ -1,12 +1,8 @@
 <script lang="ts">
   import { toast, clearToast, type ToastType } from '$lib/stores/toast.ts';
 
-  const iconMap: Record<ToastType, string> = {
-    success: 'M5 13l4 4L19 7',
-    error: 'M6 18L18 6M6 6l12 12',
-    warning: 'M12 9v4m0 4h.01M10.29 3.86l-7.5 13A1 1 0 003.65 18h16.7a1 1 0 00.86-1.5l-7.5-13a1 1 0 00-1.72 0z',
-    info: 'M13 16h-1v-4h-1m1-4h.01M12 22a10 10 0 110-20 10 10 0 010 20z',
-  };
+  import { Check, X, TriangleAlert, Info } from 'lucide-svelte';
+  const iconMap = {success:Check,error:X,warning:TriangleAlert,info:Info};
 
   // Alger Music 式语义 tint 玻璃：半透明主题色底 + 亮暗各自前景 + 毛玻璃
   const colorMap: Record<ToastType, string> = {
@@ -17,7 +13,7 @@
   };
 
   $: toastState = $toast;
-  $: iconPath = iconMap[toastState?.type ?? 'info'];
+  $: icon = iconMap[toastState?.type ?? 'info'];
   $: toastClass = colorMap[toastState?.type ?? 'info'];
 </script>
 
@@ -32,9 +28,7 @@
       on:click={clearToast}
       class={`toast-glass max-w-xl min-h-11 px-[18px] py-2.5 text-sm font-medium flex items-center gap-2 pointer-events-auto ${toastClass}`}
     >
-      <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d={iconPath} />
-      </svg>
+      <svelte:component this={icon} size={16} class="shrink-0" />
       <span class="leading-snug text-center break-words min-w-0">{toastState.message}</span>
     </button>
   </div>

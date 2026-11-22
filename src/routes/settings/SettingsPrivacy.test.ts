@@ -83,7 +83,8 @@ test('敏感词增删后应立即持久化，避免重启恢复默认值', async
   assert.match(source, /invoke(?:<[^>]+>)?\('save_config', \{ config: JSON\.parse\(savedConfig\) \}\)/);
   assert.match(source, /revision === keywordRevision/);
   assert.match(source, /autosaved: true/);
-  assert.match(settingsSource, /<SettingsPrivacy[\s\S]*?on:change=\{handleSettingsChange\}/);
+  assert.doesNotMatch(settingsSource, /<SettingsPrivacy/);
+  assert.doesNotMatch(settingsSource, /id:\s*'privacy'/);
   assert.equal((source.match(/persistKeywordChange\(\)/g) || []).length, 3);
 });
 

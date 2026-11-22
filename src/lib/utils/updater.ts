@@ -148,8 +148,8 @@ function localizeRuntimeStatusMessage(
     return translate('updater.sourceFailedRetrying', { sourceLabel: matched[1] });
   }
 
-  // 未识别的后端状态不能直接透出，避免在非中文界面泄漏中文消息。
-  return translate('updater.inProgress');
+  // GRIT portal status messages are already localized in Swedish.
+  return /[\u3400-\u9fff]/.test(text) ? translate('updater.inProgress') : text;
 }
 
 export function createUpdateFlow(dependencies: UpdateFlowDependencies): RunUpdateFlow {

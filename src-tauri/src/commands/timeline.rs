@@ -17,7 +17,15 @@ pub(crate) fn get_timeline_inner(
     state: &Arc<Mutex<AppState>>,
 ) -> Result<Vec<Activity>, AppError> {
     let state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
-    let activities = state.database.get_timeline(&date, limit, offset)?;
+    let activities =
+        match super::grit_read::day_activities(&state.data_dir, &state.database, &date)? {
+            super::grit_read::DayActivities::Local => {
+                state.database.get_timeline(&date, limit, offset)?
+            }
+            super::grit_read::DayActivities::Archive(rows) => {
+                super::grit_read::timeline_page(&date, rows, limit, offset)?
+            }
+        };
     let (ignored_apps, excluded_domains) = collect_privacy_filters(&state);
     let filtered = filter_activities_by_privacy(activities, &ignored_apps, &excluded_domains);
 
@@ -79,7 +87,7 @@ pub(crate) fn export_timeline_json_inner(
     }
     let target_path_buf = PathBuf::from(target);
 
-    // 走完整时间线（不分页），并应用隐私过滤
+    // 不分页。get_timeline_inner 对已归档日只使用校验过的归档，不读已删除的本地行。
     let mut activities = get_timeline_inner(date.clone(), None, None, state)?;
     if !include_ocr {
         for a in activities.iter_mut() {
@@ -129,9 +137,8 @@ pub async fn get_screenshot_thumbnail(
     path: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, AppError> {
-    super::shared::validate_relative_path(&path)?;
     let state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
-    let full_path = state.data_dir.join(&path);
+    let full_path = super::grit_read::resolve_capture_path(&state.data_dir, &path)?;
     state
         .screenshot_service
         .generate_thumbnail_base64(&full_path, 400)
@@ -143,9 +150,8 @@ pub async fn get_screenshot_full(
     path: String,
     state: State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, AppError> {
-    super::shared::validate_relative_path(&path)?;
     let state = state.lock().map_err(|e| AppError::Unknown(e.to_string()))?;
-    let full_path = state.data_dir.join(&path);
+    let full_path = super::grit_read::resolve_capture_path(&state.data_dir, &path)?;
     state
         .screenshot_service
         .generate_full_image_base64(&full_path)

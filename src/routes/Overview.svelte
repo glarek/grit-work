@@ -1,11 +1,20 @@
 <script lang="ts">
+  import WorkflowBar from "./grit/WorkflowBar.svelte";
+  import { workDate, selectWorkDate } from "./grit/workflow.ts";
   import { onMount, onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type Event as TauriEvent } from '@tauri-apps/api/event';
-  import StatsCard from '../lib/components/StatsCard.svelte';
+  import DashboardSummary from '../lib/components/DashboardSummary.svelte';
+  import DashboardProjects from '../lib/components/DashboardProjects.svelte';
+  import type { DayContext } from './grit/dayContext';
+  let dashboardContext: DayContext | null = null;
+  let dashboardContextError = '';
+  $: dashboardDate = overviewMode === 'today' ? getLocalDateString() : selectedDateFrom;
+  import UiDialog from '$lib/components/ui/UiDialog.svelte';
   import AppUsageChart from '../lib/components/AppUsageChart.svelte';
   import ActivityHourlyChart from '../lib/components/ActivityHourlyChart.svelte';
+  import { BarChart3, Globe } from 'lucide-svelte';
   import LocalizedDatePicker from '../lib/components/LocalizedDatePicker.svelte';
   import { cache } from '../lib/stores/cache.ts';
   import { portalToBody } from '$lib/actions/portal.ts';
@@ -257,10 +266,10 @@
   let unlisten: (() => void) | null = null;
   let componentDestroyed = false;
   let currentTime = new Date();
-  let overviewMode: OverviewMode = 'today';
+  let overviewMode: OverviewMode = get(workDate) === getLocalDateString() ? 'today' : 'date';
   let selectedCompositionCategory: string | null = null;
-  let selectedDateFrom = getLocalDateString();
-  let selectedDateTo = getLocalDateString();
+  let selectedDateFrom = get(workDate);
+  let selectedDateTo = get(workDate);
   let clockInterval: ReturnType<typeof setInterval> | null = null;
   let refreshInterval: ReturnType<typeof setInterval> | null = null;
   let handleActivityAdded: EventListener | null = null;
@@ -707,6 +716,7 @@
   
   // 域名摘要 / 单域名详情浮层
   let domainOverlayOpen = false;
+  let wasDomainOverlayOpen = false;
   let domainOverlayView: DomainOverlayView = 'detail';
   let domainCollection: DomainItem[] = [];
   let domainCollectionTotalCount = 0;
@@ -805,11 +815,12 @@
   const UNRESOLVED_BROWSER_DOMAIN_LABEL = '未识别页面';
 
   function isUnresolvedBrowserDomain(domain: DomainItem): boolean {
-    return domain?.domain === UNRESOLVED_BROWSER_DOMAIN_LABEL;
+    const raw = (domain?.domain ?? '').trim().toLowerCase();
+    return !raw || raw === 'unknown' || raw === 'okänd' || raw === UNRESOLVED_BROWSER_DOMAIN_LABEL;
   }
 
   function getBrowserDomainDisplayLabel(domain: DomainItem): string {
-    return isUnresolvedBrowserDomain(domain) ? t('overview.unresolvedPage') : domain.domain;
+    return isUnresolvedBrowserDomain(domain) ? 'Okänd sida' : domain.domain;
   }
 
   function getDomainSemanticLabel(domain: DomainItem): string {
@@ -946,6 +957,25 @@
     domainOverlayError = null;
     cancelDomainSemanticEdit({ restoreFocus: false });
   }
+
+  $: {
+    if (!domainOverlayOpen && wasDomainOverlayOpen) {
+      closeDomainOverlay();
+    }
+    wasDomainOverlayOpen = domainOverlayOpen;
+  }
+
+  $: domainOverlayTitle =
+    domainOverlayView === 'all'
+      ? t('overview.domainListTitle')
+      : (selectedDomainDetail ? getBrowserDomainDisplayLabel(selectedDomainDetail) : t('overview.domainDetailTitle'));
+
+  $: domainOverlayDescription =
+    domainOverlayView === 'all'
+      ? t('overview.sitesCount', { count: domainCollectionTotalCount })
+      : (selectedDomainDetail
+          ? `${formatDuration(selectedDomainDetail.duration)} · ${t('overview.pagesCount', { count: selectedDomainDetail.urls?.length || 0 })}`
+          : '');
 
   function focusDomainOverlayView() {
     tick().then(() => {
@@ -1104,6 +1134,8 @@
     closeDomainOverlay();
     loadStats(true);
   }
+
+  $: selectWorkDate(overviewMode === 'today' ? getLocalDateString() : selectedDateFrom);
 
   function normalizeSelectedDateRange() {
     if (selectedDateTo < selectedDateFrom) {
@@ -1408,7 +1440,8 @@
   }}
 />
 
-<div class="page-shell" data-locale={currentLocale}>
+<div class="page-shell dashboard-overview" data-locale={currentLocale}>
+  <WorkflowBar date={dashboardDate} current="/overview" bind:context={dashboardContext} bind:error={dashboardContextError} />
   <!-- 页面标题 -->
   <div class="page-header">
     <div class="page-title-group">
@@ -1418,7 +1451,7 @@
         </svg>
       </div>
       <div class="page-title-copy">
-        <h2>{t('overview.title')}</h2>
+        <h2>Arbetsöversikt</h2>
         <p>
         {overviewSubtitle}
         {#if overviewMode === 'today'}
@@ -1497,74 +1530,7 @@
 
   <div class="overview-editorial-shell">
   <!-- 洞察条：仅 today 模式、数据非空且上周同日基线可用时组句显示 -->
-  {#if overviewMode === 'today' && insightSentence}
-    <!-- 窄屏精修：flex-wrap 允许洞察句换行,链接自动下移到第二行,避免最小窗口横向溢出 -->
-    <div class="mb-4 flex flex-wrap items-center gap-3.5 rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50 via-white to-white px-5 py-3.5 dark:border-blue-900/40 dark:from-blue-950/35 dark:via-[#161b22] dark:to-[#161b22]">
-      <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-500 dark:bg-blue-900/40 dark:text-blue-300">
-        <svg class="h-[17px] w-[17px]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M12 2.5l2 6.4 6.5 2.1-6.5 2.1-2 6.4-2-6.4L3.5 11l6.5-2.1zM19 15.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" />
-        </svg>
-      </span>
-      <p class="min-w-0 flex-1 basis-52 text-sm text-slate-600 dark:text-[#adbac7]">{insightSentence}</p>
-      <a
-        href="#/report"
-        class="shrink-0 whitespace-nowrap text-[13px] font-semibold text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
-      >
-        {t('overview.insightWeekLink')}
-      </a>
-    </div>
-  {/if}
-
-  <div class="overview-summary-grid grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-    {#if loading || !stats}
-      {#each [1,2,3,4] as _}
-        <div class="min-h-[116px] rounded-lg border border-slate-100 bg-white p-5 animate-pulse dark:border-[#30363d]/60 dark:bg-[#21262d]/80">
-          <div class="flex h-full items-center justify-between gap-4">
-            <div class="flex-1">
-              <div class="h-3 rounded bg-slate-200 dark:bg-[#30363d] w-20"></div>
-              <div class="mt-6 h-8 w-1/2 rounded bg-slate-200 dark:bg-[#30363d]"></div>
-            </div>
-            <div class="h-11 w-11 rounded-lg bg-slate-100 dark:bg-[#30363d] shrink-0"></div>
-          </div>
-        </div>
-      {/each}
-    {:else}
-      <!-- 改版 KPI：总投入 / 工作时长 / 专注峰值 / 娱乐占比（原浏览器时长、应用数两卡移除） -->
-      <!-- data-kpi-card：供 ui-style-c 紧凑样式精准命中数值/标签，不误伤 subtitle -->
-      <StatsCard
-        title={overviewTotalActivityTitle}
-        value={formatDurationLocalized(stats.total_duration, { compact: true })}
-        icon="duration"
-        color="indigo"
-        subtitle={totalDeltaSubtitle}
-        dataKpiCard
-      />
-      <StatsCard
-        title={overviewWorkDurationTitle}
-        value={formatDurationLocalized(stats.work_time_duration || 0, { compact: true })}
-        icon="focus"
-        color="emerald"
-        subtitle={workShareSubtitle}
-        dataKpiCard
-      />
-      <StatsCard
-        title={t('overview.peakFocus')}
-        value={peakWindowValue}
-        icon="duration"
-        color="blue"
-        subtitle={peakWindowSubtitle}
-        dataKpiCard
-      />
-      <StatsCard
-        title={t('overview.entertainmentShare')}
-        value={entertainmentShareValueText}
-        icon="apps"
-        color="rose"
-        subtitle={entertainmentDeltaSubtitle}
-        dataKpiCard
-      />
-    {/if}
-  </div>
+  <DashboardSummary duration={stats?.total_duration ?? 0} browserDuration={stats?.browser_duration ?? 0} appCount={stats?.app_usage?.length ?? 0} peak={peakWindowValue} title={overviewTotalActivityTitle} loading={loading || !stats} date={dashboardDate} context={dashboardContext} contextError={dashboardContextError} />
 
   {#if error}
     <div class="page-banner-error mb-4">
@@ -1577,7 +1543,7 @@
   {/if}
 
   <!-- week/date 模式：「按天投入」卡（置于节奏卡上方；today 模式不显示） -->
-  {#if overviewMode !== 'today'}
+  {#if overviewMode === 'week' || (overviewMode === 'date' && selectedDateFrom !== selectedDateTo)}
     <div class="page-card overview-panel overview-panel-subtle mb-4">
       <div class="mb-3 flex items-baseline justify-between gap-3">
         <h3 class="page-section-title !mb-0">{t('overview.dailyInvest')}</h3>
@@ -1625,6 +1591,7 @@
   {/if}
 
   <!-- 主视觉：节奏卡 = 分类构成条 + 既有按小时活跃度图 -->
+  <div class="dashboard-chart-grid">
   <div class="page-card overview-panel overview-panel-featured mb-4">
     <div class="mb-3 flex items-center justify-between gap-3">
       <h3 class="page-section-title !mb-0">{rhythmCardTitle}</h3>
@@ -1742,6 +1709,27 @@
     {/if}
   </div>
 
+  <DashboardProjects context={dashboardContext} error={dashboardContextError} date={dashboardDate} />
+  </div>
+
+  {#if overviewMode === 'today' && insightSentence}
+    <!-- 窄屏精修：flex-wrap 允许洞察句换行,链接自动下移到第二行,避免最小窗口横向溢出 -->
+    <div class="dashboard-insight mb-4 flex flex-wrap items-center gap-3.5 rounded-lg border border-blue-100 bg-gradient-to-r from-blue-50 via-white to-white px-5 py-3.5 dark:border-blue-900/40 dark:from-blue-950/35 dark:via-[#161b22] dark:to-[#161b22]">
+      <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-500 dark:bg-blue-900/40 dark:text-blue-300">
+        <svg class="h-[17px] w-[17px]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 2.5l2 6.4 6.5 2.1-6.5 2.1-2 6.4-2-6.4L3.5 11l6.5-2.1zM19 15.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" />
+        </svg>
+      </span>
+      <p class="min-w-0 flex-1 basis-52 text-sm text-slate-600 dark:text-[#adbac7]">{insightSentence}</p>
+      <a
+        href="#/report"
+        class="shrink-0 whitespace-nowrap text-[13px] font-semibold text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+      >
+        {t('overview.insightWeekLink')}
+      </a>
+    </div>
+  {/if}
+
   <div class="overview-section-grid">
     <!-- 常驻网站：domain_usage 前 6，按域名聚合；点击行打开既有浏览器详情弹窗 -->
     <section class="page-card overview-section-card overview-panel overview-panel-subtle">
@@ -1825,7 +1813,7 @@
       {:else}
         <div class="empty-state-compact">
           <div class="empty-state-icon !w-12 !h-12 !mb-3 shadow-none">
-            <span class="text-xl">🌐</span>
+            <Globe class="h-5 w-5 text-slate-400" aria-hidden="true" />
           </div>
           <p class="empty-state-copy">{overviewNoWebsiteVisitsText}</p>
         </div>
@@ -1875,7 +1863,7 @@
       {:else}
         <div class="empty-state-compact">
           <div class="empty-state-icon !w-12 !h-12 !mb-3 shadow-none">
-            <span class="text-xl">📊</span>
+            <BarChart3 class="h-5 w-5 text-slate-400" aria-hidden="true" />
           </div>
           <p class="empty-state-copy">{overviewNoAppStatsText}</p>
         </div>
@@ -1887,66 +1875,29 @@
 
 <!-- 域名摘要 / 单域名详情浮层 -->
 {#if domainOverlayOpen}
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div
-  class="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/52 p-4 backdrop-blur-md animate-fadeIn"
-  role="presentation"
-  on:click|self={closeDomainOverlay}
->
-  <div
-    bind:this={domainOverlayDialog}
-    use:trapFocus
-    class="card overview-domain-dialog flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden p-0"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="overview-domain-overlay-title"
-    tabindex="-1"
+  <UiDialog
+    bind:open={domainOverlayOpen}
+    title={domainOverlayTitle}
+    description={domainOverlayDescription}
+    dismissible={!editingDomainKey}
   >
-    <div class="flex items-center justify-between border-b border-slate-200 bg-gradient-to-r from-slate-50 to-white p-5 dark:border-[#30363d] dark:from-[#21262d] dark:to-[#161b22]">
-      <div class="flex min-w-0 items-center gap-3">
-        {#if domainOverlayView === 'detail' && domainCollection.length > 0}
-          <button
-            bind:this={domainOverlayBackButton}
-            type="button"
-            class="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 dark:text-[#7d8590] dark:hover:bg-[#30363d]"
-            title={t('overview.viewAll')}
-            on:click={showAllDomainSummaries}
-          >
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 18l-6-6 6-6" />
-            </svg>
-          </button>
-        {/if}
-        <div class="min-w-0">
-          {#if domainOverlayView === 'all'}
-            <h3 id="overview-domain-overlay-title" class="truncate text-lg font-bold text-slate-900 dark:text-[#e6edf3]">{t('overview.domainListTitle')}</h3>
-            <p class="truncate text-sm text-slate-500 dark:text-[#7d8590]">{t('overview.sitesCount', { count: domainCollectionTotalCount })}</p>
-          {:else}
-            <h3 id="overview-domain-overlay-title" class="truncate text-lg font-bold text-slate-900 dark:text-[#e6edf3]">
-              {selectedDomainDetail ? getBrowserDomainDisplayLabel(selectedDomainDetail) : t('overview.domainDetailTitle')}
-            </h3>
-            {#if selectedDomainDetail}
-              <p class="truncate text-sm text-slate-500 dark:text-[#7d8590]">
-                {formatDuration(selectedDomainDetail.duration)} · {t('overview.pagesCount', { count: selectedDomainDetail.urls?.length || 0 })}
-              </p>
-            {/if}
-          {/if}
-        </div>
+    {#if domainOverlayView === 'detail' && domainCollection.length > 0}
+      <div class="mb-3">
+        <button
+          bind:this={domainOverlayBackButton}
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-[#30363d] dark:text-[#adbac7] dark:hover:bg-[#21262d]"
+          on:click={showAllDomainSummaries}
+        >
+          <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 18l-6-6 6-6" />
+          </svg>
+          <span>{t('overview.viewAll')}</span>
+        </button>
       </div>
-      <button
-        type="button"
-        class="shrink-0 rounded-lg p-2 transition-colors hover:bg-slate-100 dark:hover:bg-[#30363d]"
-        title={t('overview.cancel')}
-        on:click={closeDomainOverlay}
-      >
-        <svg class="h-5 w-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
-    </div>
+    {/if}
 
-    <div class="flex-1 space-y-4 overflow-y-auto p-5" on:scroll={handleSemanticPopoverViewportChange}>
+    <div bind:this={domainOverlayDialog} class="max-h-[68vh] space-y-3 overflow-y-auto overscroll-contain pr-1" on:scroll={handleSemanticPopoverViewportChange}>
       {#if domainOverlayLoading}
         <div class="py-10 text-center text-sm text-slate-400 dark:text-[#636c76]">{t('common.loading')}</div>
       {:else if domainOverlayError}
@@ -2057,7 +2008,7 @@
             <div
               bind:this={semanticCategoryPopover}
               id={`semantic-category-popover-${domain.domain}`}
-                  class="overview-semantic-popover fixed z-[160] overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 shadow-xl dark:border-[#30363d] dark:bg-[#161b22] dark:shadow-black/30"
+                  class="overview-semantic-popover fixed z-[240] overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 dark:border-[#30363d] dark:bg-[#161b22]"
               use:portalToBody
               role="dialog"
               tabindex="-1"
@@ -2256,8 +2207,7 @@
 
       {/if}
     </div>
-  </div>
-</div>
+  </UiDialog>
 {/if}
 
 <!-- 语义分类删除确认弹窗 -->
