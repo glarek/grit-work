@@ -1,5 +1,8 @@
 # GRIT Work — handover
 
+Aktuellt 2026-11-22: **1.1.4 är publicerad i [GRIT-portalen](https://login.gritprojects.se/software/)**, som Windows x64-installerare och portabel ZIP. Appen har nu **Om → Sök uppdateringar** med portalinloggning och Tauris signaturkontroll. Första installationen sker manuellt; in-app-uppdatering med verklig portalinloggning återstår att verifiera. Källrevision `d83f155`, Windows run `45004359586`. Uppgradering från rc.4 och portalens filåterläsning är verifierade. Se [VALIDATION](VALIDATION.md) och [releaseproceduren](PORTAL-RELEASE.md). Nedan följer tidigare handoverinformation.
+
+
 Senast uppdaterad 2026-11-20. **1.1.4-rc.4 är publicerad** som osignerad Windows x64-förhandsversion: [release](https://github.com/glarek/grit-work/releases/tag/grit-v1.1.4-rc.4). Källrevision `6b8763f`, Windows run `44761980199`, installerare och portabel zip samt uppgradering från rc.3 är verifierade. Dashboarden har ljust/mörkt tema och Spiris-användarval; paketeringen säkerställer svensk och engelsk OCR. Windows OCR:s kvarstående I/l-fel är dokumenterade. Se [VALIDATION](VALIDATION.md) för kontroller, checksummor och begränsningar.
 
 ## Arbetsmiljö

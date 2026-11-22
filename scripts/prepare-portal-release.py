@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('installer', type=Path)
 parser.add_argument('destination', type=Path)
 parser.add_argument('--notes', required=True)
+parser.add_argument('--portable', type=Path, help='Verified Windows x64 portable ZIP from the same CI run')
 parser.add_argument('--key', type=Path, default=Path.home() / '.local/share/grit-release-keys/grit-work.key')
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
@@ -42,6 +43,17 @@ manifest = {
                'sha256': hashlib.file_digest(installer.open('rb'), 'sha256').hexdigest(),
                'updater_signature': signature}],
 }
+if args.portable:
+    import zipfile
+    with zipfile.ZipFile(args.portable) as archive:
+        if archive.testzip() is not None or not any(n.endswith('grit-work.exe') for n in archive.namelist()):
+            raise SystemExit('Portable ZIP is invalid or missing grit-work.exe.')
+    portable = args.destination / f'GRIT-Work_{version}_portable_x64.zip'
+    shutil.copyfile(args.portable, portable)
+    with portable.open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    manifest['files'].append({'name': portable.name, 'platform': 'windows', 'arch': 'x64',
+                              'size': portable.stat().st_size, 'sha256': digest})
 (args.destination / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
 print('Signed release prepared:', args.destination.resolve())
 print('Validate and publish with login-gritprojects/scripts/software-release.py.')

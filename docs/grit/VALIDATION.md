@@ -1,5 +1,21 @@
 # Validation — 2026-11-20
 
+## Portal release 1.1.4 — 2026-11-22
+
+Published and activated at [GRIT software](https://login.gritprojects.se/software/), upload `798250af123c44ada37c6940a437b497`. Windows installer and portable ZIP come from source `d83f155f8953601d295326e08c3464b2c9bca424`, [Windows run 45004359586](https://github.com/glarek/grit-work/actions/runs/45004359586). Frontend checks/tests, native Rust Clippy/tests, OCR prerequisite checks and release packaging passed. The job was finishing its cache upload when the verified artifacts were published.
+
+- Installer: `GRIT-Work_1.1.4_x64-setup.exe`, 10,507,892 bytes, SHA-256 `f62506a9ee6f3dd5b1616871e18ceb2cd62c19f48b7649a91e25a39f228d1eb4`.
+- Portable: `GRIT-Work_1.1.4_portable_x64.zip`, 14,531,947 bytes, SHA-256 `faf7d6a3feb17976a02ae4ced134e6abe0281aeb454c7b10069516729f6d4a66`.
+- Final installer verified using the embedded Tauri public key and the same minisign verifier as the updater; a modified copy was rejected. This is updater signing, not Windows Authenticode; Windows still reports NotSigned.
+- Upgrade from rc.4 using NSIS `/S /UPDATE` passed in `grit-windows`, exit 0. Registered version is 1.1.4, autostart and appdata snapshot unchanged, English/Swedish OCR present, app not launched. Appdata contained zero files, so this does not establish populated-data migration. Installed EXE SHA-256 `64647f63e205d12cfcd816a738848f7cc057cad9082686134a5398589edda049`.
+- Portal SSH readback matched both binaries and manifest. Public latest returns exactly `{"id":"grit-work","version":"1.1.4"}`. Anonymous installer/updater requests return 401. Isolated portal tests cover genuine-session enforcement, signed metadata, withdrawn/unavailable releases, invalid architecture, corruption, failed upload retention and rollback.
+- Browser fixture verified version confirmation, cancellation without installation and the collection-pause error. Local Rust tests cover version ordering/no downgrade and version-bound HTTPS download URLs.
+
+Authenticated production HTTP download, real interactive portal login and a complete in-app upgrade to a later signed version remain unverified: no authorized portal session was available. The initial 1.1.4 installation is manual because rc.4's updater is disabled. Portable builds continue with manual updates.
+
+Artifacts, signatures, test logs, installer verification and readback are retained under `all-artifacts/windows-1.1.4/`. See [portal release procedure](PORTAL-RELEASE.md). Historical release notes below describe the earlier builds.
+
+
 ## rc.4 — dashboard, Unicode OCR and packaged languages
 
 [GRIT Work 1.1.4-rc.4](https://github.com/glarek/grit-work/releases/tag/grit-v1.1.4-rc.4) is published as an unsigned Windows x64 prerelease from `6b8763f202dda1b4bebc57182fc4661a7e95cb9b`. Native [Windows run 44761980199](https://github.com/glarek/grit-work/actions/runs/44761980199) passed before publication.

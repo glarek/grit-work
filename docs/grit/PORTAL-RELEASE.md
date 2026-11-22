@@ -4,7 +4,7 @@ Windows x64 NSIS builds use the existing Windows review workflow. The version in
 
 1. Commit/push the reviewed source and wait for `GRIT Work Windows review` to pass. Download its `Grit-Work-Windows-review` artifact; retain the run ID and source revision.
 2. Verify the Windows installer, including upgrade behavior in the local Windows VM.
-3. Run `python3 scripts/prepare-portal-release.py INSTALLER ABSOLUTE_RELEASE_DIRECTORY --notes 'Actual release changes'`. This signs the final installer using Tauri and produces manifest.json with its size, SHA-256 and updater signature. The installer must have been built from the exact version and public key in this checkout.
+3. Run `python3 scripts/prepare-portal-release.py INSTALLER ABSOLUTE_RELEASE_DIRECTORY --notes 'Actual release changes' --portable PORTABLE_ZIP`. This signs the final installer using Tauri and produces manifest.json with its size, SHA-256 and updater signature. The installer must have been built from the exact version and public key in this checkout.
 4. Run `python3 /srv/gritprojects/GitHub/login-gritprojects/scripts/software-release.py validate ABSOLUTE_RELEASE_DIRECTORY`, then `publish` when publication is authorized.
 5. Verify the public latest endpoint and read back the private release, checking hashes. Verify authenticated HTTP download with an authorized session when available. Retain failed and ambiguous attempts for inspection; never retry automatically.
 
