@@ -52,7 +52,8 @@ test('RC releases use prerelease metadata and cannot replace the stable latest r
   assert.ok(source.includes("prerelease: ${{ contains(github.ref_name, '-rc.') }}"));
   assert.ok(source.includes("makeLatest: ${{ contains(github.ref_name, '-rc.') && 'false' || 'legacy' }}"));
   const config = JSON.parse(readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
-  assert.equal(config.plugins.updater, undefined, 'Fork must not trust upstream update signing keys');
+  assert.match(Buffer.from(config.plugins.updater.pubkey, 'base64').toString(), /minisign public key: 189328164577D037/);
+  assert.equal(config.plugins.updater.windows.installMode, 'passive');
   assert.equal(config.bundle.createUpdaterArtifacts, false);
 });
 

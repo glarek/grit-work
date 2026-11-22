@@ -84,9 +84,16 @@
   },
   "productName": "GRIT Work",
   "mainBinaryName": "grit-work",
-  "version": "1.1.4-rc.4",
+  "version": "1.1.4",
   "identifier": "se.grit.work",
-  "plugins": {},
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4OTMyODE2NDU3N0QwMzcKUldRMzBIZEZGaWlUR0QweVZudlExaGFrRU84akdsRWxPWlBFQlVaMDBhTlk0WHNKM1BrTk5LcmEK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "app": {
     "macOSPrivateApi": true,
     "windows": [

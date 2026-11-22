@@ -9,6 +9,15 @@
   const GRIT_WORK_REPO_URL = 'https://github.com/glarek/grit-work';
   const UPSTREAM_REPO_URL = 'https://github.com/wm94i/Work-Review';
 
+  import { runUpdateFlow } from '$lib/utils/updater.ts';
+  let updating = false;
+  let updateStatus = '';
+  async function checkForUpdates() {
+    updating = true;
+    try { await runUpdateFlow({ onStatusChange: (message) => updateStatus = message }); }
+    finally { updating = false; }
+  }
+
   let appVersion = '';
   let runtimePlatform = '';
   $: currentLocale = $locale;
@@ -80,6 +89,9 @@
       </div>
 
       <div class="about-action-row mt-6">
+        <button type="button" on:click={checkForUpdates} disabled={updating} class="page-action-secondary min-h-10 px-4 py-2">
+          {updating ? 'Uppdatering pågår …' : 'Sök uppdateringar'}
+        </button>
         <button type="button" on:click={openGitHub} class="page-action-secondary min-h-10 px-4 py-2">
           <ExternalLink size={16} />
           <span class="leading-none">GitHub (GRIT Work)</span>
@@ -94,11 +106,12 @@
       </div>
 
       <div class="mt-5 space-y-2 text-center text-xs text-slate-500 dark:text-[#8b949e]" role="status" aria-live="polite">
+        <p>{updateStatus}</p>
         <p class="font-mono">
           Version: v{appVersion} · Plattform: {runtimePlatform}
         </p>
         <p>
-          Utvecklingsförhandsvisning — automatisk uppdatering är avstängd i denna fork. Uppdatera manuellt via nya releaser eller källkod på GitHub.
+          Uppdateringar hämtas från GRIT-portalen efter ditt godkännande. Pausa insamlingen och spara pågående arbete före installation. Appen avslutas när installeraren startar.
         </p>
         <p>
           Byggd på öppen källkod från Work Review under MIT-licens.
